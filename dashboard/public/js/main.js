@@ -123,8 +123,11 @@ function render() {
     const iconStyle = iconColor ? `style="--icon-color: ${esc(iconColor)}"` : '';
     const openUrl = (s.url || '').replace(/localhost|127\.0\.0\.1/, window.location.hostname);
     return `
-    <div class="site-card" data-id="${s.id}">
-      <div class="site-card__header">
+    <div class="site-card" data-id="${s.id}" draggable="true">
+      <div class="site-card__drag" title="Drag to reorder">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
+        </div>
+        <div class="site-card__header">
         <div class="site-card__icon" ${iconStyle}>${getIcon(s.icon)}</div>
         <div class="site-card__info">
           <div class="site-card__name">${esc(s.name)}</div>
@@ -339,6 +342,66 @@ function startPolling() {
   refreshTimer = setInterval(() => loadSites(), REFRESH_MS);
 }
 
+
+
+/* ── Drag & Drop Reorder ── */
+let draggedId = null;
+
+document.addEventListener('dragstart', (e) => {
+  const card = e.target.closest('.site-card');
+  if (!card) return;
+  draggedId = card.dataset.id;
+  card.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', draggedId);
+});
+
+document.addEventListener('dragend', (e) => {
+  const card = e.target.closest('.site-card');
+  if (card) card.classList.remove('dragging');
+  document.querySelectorAll('.site-card.drag-over').forEach(c => c.classList.remove('drag-over'));
+  draggedId = null;
+});
+
+document.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const card = e.target.closest('.site-card');
+  if (!card || card.dataset.id === draggedId) return;
+  document.querySelectorAll('.site-card.drag-over').forEach(c => c.classList.remove('drag-over'));
+  card.classList.add('drag-over');
+});
+
+document.addEventListener('dragleave', (e) => {
+  const card = e.target.closest('.site-card');
+  if (card) card.classList.remove('drag-over');
+});
+
+document.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const targetCard = e.target.closest('.site-card');
+  if (!targetCard || !draggedId) return;
+  const targetId = targetCard.dataset.id;
+  if (draggedId === targetId) return;
+
+  // Reorder sites array
+  const fromIdx = sites.findIndex(s => s.id === draggedId);
+  const toIdx = sites.findIndex(s => s.id === targetId);
+  if (fromIdx === -1 || toIdx === -1) return;
+
+  const [moved] = sites.splice(fromIdx, 1);
+  sites.splice(toIdx, 0, moved);
+
+  // Save order to server
+  const order = sites.map(s => s.id);
+  await fetch(`${API}/api/sites/reorder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order }),
+  });
+
+  render();
+});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     clearInterval(refreshTimer);

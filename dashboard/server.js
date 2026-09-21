@@ -333,6 +333,20 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, site: next });
     }
 
+
+    // POST /api/sites/reorder — reorder sites
+    if (p === '/api/sites/reorder' && m === 'POST') {
+      const body = await parseBody(req);
+      if (!body?.order || !Array.isArray(body.order)) return send(res, 400, { error: 'order array required' });
+      const order = body.order;
+      const reordered = order.map(id => cfg.sites.find(s => s.id === id)).filter(Boolean);
+      // Add any sites not in the order array at the end
+      cfg.sites.forEach(s => { if (!order.includes(s.id)) reordered.push(s); });
+      cfg.sites = reordered;
+      writeConfig(cfg);
+      return send(res, 200, { ok: true });
+    }
+
     const startM = p.match(/^\/api\/sites\/([^/]+)\/start$/);
     if (startM && m === 'POST') {
       const s = cfg.sites.find(x => x.id === startM[1]);
