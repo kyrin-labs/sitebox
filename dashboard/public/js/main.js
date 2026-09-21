@@ -93,7 +93,7 @@ function render() {
 
   grid.innerHTML = filtered.map((s) => {
     const iconColor = s.iconColor || '';
-    const iconStyle = iconColor ? `style="color: ${esc(iconColor)}"` : '';
+    const iconStyle = iconColor ? `style="--icon-color: ${esc(iconColor)}"` : '';
     const openUrl = (s.url || '').replace(/localhost|127\.0\.0\.1/, window.location.hostname);
     return `
     <div class="site-card" data-id="${s.id}">

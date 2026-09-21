@@ -27,6 +27,32 @@
       "url": "http://localhost:4452",
       "path": "sites/example-clock",
       "created": "2026-09-21"
+    },
+    {
+      "id": "lumen-press",
+      "name": "Lumen Press",
+      "description": "สำนักพิมพ์อิสระ — independent publishing from Thailand",
+      "icon": "book",
+      "iconColor": "#8B5E3C",
+      "port": 4600,
+      "category": "publishing",
+      "url": "http://localhost:4600",
+      "path": "sites/lumen-press",
+      "created": "2026-09-21",
+      "_auto": true
+    },
+    {
+      "id": "kyrin-labs",
+      "name": "Kyrin Labs",
+      "description": "Independent tech studio — tools, systems, experiments",
+      "icon": "zap",
+      "iconColor": "#00942c",
+      "port": 4500,
+      "category": "tools",
+      "url": "http://localhost:4500",
+      "path": "sites/kyrin-labs",
+      "created": "2026-09-21",
+      "_auto": true
     }
   ]
 }
