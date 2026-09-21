@@ -76,6 +76,27 @@ small: 0.85rem (14px) — captions, metadata
 3. Define neutrals around it
 4. Verify contrast ratios
 
+### AI Color Tells (AVOID THESE)
+
+These accent colors are overused by AI and immediately signal "generated":
+
+| Color | Hex | Why it's a tell |
+|-------|-----|-----------------|
+| Purple/Violet | #7c3aed, #6c3ce0, #8b5cf6 | The #1 AI accent color. Every AI picks purple. |
+| Indigo | #4f46e5, #6366f1 | Close second to purple. |
+| Teal/Cyan | #06b6d4, #0891b2 | Common in AI-generated dashboards. |
+| Blue gradient | any blue→purple gradient | The default AI gradient. |
+
+**Instead, pick colors from the real world:**
+- Deep green (#0e7c6b, #166534) — nature, growth
+- Warm amber (#92400e, #b45309) — warmth, craft
+- Deep ocean (#1e3a5f, #1e40af) — depth, trust
+- Earth red (#9a3412, #b91c1c) — energy, boldness
+- Olive (#4d7c0f, #3f6212) — grounded, organic
+- Slate (#475569, #334155) — professional, neutral
+
+**Test:** If you can swap your accent color with another site and nobody notices, it's too generic.
+
 ### Contrast Requirements (WCAG AA)
 
 | Element | Minimum Ratio |
@@ -165,7 +186,7 @@ These are tells of a generated/generic page. Avoid all of them:
 7. **Stock photos** as hero images
 8. **Template layouts** that look like every other site
 9. **Placeholder text** that looks fake
-10. **Generic colors** (the same blue/purple gradient)
+10. **Generic AI colors** — purple (#7c3aed), indigo (#4f46e5), or blue→purple gradients. Pick real-world colors instead.
 11. **Emoji as icons** (use inline SVG instead)
 12. **Borders/shadows** on every element
 13. **Single-word accent** in headlines (one word in bold/color)

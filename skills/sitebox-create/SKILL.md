@@ -23,9 +23,10 @@ Define these tokens upfront:
 
 **Color** — 5-6 colors max. Match the subject:
 - Publishing → warm browns, ambers, creams
-- Tech → cool blues, grays
+- Tech → cool blues, grays (NOT purple/indigo — AI tells)
 - Creative → expressive unique accent
 - Corporate → navy, slate
+- See sitebox-design for AI color avoidance list
 
 **Typography** — max 2 families:
 - Editorial/literary: `Playfair Display` + `Noto Serif Thai` for headlines, `Inter` for body
