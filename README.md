@@ -28,18 +28,21 @@ Uses `network_mode: host` — all site ports are directly accessible on the host
 ```
 sitebox/
 ├── dashboard/              ← Dashboard (port 4445)
-│   ├── server.js           ← Backend: config, process mgmt, health checks
-│   ├── data/sites.json     ← Site registry (edit directly or via API)
+│   ├── server.js           ← Backend: config, process mgmt, verified starts, logs
+│   ├── data/sites.json     ← Site registry (runtime state — never commit changes)
 │   └── public/             ← Dashboard UI (light/dark theme)
 │
 ├── sites/                  ← Static sites live here
 │   ├── example-notes/      ← Notes app (port 4451)
 │   └── example-clock/      ← World clock (port 4452)
 │
-├── skills/                 ← Hermes skills for SiteBox
-│   ├── sitebox-create/     ← Create new sites
-│   └── sitebox-config/     ← Manage site configs
+├── skills/                 ← Project skills for SiteBox agents
+│   ├── sitebox-create/     ← Build/redesign/debug sites (+ performance reference)
+│   ├── sitebox-design/     ← Design system, audit, copy passes (+ references)
+│   ├── sitebox-config/     ← Dashboard API, lifecycle, logs, troubleshooting
+│   └── sitebox-skill-maintainer/  ← Keeps the skills in sync (meta)
 │
+├── .githooks/pre-commit    ← Blocks commits of sites.json
 ├── Dockerfile
 ├── docker-compose.yml
 └── README.md
@@ -48,8 +51,11 @@ sitebox/
 ## Features
 
 - **Start/Stop sites** from the dashboard
+- **Verified starts** — start fails loudly (with logs + hint) if the port never listens
+- **Live logs** — captured stdout/stderr per site, viewable in the dashboard
 - **Health checks** — see which sites are online
-- **Port availability** — check before assigning ports
+- **Port availability** — check before assigning ports (duplicate ports are rejected)
+- **Stale detection** — flags entries whose folder/server.js is missing
 - **Auto-detect** — drop a site folder in `sites/` and it appears
 - **Light/Dark theme** — toggle in header
 - **Custom icon colors** — per-site icon color
@@ -79,17 +85,40 @@ curl -X POST http://localhost:4445/api/sites \
   }'
 ```
 
-### Option 3: Edit sites.json directly
+### Option 3: Edit sites.json directly (discouraged)
 
-Edit `dashboard/data/sites.json`.
+`dashboard/data/sites.json` is runtime state. Editing it by hand skips
+validation and will be overwritten by the dashboard. Use the API or the UI
+instead, and **never commit your runtime changes** — see
+[Site data & Git policy](#site-data--git-policy).
 
 ### Option 4: Auto-detect
 
 Just create a folder in `sites/` with a `server.js` and `public/index.html`. The dashboard will detect it automatically.
 
-### Option 5: Hermes Skill
+### Option 5: Skills
 
-If you have Hermes Agent configured, use the `sitebox-create` skill.
+If your agent loads the project skills from `skills/`, use `sitebox-create`
+(build + verify) with `sitebox-design` (quality gate) and `sitebox-config`
+(lifecycle). `sitebox-skill-maintainer` keeps those skills in sync with the
+dashboard.
+
+## Skills & Interop
+
+The three working skills are designed to run together:
+
+| Skill | Role |
+|-------|------|
+| `sitebox-create` | Orchestrates: brief → design pass → build → register → start → verify → audit → debug |
+| `sitebox-design` | Design tokens and the quality gate (accessibility/UX audit, humanizer + deslop copy passes) |
+| `sitebox-config` | Dashboard API, ports, lifecycle, logs, stale entries, git policy |
+| `sitebox-skill-maintainer` | Meta: conventions and a drift checker for the other three |
+
+Run the drift checker after any API or icon change:
+
+```bash
+node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
+```
 
 ## Site Structure
 
@@ -105,6 +134,10 @@ sites/my-site/
 ```
 
 ### Minimal server.js
+
+Simplest possible version (always serves `index.html` as a fallback). For
+multi-page sites use the canonical template with proper 404s and clean URLs in
+`skills/sitebox-create/SKILL.md`.
 
 ```js
 const http = require('http');
@@ -136,17 +169,46 @@ http.createServer((req, res) => {
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/sites` | List all sites with status |
-| `POST` | `/api/sites` | Add or update a site |
-| `DELETE` | `/api/sites/:id` | Remove a site |
-| `POST` | `/api/sites/:id/start` | Start a site process |
+| `GET` | `/api/sites` | List all sites with status (`_running`, `_stale`, `_logLines`) |
+| `POST` | `/api/sites` | Add or update a site (validates id, name, unique port) |
+| `DELETE` | `/api/sites/:id` | Remove a site (`?purge=1` also deletes the folder) |
+| `POST` | `/api/sites/:id/start` | Start a site and verify the port is listening |
 | `POST` | `/api/sites/:id/stop` | Stop a site process |
+| `POST` | `/api/sites/:id/restart` | Stop + start |
 | `GET` | `/api/sites/:id/health` | Check if site is reachable |
+| `GET` | `/api/sites/:id/logs` | Captured output (`?lines=1..500`) |
+| `DELETE` | `/api/sites/:id/logs` | Clear captured output |
+| `GET` | `/api/ports/check` | Port availability (`?port=4500`) |
+
+## Site data & Git policy
+
+`dashboard/data/sites.json` is **runtime state** — the dashboard rewrites it
+when sites are added, edited, or deleted, and auto-detect appends folders it
+finds in `sites/`. Deployed servers will always have a different file than the
+repository.
+
+**The committed copy must only ever contain `example-notes` and
+`example-clock`. Never commit updates to this file.**
+
+A pre-commit hook enforces it. Enable once per clone:
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit   # macOS / Linux (git needs the exec bit)
+```
+
+If you staged runtime changes by accident:
+
+```bash
+git restore --staged dashboard/data/sites.json
+git checkout -- dashboard/data/sites.json
+```
 
 ## Port Ranges
 
 | Range | Purpose |
 |-------|---------|
+| 4444 | Reserved |
 | 4445 | Dashboard |
 | 4450-4499 | Examples / tests |
 | 4500-4599 | Tools |
@@ -156,7 +218,8 @@ http.createServer((req, res) => {
 
 ## Icon Names
 
-Use any [Lucide](https://lucide.dev) icon name:
+The dashboard renders these icons; any other name falls back to `globe`
+(source of truth: `dashboard/public/js/main.js`):
 
 `globe` · `book` · `clock` · `code` · `camera` · `gamepad` · `music` · `settings` · `notebook` · `notebook-pen` · `database` · `star`
 

@@ -3,6 +3,12 @@ node_modules/
 *.log
 .DS_Store
 
+# Runtime config temp files (atomic writes)
+dashboard/data/*.tmp
+
+# Runtime PID state
+dashboard/data/.pids.json
+
 # Ignore all sites EXCEPT the two examples
 # Any new site added to sites/ will NOT be tracked
 sites/*

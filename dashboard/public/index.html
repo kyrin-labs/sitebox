@@ -116,6 +116,23 @@
       </div>
     </div>
 
+    <!-- Logs Modal -->
+    <div class="modal-overlay" id="logs-modal" style="display:none">
+      <div class="modal modal--wide">
+        <div class="modal__header">
+          <h2 id="logs-title">Logs</h2>
+          <div class="modal__header-actions">
+            <button id="logs-refresh" class="btn btn--outline btn--sm">Refresh</button>
+            <button id="logs-clear" class="btn btn--outline btn--sm">Clear</button>
+            <button id="logs-close" class="btn btn--ghost" title="Close">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </div>
+        </div>
+        <pre class="logs-view" id="logs-view">No logs yet — start the site to capture its output.</pre>
+      </div>
+    </div>
+
   </div>
   <script src="/js/main.js"></script>
 </body>

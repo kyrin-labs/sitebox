@@ -3,6 +3,8 @@
 const API = '';
 let sites = [];
 let activeFilter = 'all';
+let lastSig = '';
+let lastCats = '';
 
 /* ── Icon mapping (Lucide SVGs) ── */
 const ICONS = {
@@ -53,10 +55,39 @@ document.getElementById('btn-theme').addEventListener('click', toggleTheme);
 initTheme();
 
 /* ── Fetch sites ── */
-async function loadSites() {
-  const res = await fetch(`${API}/api/sites`);
-  sites = await res.json();
+async function loadSites(force = false) {
+  try {
+    const res = await fetch(`${API}/api/sites`);
+    const data = await res.json();
+    const sig = JSON.stringify(data);
+    if (!force && sig === lastSig) return;   // nothing changed → skip DOM work
+    lastSig = sig;
+    sites = data;
+    render();
+  } catch (e) {
+    console.error('Failed to load sites', e);
+  }
+}
+
+/* ── Filters (rebuilt only when the category set changes) ── */
+document.getElementById('filters').addEventListener('click', (e) => {
+  const btn = e.target.closest('.filter');
+  if (!btn) return;
+  activeFilter = btn.dataset.cat;
   render();
+});
+
+function renderFilters(cats) {
+  const filtersEl = document.getElementById('filters');
+  const sig = cats.join('|');
+  if (sig !== lastCats) {
+    lastCats = sig;
+    filtersEl.innerHTML = `<button class="filter" data-cat="all">All</button>` +
+      cats.map((c) => `<button class="filter" data-cat="${c}">${c}</button>`).join('');
+  }
+  filtersEl.querySelectorAll('.filter').forEach((b) => {
+    b.classList.toggle('active', b.dataset.cat === activeFilter);
+  });
 }
 
 /* ── Render ── */
@@ -77,12 +108,7 @@ function render() {
 
   // Filters
   const cats = [...new Set(sites.map((s) => s.category).filter(Boolean))];
-  const filtersEl = document.getElementById('filters');
-  filtersEl.innerHTML = `<button class="filter ${activeFilter === 'all' ? 'active' : ''}" data-cat="all">All</button>` +
-    cats.map((c) => `<button class="filter ${activeFilter === c ? 'active' : ''}" data-cat="${c}">${c}</button>`).join('');
-  filtersEl.querySelectorAll('.filter').forEach((btn) => {
-    btn.addEventListener('click', () => { activeFilter = btn.dataset.cat; render(); });
-  });
+  renderFilters(cats);
 
   if (filtered.length === 0) {
     grid.innerHTML = '';
@@ -106,11 +132,12 @@ function render() {
       </div>
       <div class="site-card__meta">
         <div class="site-card__status">
-          <span class="status-dot ${s._running ? 'status-dot--running' : 'status-dot--stopped'}"></span>
-          <span>${s._running ? 'Running' : 'Stopped'}</span>
+          <span class="status-dot ${s._stale ? 'status-dot--stopped' : s._running ? 'status-dot--running' : 'status-dot--stopped'}"></span>
+          <span>${s._stale ? 'Missing files' : s._running ? 'Running' : 'Stopped'}</span>
         </div>
         <code>:${s.port}</code>
         ${s.category ? `<span>${esc(s.category)}</span>` : ''}
+        ${s._stale ? `<span class="badge badge--warn" title="server.js not found — the folder was moved, renamed, or deleted">stale</span>` : ''}
       </div>
       <div class="site-card__actions">
         ${s._running
@@ -118,15 +145,18 @@ function render() {
                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="4" height="10" x="8" y="6" rx="1"/></svg>
                Stop
              </button>`
-          : `<button class="btn btn--success btn--sm" onclick="startSite('${s.id}')">
+          : `<button class="btn btn--success btn--sm" onclick="startSite('${s.id}')" ${s._stale ? 'disabled title="Site files are missing"' : ''}>
                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                Start
              </button>`
         }
-        <a href="${openUrl}" target="_blank" rel="noopener" class="btn btn--outline btn--sm">
+        <a href="${openUrl}" target="_blank" rel="noopener" class="btn btn--outline btn--sm" ${s._stale ? 'aria-disabled="true" style="opacity:.5;pointer-events:none"' : ''}>
           <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
           Open
         </a>
+        <button class="btn btn--ghost btn--sm" onclick="showLogs('${s.id}')" title="Logs">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+        </button>
         <button class="btn btn--ghost btn--sm" onclick="editSite('${s.id}')" title="Edit">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
         </button>
@@ -143,8 +173,13 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 
 /* ── Actions ── */
 async function startSite(id) {
-  await fetch(`${API}/api/sites/${id}/start`, { method: 'POST' });
-  setTimeout(loadSites, 500);
+  const res = await fetch(`${API}/api/sites/${id}/start`, { method: 'POST' });
+  const data = await res.json();
+  if (!data.ok) {
+    const lines = (data.logs || []).map((l) => l.text).join('\n');
+    alert(`Could not start "${id}"\n\n${data.message || 'unknown error'}${data.hint ? `\n\n${data.hint}` : ''}${lines ? `\n\nRecent output:\n${lines}` : ''}`);
+  }
+  loadSites();
 }
 
 async function stopSite(id) {
@@ -153,10 +188,53 @@ async function stopSite(id) {
 }
 
 async function deleteSite(id) {
-  if (!confirm(`Delete "${id}"?`)) return;
+  if (!confirm(`Delete "${id}" from the dashboard?\n\nThe site folder stays on disk (it will be auto-detected again). The API supports ?purge=1 to delete files too.`)) return;
   await fetch(`${API}/api/sites/${id}`, { method: 'DELETE' });
   loadSites();
 }
+
+/* ── Logs modal ── */
+let logsSiteId = null;
+
+async function showLogs(id) {
+  logsSiteId = id;
+  document.getElementById('logs-title').textContent = `Logs — ${id}`;
+  document.getElementById('logs-modal').style.display = 'flex';
+  await refreshLogs();
+}
+
+async function refreshLogs() {
+  if (!logsSiteId) return;
+  const el = document.getElementById('logs-view');
+  try {
+    const res = await fetch(`${API}/api/sites/${logsSiteId}/logs?lines=300`);
+    const data = await res.json();
+    if (!data.lines || data.lines.length === 0) {
+      el.textContent = 'No logs yet — start the site to capture its output.';
+    } else {
+      el.textContent = data.lines
+        .map((l) => `${l.t.slice(11, 19)} [${l.stream}] ${l.text}`)
+        .join('\n');
+      el.scrollTop = el.scrollHeight;
+    }
+  } catch (e) {
+    el.textContent = `Failed to load logs: ${e.message}`;
+  }
+}
+
+function closeLogs() {
+  document.getElementById('logs-modal').style.display = 'none';
+  logsSiteId = null;
+}
+
+document.getElementById('logs-close').addEventListener('click', closeLogs);
+document.getElementById('logs-refresh').addEventListener('click', refreshLogs);
+document.getElementById('logs-clear').addEventListener('click', async () => {
+  if (!logsSiteId || !confirm('Clear captured logs?')) return;
+  await fetch(`${API}/api/sites/${logsSiteId}/logs`, { method: 'DELETE' });
+  refreshLogs();
+});
+document.getElementById('logs-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeLogs(); });
 
 function editSite(id) {
   const s = sites.find((x) => x.id === id);
@@ -249,10 +327,27 @@ document.getElementById('site-form').addEventListener('submit', async (e) => {
 document.getElementById('search').addEventListener('input', render);
 
 /* ── Refresh ── */
-document.getElementById('btn-refresh').addEventListener('click', loadSites);
+document.getElementById('btn-refresh').addEventListener('click', () => loadSites(true));
 
-/* ── Auto-refresh status every 10s ── */
-setInterval(loadSites, 10000);
+/* ── Auto-refresh status every 10s, paused while the tab is hidden ── */
+const REFRESH_MS = 10000;
+let refreshTimer = null;
+
+function startPolling() {
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => loadSites(), REFRESH_MS);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  } else {
+    loadSites();
+    startPolling();
+  }
+});
 
 /* ── Init ── */
 loadSites();
+if (!document.hidden) startPolling();
