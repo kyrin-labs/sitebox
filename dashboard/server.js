@@ -18,8 +18,31 @@ const running = new Map();
 const logs = new Map();
 
 /* ── Helpers ── */
-function readConfig() { return JSON.parse(fs.readFileSync(DATA, 'utf-8')); }
+// A malformed sites.json must not take the whole dashboard down: keep the last
+// error, serve a safe empty config, and refuse to overwrite the bad file so it
+// can still be repaired by hand.
+let configError = null;
+function defaultConfig() {
+  return { dashboard: { name: 'SiteBox', port: PORT }, sites: [] };
+}
+function readConfig() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(DATA, 'utf-8'));
+    if (!cfg || typeof cfg !== 'object' || !Array.isArray(cfg.sites))
+      throw new Error('sites.json must be an object with a "sites" array');
+    configError = null;
+    return cfg;
+  } catch (e) {
+    if (configError !== e.message) console.error(`readConfig failed: ${e.message}`);
+    configError = e.message;
+    return defaultConfig();
+  }
+}
 function writeConfig(cfg) {
+  if (configError) {
+    console.error('writeConfig skipped: sites.json is unreadable (fix it, then retry)');
+    return;
+  }
   const tmp = DATA + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
   fs.renameSync(tmp, DATA);
@@ -103,6 +126,7 @@ function checkUrl(url, timeout = 3000) {
 /* ── Auto-detect sites from filesystem ── */
 function autoDetect() {
   const cfg = readConfig();
+  if (configError) return cfg; // never scan/write against an unreadable config
   const existing = new Set(cfg.sites.map(s => s.id));
   if (!fs.existsSync(SITES_DIR)) return cfg;
 
@@ -265,6 +289,11 @@ const server = http.createServer(async (req, res) => {
     if (m === 'OPTIONS') return send(res, 204, '');
 
     const cfg = autoDetect();
+    if (configError) return send(res, 500, {
+      error: 'sites.json is unreadable',
+      detail: configError,
+      hint: 'Fix or restore dashboard/data/sites.json, then retry.',
+    });
 
     if (p === '/api/sites' && m === 'GET')
       return send(res, 200, cfg.sites.map(s => ({
@@ -382,6 +411,8 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream' });
     return fs.createReadStream(fp).pipe(res);
   }
+  // A missing asset is a real 404 — only extension-less routes fall back to the SPA.
+  if (path.extname(p)) return send(res, 404, 'Not Found');
   const idx = path.join(PUBLIC, 'index.html');
   if (fs.existsSync(idx)) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); fs.createReadStream(idx).pipe(res); }
   else send(res, 404, 'Not Found');

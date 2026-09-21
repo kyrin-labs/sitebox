@@ -59,6 +59,7 @@ async function loadSites(force = false) {
   try {
     const res = await fetch(`${API}/api/sites`);
     const data = await res.json();
+    if (!Array.isArray(data)) throw new Error(data?.error || 'Unexpected /api/sites response');
     const sig = JSON.stringify(data);
     if (!force && sig === lastSig) return;   // nothing changed → skip DOM work
     lastSig = sig;
