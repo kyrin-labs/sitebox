@@ -1,0 +1,9 @@
+services:
+  sitebox:
+    build: .
+    container_name: sitebox
+    network_mode: host
+    volumes:
+      - ./dashboard/data:/app/dashboard/data
+      - ./sites:/app/sites
+    restart: unless-stopped

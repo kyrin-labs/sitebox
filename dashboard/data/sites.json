@@ -1,0 +1,32 @@
+{
+  "dashboard": {
+    "name": "SiteBox",
+    "port": 4445
+  },
+  "sites": [
+    {
+      "id": "example-notes",
+      "name": "Notes",
+      "description": "Markdown notes viewer — simple static site example",
+      "icon": "notebook-pen",
+      "iconColor": "#ff0000",
+      "port": 4451,
+      "category": "tools",
+      "url": "http://localhost:4451",
+      "path": "sites/example-notes",
+      "created": "2026-09-21"
+    },
+    {
+      "id": "example-clock",
+      "name": "Clock",
+      "description": "Live world clock — minimal static site example",
+      "icon": "clock",
+      "iconColor": "#f97316",
+      "port": 4452,
+      "category": "widgets",
+      "url": "http://localhost:4452",
+      "path": "sites/example-clock",
+      "created": "2026-09-21"
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notes — Example Site</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: #fafaf9; color: #1c1917; min-height: 100vh; display: flex; flex-direction: column; }
+    .container { max-width: 680px; margin: 0 auto; padding: 3rem 1.5rem; width: 100%; }
+    h1 { font-size: 1.8rem; font-weight: 700; margin-bottom: 0.25rem; }
+    .subtitle { color: #78716c; font-size: 0.9rem; margin-bottom: 2.5rem; }
+    .note-form { display: flex; gap: 0.5rem; margin-bottom: 2rem; }
+    .note-form input { flex: 1; padding: 0.6rem 1rem; border: 1.5px solid #d6d3d1; border-radius: 6px; font-size: 0.9rem; font-family: inherit; background: #fff; outline: none; }
+    .note-form input:focus { border-color: #a8a29e; }
+    .note-form button { padding: 0.6rem 1.2rem; background: #1c1917; color: #fff; border: none; border-radius: 6px; font-size: 0.85rem; font-weight: 500; cursor: pointer; font-family: inherit; }
+    .note-form button:hover { background: #44403c; }
+    .notes-list { display: flex; flex-direction: column; gap: 0.5rem; }
+    .note { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: #fff; border: 1px solid #e7e5e4; border-radius: 6px; }
+    .note__text { font-size: 0.9rem; }
+    .note__time { font-size: 0.75rem; color: #a8a29e; font-family: 'JetBrains Mono', monospace; }
+    .note__del { background: none; border: none; color: #d6d3d1; cursor: pointer; font-size: 1.1rem; padding: 0.25rem; }
+    .note__del:hover { color: #dc2626; }
+    .empty { text-align: center; padding: 3rem 0; color: #a8a29e; font-size: 0.9rem; }
+    .footer { margin-top: auto; padding: 1.5rem; text-align: center; font-size: 0.75rem; color: #a8a29e; border-top: 1px solid #e7e5e4; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Notes</h1>
+    <p class="subtitle">A simple notes app — example SiteBox site</p>
+
+    <form class="note-form" id="form">
+      <input type="text" id="input" placeholder="Write a note..." autocomplete="off">
+      <button type="submit">Add</button>
+    </form>
+
+    <div class="notes-list" id="list"></div>
+    <div class="empty" id="empty">No notes yet. Start writing.</div>
+  </div>
+
+  <div class="footer">Example site · SiteBox</div>
+
+  <script>
+    const STORAGE_KEY = 'sitebox-notes';
+    let notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+
+    function render() {
+      const list = document.getElementById('list');
+      const empty = document.getElementById('empty');
+      if (notes.length === 0) { list.innerHTML = ''; empty.style.display = 'block'; return; }
+      empty.style.display = 'none';
+      list.innerHTML = notes.map((n, i) => `
+        <div class="note">
+          <span class="note__text">${esc(n.text)}</span>
+          <span class="note__time">${n.time}</span>
+          <button class="note__del" onclick="del(${i})">&times;</button>
+        </div>
+      `).join('');
+    }
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    function del(i) { notes.splice(i, 1); localStorage.setItem(STORAGE_KEY, JSON.stringify(notes)); render(); }
+
+    document.getElementById('form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = document.getElementById('input');
+      const text = input.value.trim();
+      if (!text) return;
+      const now = new Date();
+      notes.unshift({ text, time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+      input.value = '';
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clock — Example Site</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'JetBrains Mono', monospace; background: #0c0a09; color: #fafaf9; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .clock { font-size: clamp(3rem, 12vw, 8rem); font-weight: 700; letter-spacing: -0.02em; color: #f97316; }
+    .date { font-size: clamp(0.9rem, 2vw, 1.2rem); color: #78716c; margin-top: 0.5rem; font-weight: 400; }
+    .tz { font-size: 0.8rem; color: #44403c; margin-top: 2rem; }
+    .label { position: fixed; bottom: 1.5rem; font-size: 0.7rem; color: #44403c; font-family: 'Inter', sans-serif; }
+  </style>
+</head>
+<body>
+  <div class="clock" id="clock">--:--:--</div>
+  <div class="date" id="date"></div>
+  <div class="tz" id="tz"></div>
+  <div class="label">Example site · SiteBox</div>
+  <script>
+    function tick() {
+      const now = new Date();
+      document.getElementById('clock').textContent = now.toLocaleTimeString('en-GB');
+      document.getElementById('date').textContent = now.toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      document.getElementById('tz').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    }
+    tick();
+    setInterval(tick, 1000);
+  </script>
+</body>
+</html>
