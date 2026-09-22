@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="SiteBox">
+  <title>SiteBox</title>
+  <!-- Layers in 3D: a box of sites; the top layer is the live one, and it is a window. -->
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 15.9 12 20.5 12 23.1 4 18.5Z"/>
+    <path d="M20 15.9 12 20.5 12 23.1 20 18.5Z"/>
+    <path d="M12 11.3 20 15.9 12 20.5 4 15.9Z"/>
+    <path d="M4 10.7 12 15.3 12 17.9 4 13.3Z"/>
+    <path d="M20 10.7 12 15.3 12 17.9 20 13.3Z"/>
+    <path d="M12 6.1 20 10.7 12 15.3 4 10.7Z"/>
+    <path d="M4 5.5 12 10.1 12 12.7 4 8.1Z" fill="var(--logo-accent, #0969da)"/>
+    <path d="M20 5.5 12 10.1 12 12.7 20 8.1Z" fill="var(--logo-accent, #0969da)"/>
+    <path d="M12 0.9 20 5.5 12 10.1 4 5.5Z" fill="var(--logo-accent, #0969da)"/>
+  </g>
+  <path d="M12 3.11 16.16 5.5 12 7.89 7.84 5.5Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+  <circle cx="10.13" cy="5.5" r="1.1" fill="currentColor"/>
+</svg>
