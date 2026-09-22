@@ -62,6 +62,50 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function isAlive(child) { return !!child && child.exitCode === null && child.signalCode === null; }
 function siteFile(site) { return path.join(ROOT, site.path || '', 'server.js'); }
 
+/* ── Site favicon detection ──
+ * The dashboard prefers a site's real favicon over its configured Lucide icon.
+ * Detection is filesystem-based and runtime-only: it never rewrites sites.json
+ * (browsing must not dirty config) and it works while the site is stopped.
+ * Order:
+ *   1. the <link rel="icon"> declared in public/index.html
+ *   2. the conventional favicon filenames at the root of public/
+ * Only local files are eligible. A hotlinked or data-URI favicon is ignored on
+ * purpose: the dashboard must render offline and never depend on a third party.
+ */
+const FAVICON_FILES = [
+  'favicon.svg', 'favicon.png', 'favicon.ico', 'favicon.webp',
+  'icon.svg', 'icon.png', 'apple-touch-icon.png',
+];
+
+// Resolve `rel` inside `baseDir`, refusing anything that escapes it.
+function resolveInside(baseDir, rel) {
+  const base = path.resolve(baseDir);
+  const fp = path.resolve(base, String(rel).replace(/^\/+/, ''));
+  if (fp !== base && !fp.startsWith(base + path.sep)) return null;
+  try { return fs.statSync(fp).isFile() ? fp : null; } catch { return null; }
+}
+
+function detectFavicon(site) {
+  const pub = path.join(ROOT, site.path || `sites/${site.id}`, 'public');
+  const indexPath = path.join(pub, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    let html = '';
+    try { html = fs.readFileSync(indexPath, 'utf-8'); } catch { html = ''; }
+    for (const tag of html.match(/<link\b[^>]*>/gi) || []) {
+      if (!/\brel\s*=\s*["']?[^"'>]*\bicon/i.test(tag)) continue;
+      const href = (tag.match(/\bhref\s*=\s*["']([^"']*)["']/i) || [])[1];
+      if (!href || /^(?:https?:)?\/\//i.test(href) || href.startsWith('data:')) continue;
+      const fp = resolveInside(pub, href.split(/[?#]/)[0]);
+      if (fp) return fp;
+    }
+  }
+  for (const name of FAVICON_FILES) {
+    const fp = resolveInside(pub, name);
+    if (fp) return fp;
+  }
+  return null;
+}
+
 /* ── Logs (ring buffer, last 500 lines per site) ── */
 function appendLog(id, stream, chunk) {
   const buf = logs.get(id) || [];
@@ -275,7 +319,8 @@ async function restartSite(site) {
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
 };
 
 const server = http.createServer(async (req, res) => {
@@ -296,12 +341,19 @@ const server = http.createServer(async (req, res) => {
     });
 
     if (p === '/api/sites' && m === 'GET')
-      return send(res, 200, cfg.sites.map(s => ({
-        ...s,
-        _running: isAlive(running.get(s.id)),
-        _stale: !fs.existsSync(siteFile(s)),
-        _logLines: (logs.get(s.id) || []).length,
-      })));
+      return send(res, 200, cfg.sites.map(s => {
+        const fav = detectFavicon(s);
+        return {
+          ...s,
+          _running: isAlive(running.get(s.id)),
+          _stale: !fs.existsSync(siteFile(s)),
+          _logLines: (logs.get(s.id) || []).length,
+          // Runtime-only: a detected favicon overrides the configured icon and is
+          // never written back to sites.json, so removing the file restores it.
+          _favicon: fav ? `/api/sites/${encodeURIComponent(s.id)}/icon` : null,
+          _faviconSource: fav ? path.relative(ROOT, fav).replace(/\\/g, '/') : null,
+        };
+      }));
 
     if (p === '/api/sites' && m === 'POST') {
       const body = await parseBody(req);
@@ -415,6 +467,24 @@ const server = http.createServer(async (req, res) => {
     if (hl && m === 'GET') {
       const s = cfg.sites.find(x => x.id === hl[1]);
       return s ? send(res, 200, await checkUrl(s.url)) : send(res, 404, { error: 'not found' });
+    }
+    // GET /api/sites/:id/icon — serve the auto-detected favicon from disk.
+    // Served through the dashboard so it works while the site is stopped and
+    // never crosses origins; ETag + no-cache so a changed file is picked up.
+    const iconM = p.match(/^\/api\/sites\/([^/]+)\/icon$/);
+    if (iconM && m === 'GET') {
+      const s = cfg.sites.find(x => x.id === iconM[1]);
+      if (!s) return send(res, 404, { error: 'not found' });
+      const fp = detectFavicon(s);
+      if (!fp) return send(res, 404, { error: 'no favicon detected' });
+      const stat = fs.statSync(fp);
+      const etag = `"${stat.size.toString(16)}-${stat.mtimeMs.toString(16)}"`;
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('ETag', etag);
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304); return res.end(); }
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(fp).toLowerCase()] || 'application/octet-stream' });
+      return fs.createReadStream(fp).pipe(res);
     }
     return send(res, 404, { error: 'not found' });
   }

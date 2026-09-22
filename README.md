@@ -61,6 +61,7 @@ sitebox/
 - **Auto-detect** — drop a site folder in `sites/` and it appears
 - **Light/Dark theme** — toggle in header
 - **Custom icon colors** — per-site icon color
+- **Auto-detected favicons** — a site's real favicon replaces its Lucide icon (the manual icon fields lock while it exists)
 - **Search & filter** — by name, description, or category
 
 ## Adding a Site
@@ -184,6 +185,7 @@ http.createServer((req, res) => {
 | `POST` | `/api/sites/:id/stop` | Stop a site process |
 | `POST` | `/api/sites/:id/restart` | Stop + start |
 | `GET` | `/api/sites/:id/health` | Check if site is reachable |
+| `GET` | `/api/sites/:id/icon` | Auto-detected site favicon (404 when none) |
 | `GET` | `/api/sites/:id/logs` | Captured output (`?lines=1..500`) |
 | `DELETE` | `/api/sites/:id/logs` | Clear captured output |
 | `GET` | `/api/ports/check` | Port availability (`?port=4500`) |
@@ -226,8 +228,16 @@ git checkout -- dashboard/data/sites.json
 
 ## Icon Names
 
-The dashboard renders these icons; any other name falls back to `globe`
-(source of truth: `dashboard/public/js/main.js`):
+The dashboard first looks for a favicon the site actually ships: the
+`<link rel="icon">` in `public/index.html`, then conventional files
+(`public/favicon.svg`, `favicon.png`, `favicon.ico`, …). When one is found it is
+served at `/api/sites/:id/icon` and shown instead of the configured icon, and
+the icon/color fields in the edit form are locked. A hotlinked or `data:`
+favicon is ignored — only local files count. Remove the favicon file to return
+to the Lucide icon; the stored `icon`/`iconColor` are never rewritten.
+
+With no favicon, the dashboard renders these icons; any other name falls back to
+`globe` (source of truth: `dashboard/public/js/main.js`):
 
 `globe` · `book` · `clock` · `code` · `camera` · `gamepad` · `music` · `settings` · `notebook` · `notebook-pen` · `database` · `star`
 

@@ -82,6 +82,9 @@ decided. Use one only if the subject genuinely argues for it.
 Every SiteBox site ships `public/favicon.svg`, referenced from `<head>`. Derive it from the mark:
 keep the recognizable silhouette, drop whatever cannot survive 16 px, and check it at 16/32 px on
 both light and dark browser chrome. A missing favicon is a guaranteed 404 — see `sitebox-create`.
+It is also the site's identity in the dashboard: the dashboard auto-detects `public/favicon.svg`
+and shows it on the site card instead of the configured Lucide icon, so a missing favicon also
+means a generic icon in the launcher.
 
 ## Pass criteria
 

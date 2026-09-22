@@ -119,8 +119,12 @@ function render() {
   empty.style.display = 'none';
 
   grid.innerHTML = filtered.map((s) => {
-    const iconColor = s.iconColor || '';
+    const hasFavicon = !!s._favicon;
+    const iconColor = hasFavicon ? '' : (s.iconColor || '');
     const iconStyle = iconColor ? `style="--icon-color: ${esc(iconColor)}"` : '';
+    const iconHtml = hasFavicon
+      ? `<img src="${esc(s._favicon)}" alt="" loading="lazy">`
+      : getIcon(s.icon);
     const openUrl = (s.url || '').replace(/localhost|127\.0\.0\.1/, window.location.hostname);
     return `
     <div class="site-card" data-id="${s.id}" draggable="true">
@@ -128,7 +132,7 @@ function render() {
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>
         </div>
         <div class="site-card__header">
-        <div class="site-card__icon" ${iconStyle}>${getIcon(s.icon)}</div>
+        <div class="site-card__icon" ${iconStyle}>${iconHtml}</div>
         <div class="site-card__info">
           <div class="site-card__name">${esc(s.name)}</div>
           <div class="site-card__desc" title="${esc(s.description || '')}">${esc(s.description || '—')}</div>
@@ -256,7 +260,23 @@ function editSite(id) {
   if (colorInput) colorInput.value = s.iconColor || '#58a6ff';
   if (colorText) colorText.value = s.iconColor || '#58a6ff';
   document.getElementById('form-id').disabled = true;
+  // A detected favicon wins over the configured icon. Lock the fields so the
+  // stored values cannot silently diverge from what the card renders; removing
+  // the favicon file unlocks them again.
+  setIconFieldsLocked(!!s._favicon, s._faviconSource);
   document.getElementById('modal').style.display = 'flex';
+}
+
+function setIconFieldsLocked(locked, source) {
+  const icon = document.getElementById('form-icon');
+  const color = document.getElementById('form-icon-color');
+  const colorText = document.getElementById('form-icon-color-text');
+  const note = document.getElementById('form-icon-note');
+  for (const el of [icon, color, colorText]) if (el) el.disabled = locked;
+  if (note) {
+    note.style.display = locked ? 'block' : 'none';
+    if (locked) note.textContent = `Icon auto-detected from ${source || "this site's favicon"} — remove the favicon to set one manually.`;
+  }
 }
 
 /* ── Icon color input sync ── */
@@ -272,6 +292,7 @@ document.getElementById('btn-add').addEventListener('click', () => {
   document.getElementById('modal-title').textContent = 'Add Site';
   document.getElementById('site-form').reset();
   document.getElementById('form-id').disabled = false;
+  setIconFieldsLocked(false);
   document.getElementById('port-check-result').style.display = 'none';
   document.getElementById('modal').style.display = 'flex';
 });

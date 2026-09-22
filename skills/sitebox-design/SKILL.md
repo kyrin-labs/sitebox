@@ -3,7 +3,7 @@ name: sitebox-design
 description: Design system and visual quality guide for SiteBox sites — color, typography, layout, spacing, components, accessibility, and copy. Use when planning or reviewing the look of a SiteBox site; designing a logo/brand mark and favicon; auditing accessibility and UX; running the humanizer/deslop copy passes; improving a design during a redesign; or when a page renders half-styled after a CSS error, an image is cropped, squashed or stretched, a box has the wrong shape, content stops short of the edge, columns are squeezed, or one theme falls back to the other. Defines the quality floor every SiteBox site must meet. Not for lifecycle, ports or logs (sitebox-config), and not for fetching real content (sitebox-data).
 metadata:
   author: sitebox
-  version: "3.0.0"
+  version: "3.1.0"
   updated: "2026-09-22"
 ---
 

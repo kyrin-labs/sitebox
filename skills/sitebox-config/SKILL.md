@@ -3,7 +3,7 @@ name: sitebox-config
 description: Manage the SiteBox lifecycle — add, update, start, stop, restart, verify, debug, and remove sites via the dashboard API. Use when registering or deleting a site, choosing or validating a port, starting a site and checking it actually listens, reading a site's logs, investigating a site that won't start or shows a blank or half-styled page, handling stale entries after moving folders, keeping the dashboard and sites alive across a reboot, or when someone asks about editing dashboard/data/sites.json (never commit it). Not for building or designing a site — that is sitebox-create, sitebox-design, sitebox-data and sitebox-verify.
 metadata:
   author: sitebox
-  version: "3.0.0"
+  version: "3.1.0"
   updated: "2026-09-22"
 ---
 
@@ -188,7 +188,22 @@ Auto-detect never removes entries — it only adds missing folders. The file is 
 
 ## Icons
 
-Available Lucide-style icons in the dashboard: `globe` `book` `clock` `code` `camera` `gamepad` `music` `settings` `notebook` `notebook-pen` `database` `star`. Unknown names fall back to `globe` silently, so check the list. Source of truth: `dashboard/public/js/main.js` (`ICONS`).
+The dashboard prefers a site's **real favicon** over its configured Lucide icon. Detection is
+filesystem-based, so it works while the site is stopped, and it is runtime-only — it never rewrites
+`sites.json`. It looks in the site's `public/`, in order:
+
+1. the `<link rel="icon">` declared in `public/index.html` — local (relative or root-relative)
+   href only; a query string is stripped, and `http(s):` or `data:` hrefs are ignored;
+2. the conventional filenames `favicon.svg`, `favicon.png`, `favicon.ico`, `favicon.webp`,
+   `icon.svg`, `icon.png`, `apple-touch-icon.png`.
+
+When one is found, `GET /api/sites` adds `_favicon` (the URL to fetch it) and `_faviconSource`
+(the file path, for display); the card shows the image and the edit form locks its icon and color
+fields. Remove the favicon and the Lucide icon returns — the stored icon and iconColor values are
+never touched. `GET /api/sites/:id/icon` serves the file (with ETag revalidation) and returns HTTP 404
+when there is none.
+
+With no favicon, the configured icon is used. Available Lucide-style icons in the dashboard: `globe` `book` `clock` `code` `camera` `gamepad` `music` `settings` `notebook` `notebook-pen` `database` `star`. Unknown names fall back to `globe` silently, so check the list. Source of truth: `dashboard/public/js/main.js` (`ICONS`).
 
 ## Site object fields
 
@@ -204,6 +219,10 @@ Available Lucide-style icons in the dashboard: `globe` `book` `clock` `code` `ca
 | `url` | string | no | Full URL; defaults to `http://localhost:<port>` |
 | `path` | string | no | Relative to SiteBox root; defaults to `sites/<id>` |
 | `created` | string | no | ISO date, auto-set |
+
+`GET /api/sites` also adds read-only `_running`, `_stale`, `_logLines`, and the favicon fields
+`_favicon` / `_faviconSource` (see [Icons](#icons)); they are computed per request and are not
+accepted by `POST /api/sites`.
 
 ## Never do this: commit `dashboard/data/sites.json`
 
@@ -223,6 +242,7 @@ Available Lucide-style icons in the dashboard: `globe` `book` `clock` `code` `ca
 | `POST` | `/api/sites/:id/stop` | Stop process |
 | `POST` | `/api/sites/:id/restart` | Stop + start |
 | `GET` | `/api/sites/:id/health` | HTTP reachability |
+| `GET` | `/api/sites/:id/icon` | Auto-detected favicon (404 when none) |
 | `GET` | `/api/sites/:id/logs` | Captured output (`?lines=1..500`) |
 | `DELETE` | `/api/sites/:id/logs` | Clear captured output |
 | `GET` | `/api/ports/check` | Port availability (`?port=N`) |

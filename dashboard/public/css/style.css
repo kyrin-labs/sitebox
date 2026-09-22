@@ -134,6 +134,9 @@ a:hover { text-decoration: underline; }
   padding: 1.25rem;
   transition: border-color .15s, box-shadow .15s;
   display: flex; flex-direction: column; gap: 0.75rem; position: relative;
+  /* A grid item defaults to min-width:auto, so the nowrap description would set
+     the track's min-content width and overflow narrow viewports. Allow shrinking. */
+  min-width: 0;
 }
 .site-card:hover {
   border-color: var(--border);
@@ -165,7 +168,8 @@ a:hover { text-decoration: underline; }
   flex-shrink: 0;
 }
 .site-card__icon svg { width: 20px; height: 20px; color: var(--icon-color, var(--accent)); }
-.site-card__info { flex: 1; min-width: 0; }
+.site-card__icon img { width: 24px; height: 24px; object-fit: contain; border-radius: 4px; display: block; }
+.site-card__info { flex: 1; min-width: 0; overflow: hidden; }
 .site-card__name { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.15rem; }
 .site-card__desc {
   font-size: 0.8rem; color: var(--text-2); line-height: 1.4;
@@ -263,6 +267,13 @@ a:hover { text-decoration: underline; }
 .field input::placeholder,
 .field textarea::placeholder { color: var(--text-3); }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.field--note {
+  font-size: 0.75rem; color: var(--text-2); line-height: 1.4;
+  background: var(--surface2); border: 1px solid var(--border-l);
+  border-radius: var(--radius-sm); padding: 0.5rem 0.7rem;
+}
+.field input:disabled { opacity: .55; cursor: not-allowed; }
+.color-input:has(input:disabled) { opacity: .55; }
 
 /* ── Color Input ── */
 .color-input {
