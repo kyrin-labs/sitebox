@@ -29,6 +29,8 @@ metadata:
 
 Other agents may also read `license` and `compatibility`; they are optional. Unknown fields are ignored everywhere, so keep metadata in `metadata:`.
 
+**If a value contains `: ` (a colon followed by a space), wrap the whole value in double quotes.** Unquoted, YAML reads the second colon as a nested mapping and the harness drops the skill at startup with `Nested mappings are not allowed in compact mappings`. YAML also silently truncates an unquoted value at ` #`, and rejects one that starts with `@`, `` ` ``, `*`, `&`, or `!`. `description: "…"` is always safe, and the checker enforces all of these.
+
 ### The description is the trigger
 
 Agents choose skills by reading only the name and description. A weak description means the skill never loads. Write one long sentence with: what it does, then explicit triggers — including casual phrasings and Thai/English keywords users actually type.

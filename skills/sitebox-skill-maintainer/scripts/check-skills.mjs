@@ -49,6 +49,43 @@ function parseFrontmatter(src) {
   return fm;
 }
 
+/* ── Frontmatter must parse as real YAML, not just look like key: value ──
+   Pi (and every other harness) parses the frontmatter with a YAML parser. The
+   regex-based parseFrontmatter above is deliberately lenient, so it silently
+   accepts values a real parser rejects — and a skill whose frontmatter fails to
+   parse is dropped at startup, which is how `sitebox-create` shipped broken.
+   These are the failure modes a hand-written description actually hits:
+     description: Covers the loop: brief, design   → nested mapping, whole skill dies
+     description: ends with a colon:               → nested mapping, whole skill dies
+     description: five things # not a comment      → YAML drops "# not a comment"
+     description: "unterminated                     → scanner error
+   Quote the value (`description: "…: …"`) and it is a plain string again. */
+function checkFrontmatterYaml(src, dir) {
+  if (!src.startsWith('---')) return;
+  const end = src.indexOf('\n---', 3);
+  if (end === -1) return;
+  for (const line of src.slice(3, end).split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z0-9_-]+):[ \t]+(.*)$/);
+    if (!m) continue;
+    const [, key, value] = m;
+    if (value === '') continue; // block mapping (metadata:, etc.)
+    const doubleQuoted = value.startsWith('"') && value.endsWith('"') && value.length > 1;
+    const singleQuoted = value.startsWith("'") && value.endsWith("'") && value.length > 1;
+    const quoted = doubleQuoted || singleQuoted;
+    if (!quoted && (value[0] === '"' || value[0] === "'")) {
+      err(`skills/${dir}/SKILL.md frontmatter "${key}" has an unterminated quote — the YAML will not parse`);
+    } else if (quoted) {
+      continue;
+    } else if (/:(\s|$)/.test(value)) {
+      err(`skills/${dir}/SKILL.md frontmatter "${key}" is an unquoted value containing ": " — YAML reads it as a nested mapping and the skill fails to load. Wrap the value in double quotes.`);
+    } else if (/\s#/.test(value)) {
+      err(`skills/${dir}/SKILL.md frontmatter "${key}" has an unquoted " #" — YAML treats the rest as a comment and silently drops it. Quote the value.`);
+    } else if (/^[-?:,[\]{}&*!%]/.test(value) && !/^-?\d/.test(value)) {
+      err(`skills/${dir}/SKILL.md frontmatter "${key}" starts with a reserved YAML character — quote the value.`);
+    }
+  }
+}
+
 // Returns the body text under a `## Heading` whose title matches `headingRe`.
 function sectionBody(src, headingRe) {
   const lines = src.split(/\r?\n/);
@@ -97,6 +134,7 @@ for (const dir of skillDirs) {
   const fm = parseFrontmatter(src);
 
   if (!fm) { err(`skills/${dir}/SKILL.md has no YAML frontmatter`); continue; }
+  checkFrontmatterYaml(src, dir);
   if (!fm.name) err(`skills/${dir}/SKILL.md frontmatter is missing "name"`);
   else if (fm.name !== dir) err(`skills/${dir}/SKILL.md name "${fm.name}" does not match folder "${dir}"`);
   else if (!NAME_RE.test(fm.name)) err(`skill name "${fm.name}" is not lowercase kebab-case`);
@@ -204,6 +242,16 @@ if (process.argv.includes('--self-test')) {
   rmSync(probe, { recursive: true, force: true });
   console.log(caught ? '  control: the broken-link check fires' : '  CONTROL MISSED: broken-link check is dead');
   if (!caught) process.exitCode = 1;
+
+  // The frontmatter-YAML check had a false negative once (an unquoted colon in
+  // sitebox-create), so it gets a control too.
+  const yamlProbe = '---\nname: __probe__\ndescription: fires a guard: nested mapping\n---\n';
+  const yamlBefore = errors.length;
+  checkFrontmatterYaml(yamlProbe, '__probe__');
+  const yamlCaught = errors.length > yamlBefore;
+  errors.length = yamlBefore;
+  console.log(yamlCaught ? '  control: the frontmatter-YAML check fires' : '  CONTROL MISSED: frontmatter-YAML check is dead');
+  if (!yamlCaught) process.exitCode = 1;
 }
 
 /* ── Report ── */
