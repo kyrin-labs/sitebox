@@ -2,8 +2,21 @@ services:
   sitebox:
     build: .
     container_name: sitebox
+    # Host networking so site ports (4500-4899) are reachable on the host exactly
+    # as the dashboard advertises them.
     network_mode: host
+    # Reap the site processes the dashboard spawns; without an init, node's PID 1
+    # does not reap orphans and they accumulate as zombies.
+    init: true
     volumes:
+      # Runtime config and site folders are mounted from the host, so the image
+      # stays code-only and `docker compose up -d --build` picks up source edits.
       - ./dashboard/data:/app/dashboard/data
       - ./sites:/app/sites
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4445/api/sites',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

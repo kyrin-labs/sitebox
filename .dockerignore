@@ -1,0 +1,12 @@
+# Keep the build context small; the runtime only needs dashboard/ and sites/.
+.git
+.githooks
+node_modules
+**/node_modules
+*.log
+dashboard/data/*.tmp
+skills
+skills-lock.json
+CONTRIBUTING.md
+README.md
+LICENSE
