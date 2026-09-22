@@ -1,6 +1,6 @@
 ---
 name: sitebox-create
-description: Build, verify, redesign, and debug static sites for SiteBox. Use when creating a new site under sites/, scaffolding a site's server.js and public/ files, redesigning or improving an existing SiteBox site, registering a site in the dashboard, or when a SiteBox site fails to start, shows a blank page, renders half-styled, 404s, serves a stale or wrong image, has images missing on the server after a partial deploy, or needs a quality pass (performance, accessibility, copy). Covers the full loop: brief, design, build, register, start, verify, deploy, debug. Not for editing the SiteBox skills themselves (sitebox-skill-maintainer), and not for judging a design on its own (sitebox-design).
+description: "Build, verify, redesign, and debug static sites for SiteBox. Use when creating a new site under sites/, scaffolding a site's server.js and public/ files, redesigning or improving an existing SiteBox site, registering a site in the dashboard, or when a SiteBox site fails to start, shows a blank page, renders half-styled, 404s, serves a stale or wrong image, has images missing on the server after a partial deploy, or needs a quality pass (performance, accessibility, copy). Covers the full loop: brief, design, build, register, start, verify, deploy, debug. Not for editing the SiteBox skills themselves (sitebox-skill-maintainer), and not for judging a design on its own (sitebox-design)."
 metadata:
   author: sitebox
   version: "3.0.0"
