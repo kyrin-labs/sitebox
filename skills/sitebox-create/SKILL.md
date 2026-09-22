@@ -1,9 +1,9 @@
 ---
 name: sitebox-create
-description: Build, verify, redesign, and debug static sites for SiteBox. Use when creating a new site under sites/, scaffolding a site's server.js and public/ files, redesigning or improving an existing SiteBox site, registering a site in the dashboard, or when a SiteBox site fails to start, shows a blank page, 404s, or needs a quality pass (performance, accessibility, copy). Covers the full loop: brief, design, build, register, start, verify, debug.
+description: Build, verify, redesign, and debug static sites for SiteBox. Use when creating a new site under sites/, scaffolding a site's server.js and public/ files, redesigning or improving an existing SiteBox site, registering a site in the dashboard, or when a SiteBox site fails to start, shows a blank page, renders half-styled, 404s, or needs a quality pass (performance, accessibility, copy). Covers the full loop: brief, design, build, register, start, verify, debug.
 metadata:
   author: sitebox
-  version: "2.0.0"
+  version: "2.1.0"
   updated: "2026-09-22"
 ---
 
@@ -44,9 +44,10 @@ If the brief is silent on something, propose a concrete choice and say why. Do n
 Load `sitebox-design` and produce a short design plan there:
 1. Token system: color (4–6 named hex), type (max 2 families), spacing scale.
 2. Layout concept in one sentence, left-aligned unless the brief says otherwise.
-3. Review the plan against the brief; revise anything that reads like the default you'd produce for any similar page. Say what you changed and why.
+3. Mark: the logo/brand-mark idea in one sentence, plus how it becomes `favicon.svg` (see `sitebox-design` → `references/brand-mark.md`).
+4. Review the plan against the brief; revise anything that reads like the default you'd produce for any similar page. Say what you changed and why.
 
-Only then write code. The plan is the contract; deviations during build should be deliberate.
+Only then write code. The plan is the contract; deviations during build should be deliberate. If you explore alternatives in a scratch page, delete that page before shipping — concept previews are never part of the site.
 
 ### 4. Plan the id and port
 
@@ -134,6 +135,14 @@ Replace `PORT_NUMBER` with the planned port. Keep `process.env.PORT` — the das
 ```
 
 - **Always create `public/favicon.svg`.** The head references it and a missing favicon is a guaranteed 404.
+- **Icons are inline SVG from one set.** Put the `<path>` in the markup (Lucide geometry is the house style). Never load an icon webfont or icon-set CSS from a CDN — it is render-blocking, breaks offline, and violates the zero-dependency rule.
+- **Never hotlink images.** Download external images into `public/` and serve them from there; third-party hosts block referrer/localhost requests, so the image 404s on the running site even when it loads in your editor preview.
+- **Balance your braces.** `<style>` needs a `{` for every `}`. One missing `}` silently discards every rule after it and the page ships half-styled with no error. Check before verifying:
+
+```bash
+node -e "const s=require('fs').readFileSync(process.argv[1],'utf8');const o=(s.match(/{/g)||[]).length,c=(s.match(/}/g)||[]).length;console.log(o===c?'CSS braces balanced':'UNBALANCED: '+o+' { vs '+c+' }')" sites/<id>/public/index.html
+```
+
 - Fonts: if the site must work offline, self-host `.woff2` files in `public/fonts/` — Google Fonts requires network. See `references/performance.md`.
 - Follow the performance budgets in `references/performance.md` (font count, image dimensions, lazy loading, no render-blocking JS).
 - Content and visual quality: follow `sitebox-design` and its `references/audit.md`.
@@ -170,8 +179,9 @@ Run in this order, fix, then re-verify:
 2. `references/performance.md` — budgets and checks.
 3. `sitebox-design` → `references/writing.md` — copy passes (again, after edits).
 4. Final `start` → `health` → logs clean (no stack traces).
+5. Static self-check: CSS braces balanced (command in step 7), no icon webfont/CDN `<link>`, no `src="https://…"` images.
 
-A site is done when all four pass, not when it renders once.
+A site is done when all five pass, not when it renders once.
 
 ---
 
@@ -203,6 +213,10 @@ SiteBox is local and zero-dependency; almost every failure is one of a handful. 
 | CSS/asset 404 | Path case sensitivity and missing files; every referenced asset must exist in `public/` |
 | Fonts missing / layout shifts offline | Google Fonts unreachable — self-host woff2, see `references/performance.md` |
 | Logs are empty | Only processes started by the dashboard capture logs; start via API first |
+| Page partly unstyled — styles stop after a point | Unclosed `}` in `<style>`; every rule after it is discarded. Count braces (step 7), don't eyeball |
+| Columns squeezed, or the page scrolls sideways | Container `max-width` is smaller than the column sum, or a flex column lacks `min-width: 0` |
+| Icons render as blank boxes or missing glyphs | An icon webfont or CDN icon set failed to load — inline the SVG instead |
+| Images work in the editor but 404 on the running site | The image is hotlinked; download it into `public/` and reference the local path |
 
 Read `GET /api/sites/:id/logs?lines=200` before guessing. The last `[err]` line is usually the answer.
 
@@ -211,7 +225,8 @@ Read `GET /api/sites/:id/logs?lines=200` before guessing. The last `[err]` line 
 ## Rules
 
 - Each site = its own directory: `sites/<id>/server.js` + `sites/<id>/public/`.
-- Self-contained: no shared deps, no build step, vanilla HTML/CSS/JS.
+- Self-contained: no shared deps, no build step, vanilla HTML/CSS/JS — and no external runtime dependencies (no CDN scripts, no icon webfonts, no hotlinked images). Vendor everything into `public/`.
+- Every `<style>` block is syntactically valid (balanced braces) before you verify.
 - `process.env.PORT` with fallback, `0.0.0.0` binding.
 - Never commit new site folders (`.gitignore` blocks `sites/*` except the examples).
 - Never commit changes to `dashboard/data/sites.json` — it is runtime state and must keep only `example-notes` and `example-clock` in git. See `sitebox-config`.
@@ -220,5 +235,6 @@ Read `GET /api/sites/:id/logs?lines=200` before guessing. The last `[err]` line 
 ## Reference files
 
 - `references/performance.md` — budgets, font/image strategy, verification commands
+- `sitebox-design` → `references/brand-mark.md` — logo/brand-mark workflow, SVG rules, favicon
 - `sitebox-config` → `references/troubleshooting.md` — full failure playbook and log interpretation
 - `sitebox-design` → `references/audit.md`, `references/writing.md` — quality gate details

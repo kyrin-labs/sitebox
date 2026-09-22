@@ -17,6 +17,22 @@ Example finding:
 public/index.html:42 — [major] nav links have no focus style — add :focus-visible outline using --accent
 ```
 
+## CSS & build health (check first — a parse error invalidates everything below)
+
+A CSS parse error makes the later checks lie: the markup is right, the rules are right, and the page
+still renders half-styled.
+
+- [ ] **Braces balance.** Count `{` and `}` in every `<style>` block; they must be equal. One missing
+  `}` discards *every* rule after it, and the browser reports nothing.
+  `node -e "const s=require('fs').readFileSync(process.argv[1],'utf8');const o=(s.match(/{/g)||[]).length,c=(s.match(/}/g)||[]).length;console.log(o===c?'balanced':'UNBALANCED '+o+'/'+c)" sites/<id>/public/index.html`
+- [ ] **No orphan declarations.** A stray property list ending in `}` at the top level (e.g.
+  `-webkit-font-smoothing:antialiased}` with no selector) is a leftover from a botched fix — still a
+  parse error, still remove it.
+- [ ] Media queries (`prefers-reduced-motion`, breakpoints) are individually opened and closed.
+- [ ] **No external runtime dependencies.** No `<script src="https://…">`, no icon-webfont or
+  `lucide-static` CSS link, no `src="https://…"` image. Icons are inline SVG; images live in
+  `public/`. Hotlinked images 404 at runtime because the host blocks referrers.
+
 ## Accessibility checks
 
 ### Structure
@@ -65,10 +81,18 @@ public/index.html:42 — [major] nav links have no focus style — add :focus-vi
 - [ ] Empty states invite action (what to do next), error states say what happened and how to fix it.
 - [ ] Loading states exist for anything async (even on localhost, be honest).
 - [ ] Forms validate inline; submitting invalid data never loses the user's input.
-- [ ] Dark mode (if offered): both themes pass contrast; toggle state persists; no hardcoded colors outside tokens.
+- [ ] Dark mode (if offered): **every token** is defined in every theme — background, surface, text, muted, border, hover, input, overlay; a missing token falls back and ships a half-styled page. Both themes pass contrast; the toggle state persists; no hardcoded colors outside tokens.
 - [ ] Dates/numbers use the user's locale (`Intl.DateTimeFormat`, `Intl.NumberFormat`).
 - [ ] 404 behavior is deliberate: the server returns 404 for missing assets, and multi-page sites link back home.
 - [ ] No layout shift on load: images have dimensions, fonts have fallbacks, no late-injected banners.
+
+## Brand mark
+
+- [ ] The mark is derived from the subject, not a default circle/monogram.
+- [ ] Legible at 16 px (favicon size) and works on light *and* dark backgrounds (`currentColor`).
+- [ ] Inline SVG; no webfont-dependent `<text>` (outline the type, or use a metric-safe system stack).
+- [ ] `public/favicon.svg` exists, is referenced from `<head>`, and returns 200.
+- [ ] Concept/scratch preview pages (`*-concepts.html`) are deleted, not shipped.
 
 ## Performance cross-check
 

@@ -3,7 +3,7 @@ name: sitebox-skill-maintainer
 description: Create, audit, and update the SiteBox skills themselves. Use when editing any skill under skills/, adding a new SiteBox skill, checking skills against the real dashboard API and icons, resolving drift between skills/README/server behavior, or bumping skill versions after a feature change. Not for building sites — use sitebox-create, sitebox-design, and sitebox-config for that.
 metadata:
   author: sitebox
-  version: "1.0.0"
+  version: "1.1.0"
   updated: "2026-09-22"
 ---
 
@@ -62,6 +62,7 @@ If a fact needs changing, change every mirror in the same edit. The checker belo
 - **`dashboard/data/sites.json` is runtime state.** Never commit changes to it; the repo copy keeps only `example-notes` and `example-clock`. The checker warns when runtime entries are present.
 - **Keep each `SKILL.md` under 500 lines.** Detail goes in `references/`. The description field is the trigger — it must say *when* to use the skill, not just what it is.
 - **Explain the why.** Instructions that carry their reasoning survive updates better than bare MUSTs. Match the tone of the existing skills.
+- **Verify the artifact, not the report.** A change is done when you have re-read the file and re-run the checker — not when the changelog says "fixed". Repo experience: a CSS fix was declared complete while an orphan declaration was still sitting in the file, and a summary table listed files that did not match the folder. Residual damage is the most common form of a "finished" edit, so look for the stray leftover (an orphan rule, a stale row, a missing file), not only the intended result.
 - **Verify with a real prompt.** After a substantive change, run a realistic task ("add a small site…") and watch whether the skill triggers and the steps hold; fix what the run reveals.
 
 ## Reference files

@@ -19,6 +19,9 @@ Started but health offline?
 Page loads (200) but broken?
 ├─ blank                      → JS error, wrong file, or content never written
 ├─ styles missing             → wrong path/case, MIME mismatch, file not in public/
+├─ styles stop after a point  → unclosed `}` in <style>; every rule after it is discarded
+├─ icons are blank boxes      → icon webfont / CDN icon set failed → inline the SVG
+├─ images 404 on the site     → hotlinked third-party URL → download into public/
 ├─ fonts missing / FOUT       → Google Fonts unreachable (offline) → self-host
 └─ favicon 404                → public/favicon.svg not created
 
@@ -88,6 +91,21 @@ The process exists but HTTP fails: wrong `url`/`port` in config, server crashed 
 - Verify the file exists at the exact casing used in HTML.
 - Confirm `server.js` MIME map includes the extension; unknown types are served as `text/plain`, which browsers refuse for CSS/JS.
 - Hard-refresh: browsers cache aggressively on localhost too.
+
+### Partially unstyled page (some rules work, everything after a point does not)
+
+This is a CSS syntax error, not a serving problem. A single unclosed `}` — most often inside a `@media` block — makes the browser discard every rule after it, so the server still returns 200 while the page looks half-styled.
+
+```bash
+node -e "const s=require('fs').readFileSync(process.argv[1],'utf8');const o=(s.match(/{/g)||[]).length,c=(s.match(/}/g)||[]).length;console.log(o===c?'balanced':'UNBALANCED '+o+'/'+c)" sites/<id>/public/index.html
+```
+
+Also look for an orphan declaration left by a previous fix (a property list ending in `}` with no selector) — it is still a parse error. Fix the site's `<style>`; `sitebox-create` owns this, and its quality gate re-checks it.
+
+### Icons missing or images 404 while the file exists
+
+- Blank boxes where icons should be: an icon webfont or CDN icon set did not load. The fix is inline SVG, not a new CDN link (`sitebox-design` → Icons).
+- An image that renders in an editor preview but 404s on the running site is hotlinked. Download it into `public/` and reference the local path (`sitebox-create` → `references/performance.md`).
 
 ### Fonts missing / text shifts on load
 

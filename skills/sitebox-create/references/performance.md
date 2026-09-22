@@ -27,7 +27,7 @@ Google Fonts is allowed only when the site can require network access. The decis
 2. **Offline needed or Thai text?** Self-host: put `.woff2` files in `public/fonts/`, declare `@font-face` with `font-display: swap`, and subset to the glyphs actually used when possible.
 3. **Google Fonts URL?** Then: max 2 families, ≤ 2 weights each, `display=swap`, and keep the preconnect lines. Add a fallback stack with correct metrics (e.g. `font-family: 'Inter', system-ui, sans-serif;`) so offline visits don't collapse.
 
-Anti-patterns: 5+ weights, italics you never use, a display font loaded for one word, icon fonts (use inline SVG).
+Anti-patterns: 5+ weights, italics you never use, a display font loaded for one word, icon fonts and CDN icon sets (inline the SVG instead — see the Icons rules in `sitebox-design`).
 
 ## Images
 
@@ -37,6 +37,7 @@ Anti-patterns: 5+ weights, italics you never use, a display font loaded for one 
 - Hero/LCP image only: `fetchpriority="high"` and no lazy.
 - No stock photos (also a design rule). If a raster image is needed, compress it — a 2 MB JPEG is never acceptable for a static site.
 - Never base64-encode large images into CSS; it blocks parsing and can't be cached separately.
+- **Vendor images into `public/`; never hotlink.** External hosts block referrer/localhost requests, so a hotlinked image 404s on the running site even when it loads in an editor preview. Download the file, then reference the local path.
 
 ## CSS
 
@@ -44,6 +45,8 @@ Anti-patterns: 5+ weights, italics you never use, a display font loaded for one 
 - Multi-page sites: one shared `public/style.css`; no per-page duplicates.
 - Use CSS custom properties for tokens (`:root { --ink: ... }`) so dark mode and theme changes are one block.
 - Animate only `transform` and `opacity`; wrap non-essential motion in `@media (prefers-reduced-motion: no-preference)`.
+- **Close every block.** An unclosed `}` — most often a `@media` (breakpoints, `prefers-reduced-motion`) — silently discards every rule after it, and the page ships half-styled with no error. A fix that leaves an orphan declaration (e.g. `-webkit-font-smoothing:…}` with no selector) is still a parse error; remove it. Verify balance before starting the site:
+  `node -e "const s=require('fs').readFileSync(process.argv[1],'utf8');const o=(s.match(/{/g)||[]).length,c=(s.match(/}/g)||[]).length;console.log(o===c?'balanced':'UNBALANCED '+o+'/'+c)" sites/<id>/public/index.html`
 - No `transition: all` — it animates layout properties and causes jank. Name the properties.
 
 ## JavaScript
@@ -71,5 +74,6 @@ After starting the site, confirm:
 3. No console errors. Without a browser: read the logs (`GET /api/sites/:id/logs`) and the served HTML/JS for obvious errors; with a browser or Playwright, capture console output and screenshots at 375 px and 1280 px.
 4. Measure transfer size of the HTML file (any HTTP client; e.g. `curl -s -o /dev/null -w "%{size_download}"` on macOS/Linux, `curl.exe -s -o NUL -w "%{size_download}"` on Windows). Compare against the budget table.
 5. Check the page with images disabled or slow-network throttling if the browser is available: text must be readable immediately.
+6. Static sanity: CSS braces balance; no icon webfont/CDN `<link>`; no `src="https://…"` image (icons inline, images local in `public/`).
 
 If a budget is exceeded, find what dominates before optimizing: usually fonts (too many files) or images (wrong format/size).

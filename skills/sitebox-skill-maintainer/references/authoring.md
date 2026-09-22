@@ -70,7 +70,8 @@ Substantive skill changes deserve the same loop Anthropic's skill-creator uses:
 2. Run a realistic prompt with the skill (and mentally, one without) — e.g. "add a small site that shows the tide table for Chonburi".
 3. Watch where the run goes wrong: did the skill trigger? Did it skip a step? Did it follow a stale command?
 4. Rewrite based on what the run revealed — prefer generalizing a step over adding more rules.
-5. Record the version bump + `updated` date when the content is settled.
+5. Re-read the artifact you changed and confirm the fix is complete: check for leftovers (an orphan rule, a stale table row, a file the summary claims but the folder lacks), not just the intended result. A fix that leaves residue is not done.
+6. Record the version bump + `updated` date when the content is settled.
 
 Overfitting is the common failure: a rule that only fixes the test prompt while making other briefs worse. When a rule multiplies, ask which existing rule it replaces.
 
@@ -94,5 +95,6 @@ Overfitting is the common failure: a rule that only fixes the test prompt while 
 | anthropics/skills — `webapp-testing` | Verify-with-a-real-request approach (troubleshooting) |
 | vercel-labs — `web-design-guidelines` | `file:line` audit output, review-style checklists |
 | skills.sh — `humanizer`, `deslop` | Copy passes (`sitebox-design/references/writing.md`) |
+| rknall/claude-skills — `SVG Logo Designer` | Logo/brand-mark workflow, SVG + favicon rules (`sitebox-design/references/brand-mark.md`) |
 | skills.sh — `redesign-existing-projects` | Redesign principles (preserve URLs/content) |
 | skills.sh — `systematic-debugging`, `verification-before-completion` | Read-before-guess playbook, re-verify after fixes |

@@ -1,9 +1,9 @@
 ---
 name: sitebox-design
-description: Design system and visual quality guide for SiteBox sites. Use when planning or reviewing the look of a SiteBox site — choosing colors, typography, layout, or spacing; auditing accessibility and UX; rewriting or humanizing site copy (humanizer/deslop passes); or improving an existing design during a redesign. Defines the quality floor every SiteBox site must meet.
+description: Design system and visual quality guide for SiteBox sites. Use when planning or reviewing the look of a SiteBox site — choosing colors, typography, layout, or spacing; designing or reviewing a logo/brand mark and favicon; auditing accessibility and UX; rewriting or humanizing site copy (humanizer/deslop passes); improving an existing design during a redesign; or when a page renders partially unstyled after a CSS syntax error. Defines the quality floor every SiteBox site must meet.
 metadata:
   author: sitebox
-  version: "2.0.0"
+  version: "2.1.0"
   updated: "2026-09-22"
 ---
 
@@ -25,7 +25,10 @@ Every site built for SiteBox meets this quality floor. This is not optional styl
 2. **Pick a mood** — professional, warm, minimal, bold, editorial, playful.
 3. **Define tokens** — colors, typography, spacing. Write them down as CSS custom properties.
 4. **Plan layout** — one sentence: "left-aligned editorial with hero + 3 sections".
-5. **Review** — would this plan look like something on a real website? If it could be any site, change something before coding.
+5. **Plan the mark** — one sentence for the logo/brand-mark idea. See [Logo & brand mark](#logo--brand-mark).
+6. **Review** — would this plan look like something on a real website? If it could be any site, change something before coding.
+
+When you explore alternatives (mark concepts, layout variants), build them in a scratch page, pick one, then **delete the scratch page before shipping**. `*-concepts.html` previews are never part of the site.
 
 ### While coding
 
@@ -122,6 +125,8 @@ Pick from the real world instead: deep green (#0e7c6b, #166534), warm amber (#92
 
 Use custom properties, not repeated hex values, so a theme change is one edit.
 
+**A theme is a complete token set, not a new background.** Redefine *every* token — background, surface, text, muted text, border, hover, input, overlay — for each theme you offer. A token you forget falls back to the other theme and ships a half-styled page (a white card on a dark background). When you add a theme, check its token list against the list you already have; nothing may be missing.
+
 ---
 
 ## Layout
@@ -131,6 +136,9 @@ Use custom properties, not repeated hex values, so a theme change is one edit.
 - **Left-aligned** for editorial content (reads naturally). Center only short hero text (3–5 words).
 - **Generous whitespace** — 4–6 rem between sections.
 - **Max-width**: 1100–1200 px for content; text blocks 60–70 ch.
+- **Budget multi-column width before you set `max-width`.** Add the columns plus gaps first — e.g. 260 + 600 + 350 = 1210 px needs a container of ~1280 px or more. A container narrower than the sum squeezes the columns or forces a horizontal scrollbar.
+- **`min-width: 0` on flex children** that hold text or media, or the column refuses to shrink below its content and overflows the parent. Pair it with `flex: 1` for the column that should absorb the extra width.
+- **Anchor an overlap to its own container, not to a magic offset from a sibling.** `top: -68px` breaks the moment the sibling's height changes; a `bottom`/`inset` value measured from the container keeps working.
 - Single column on mobile, 2–3 columns on desktop.
 - Structural devices (borders, numbering, eyebrows) must encode real information. Numbered steps are only for actual sequences.
 
@@ -164,8 +172,29 @@ Only multiples of 0.25 rem. If it isn't on the scale, it's a mistake.
 - 44 px minimum touch target. Label says what happens ("Save changes", not "Submit").
 - Visible `:focus-visible` ring. Same name through the whole flow (button "Publish" → toast "Published").
 
+### Icons
+- One set, one style. Use inline SVG (Lucide geometry is the house style) and copy the `<path>` into the markup.
+- Never load an icon webfont or icon-set CSS from a CDN (`lucide-static`, Font Awesome, etc.). It is render-blocking, breaks offline, and violates the zero-dependency rule — the failure mode is blank boxes where icons should be.
+- Decorative icons are `aria-hidden="true"`; icon-only buttons carry an `aria-label`.
+
+### Interactive states
+- Actions that mean different things must look different. If reply, repost, and like all render in the same color, the row reads as one blob — give each action its own token and reuse it everywhere.
+- A toggled action must visibly differ from its untoggled state (outline → filled, muted → accent) and be reversible. "On" and "off" that look alike is a bug.
+- Status marks (badges, counters, dots) stay consistent across the whole product; don't restyle the same signal per page.
+
 ### Footer
 - Simple, consistent with the header. Links + copyright. No sitemap dumps.
+
+---
+
+## Logo & brand mark
+
+Every site ships one mark that survives at 16 px and reads as *this* subject. Plan it with the tokens, not after them. Full workflow, SVG rules, and pass criteria: `references/brand-mark.md`.
+
+- **Derive it from the subject.** A bicycle shop, a research lab, and a bakery must not produce the same mark. A circle, rounded square, or monogram-in-a-badge is what you draw when you haven't decided.
+- **One idea, one accent.** Wordmark plus a single accented character or dot beats wordmark + badge + tagline. Weight contrast (a heavy initial, a lighter remainder) is already the design — don't stack color on top of it.
+- **Test the hard cases before shipping:** legible at 16 px, works on light *and* dark (use `currentColor`), renders without a webfont.
+- **Ship it as inline SVG**, with any type outlined to paths unless it is a metric-safe system stack, and derive `public/favicon.svg` from the same geometry.
 
 ---
 
@@ -204,7 +233,10 @@ The checklist below is the summary. The executable audit — with checks that ca
 - [ ] Form labels associated with inputs; errors next to the field
 - [ ] Visible focus states; full keyboard navigation; skip-to-content link
 - [ ] Contrast passes WCAG AA (table above)
-- [ ] `prefers-reduced-motion` respected
+- [ ] `prefers-reduced-motion` respected — and its block is syntactically closed (see below)
+- [ ] Stylesheet parses cleanly: every `{` has a `}`. One unclosed brace silently discards every rule after it and the page ships half-styled
+- [ ] Icons are inline SVG from one set and images are local files in `public/` — no icon webfont, no CDN, no hotlinked `src="https://…"`
+- [ ] Every declared theme defines the full token set (no token left to fall back)
 - [ ] Touch targets ≥ 44 px; 16 px minimum body text; no horizontal scroll at 375 px
 - [ ] Page works at 200% zoom
 
@@ -227,6 +259,11 @@ The checklist below is the summary. The executable audit — with checks that ca
 13. Single-word accent in headlines (one word bold/colored)
 14. Numbered markers (01 / 02 / 03) when content isn't sequential
 15. Copy AI tells — see `references/writing.md`
+16. Icon webfonts or CDN icon sets (Lucide/Font Awesome CSS) — inline the SVG instead
+17. Hotlinked third-party images — download them into `public/`
+18. A circular monogram as the default logo, with no reason from the subject
+19. Magic-number offsets copied from another element's size
+20. A theme that redefines only background and text, leaving surfaces, borders, and hovers to fall back
 
 ---
 
@@ -254,6 +291,7 @@ When improving an existing site (see `sitebox-create` → Redesign mode):
 3. Re-plan tokens as a system; don't tweak hex-by-hex.
 4. Spend boldness in one place; the rest stays disciplined.
 5. Re-run the audit and copy passes after every structural change.
+6. Re-check that the stylesheet still parses (balanced braces) and that the mark still works at 16 px on both themes — breakage hides in the surrounding CSS you didn't touch.
 
 ---
 
@@ -261,3 +299,4 @@ When improving an existing site (see `sitebox-create` → Redesign mode):
 
 - `references/audit.md` — executable accessibility/UX audit with report format
 - `references/writing.md` — humanizer and deslop passes with before/after examples
+- `references/brand-mark.md` — logo/brand-mark workflow, SVG rules, favicon, pass criteria

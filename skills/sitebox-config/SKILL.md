@@ -1,9 +1,9 @@
 ---
 name: sitebox-config
-description: Manage the SiteBox lifecycle — add, update, start, stop, restart, verify, debug, and remove sites via the dashboard API. Use when registering or deleting a site, choosing or validating a port, starting a site and checking it actually listens, reading a site's logs, investigating a site that won't start or shows a blank page, handling stale entries after moving folders, or when someone asks about editing dashboard/data/sites.json (never commit it).
+description: Manage the SiteBox lifecycle — add, update, start, stop, restart, verify, debug, and remove sites via the dashboard API. Use when registering or deleting a site, choosing or validating a port, starting a site and checking it actually listens, reading a site's logs, investigating a site that won't start or shows a blank or half-styled page, handling stale entries after moving folders, or when someone asks about editing dashboard/data/sites.json (never commit it).
 metadata:
   author: sitebox
-  version: "2.0.0"
+  version: "2.1.0"
   updated: "2026-09-22"
 ---
 
@@ -102,6 +102,8 @@ curl -s "http://localhost:4445/api/sites/my-site/logs?lines=50"
 ```
 
 Never report "site is up" from `ok:true` alone — confirm `health.online` and that `curl http://localhost:4500/` returns 200.
+
+A 200 only proves the file was served. If the page loads but looks broken, that is a content problem, not a lifecycle one: partially unstyled output almost always means an unclosed `}` in the site's `<style>` (every rule after it is discarded), and broken images usually mean a hotlinked third-party URL. Hand both to `sitebox-create` / `sitebox-design`; see `references/troubleshooting.md`.
 
 ## Logs
 
