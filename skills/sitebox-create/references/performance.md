@@ -2,21 +2,30 @@
 
 SiteBox sites are local-first static sites. Local means latency is tiny, but the budgets still matter: they keep the site usable on weak hardware, offline, and when deployed behind a real network later.
 
-## Budgets
+## There is no size budget
 
-Measure per page. These are ceilings, not targets.
+SiteBox sites are local-first and carry real content in Thai, which is 3 bytes per character. Relay is
+124 KB, Folio 185 KB, Nearly 308 KB raw — all correct, all deliberate. A ceiling that every finished
+site fails only teaches an agent to ignore ceilings, so there isn't one.
 
-| Metric | Budget | Why |
-|--------|--------|-----|
-| HTML (single page) | < 60 KB uncompressed | Everything above is content users wait for |
-| CSS | < 30 KB, inline for single-page | Avoids a render-blocking request |
-| JS | Vanilla only; < 20 KB, `defer` or end of body | Local tool pages rarely need more |
-| Font files | Max 4 files, max 2 families, ≤ 2 weights each | Each file blocks text rendering |
-| Total transfer, first load | < 500 KB excluding hero imagery | Comfortable on 3G-class links |
-| Images | Every `<img>` has width/height or aspect-ratio | Prevents layout shift (CLS) |
-| Time to first render (localhost) | < 300 ms | If it's slower, something is blocking |
+What replaced it — rules that are about **correctness**, not bytes:
 
-No third-party CDN libraries (jQuery, icon fonts, CSS frameworks). Zero dependencies is a SiteBox rule, not a preference.
+| Rule | Why it is not negotiable |
+|------|--------------------------|
+| **Measure and report the byte count** (`gzip -c public/index.html \| wc -c`) | You should know the number even though nothing fails on it |
+| Serve text gzipped with `ETag`/304 and `Cache-Control: no-cache` | Turns 308 KB into 66 KB and makes edits show immediately. This is a serving rule |
+| Every `<img>` has real `width`/`height` or `aspect-ratio` | Prevents layout shift, and a page that does not know an image's height will eventually be fixed with a fixed height — which is how cropping starts |
+| Below-the-fold images: `loading="lazy" decoding="async"` | Local latency is tiny; the browser's decode work is not |
+| Hero/LCP image only: `fetchpriority="high"`, no lazy | The one image that is allowed to be eager |
+| Font files: max 4 files, max 2 families, ≤ 2 weights each | A *design* rule — a display font for one word is a cost with no benefit |
+| One `main`-thread-blocking script maximum, at the end of `<body>` or `defer` | Time to first render on localhost should be under 300 ms; if it is slower something is blocking |
+| No third-party CDN libraries (jQuery, CSS frameworks, icon webfonts) | Zero dependencies is a SiteBox rule, not a preference |
+
+**When the page is large, the question is not "how do I shrink it" but "does any screen need this
+before the user acts?"** Nearly moved 346 KB of comments into `public/data/comments.json`, fetched only
+when a video is opened — the home page never waits for them. Relay kept everything inline on purpose,
+because a failed fetch there would have meant a blank page. Both are correct **if you say which you
+chose and why**.
 
 ## Fonts
 
@@ -27,7 +36,7 @@ Google Fonts is allowed only when the site can require network access. The decis
 2. **Offline needed or Thai text?** Self-host: put `.woff2` files in `public/fonts/`, declare `@font-face` with `font-display: swap`, and subset to the glyphs actually used when possible.
 3. **Google Fonts URL?** Then: max 2 families, ≤ 2 weights each, `display=swap`, and keep the preconnect lines. Add a fallback stack with correct metrics (e.g. `font-family: 'Inter', system-ui, sans-serif;`) so offline visits don't collapse.
 
-Anti-patterns: 5+ weights, italics you never use, a display font loaded for one word, icon fonts and CDN icon sets (inline the SVG instead — see the Icons rules in `sitebox-design`).
+Anti-patterns: 5+ weights, italics you never use, a display font loaded for one word, CDN icon sets (inline the SVG, or vendor the library into `public/` — see the Icons rules in `sitebox-design`).
 
 ## Images
 
@@ -60,8 +69,15 @@ Anti-patterns: 5+ weights, italics you never use, a display font loaded for one 
 
 The canonical template in `sitebox-create` is intentionally minimal. Two cheap wins when a site grows:
 
-- **Caching for static assets** — add `Cache-Control: public, max-age=300` for CSS/JS/images; keep HTML uncached (local edits should show immediately).
-- **gzip for text** — Node's built-in `zlib` via `zlib.createGzip()`, content-type gated. Only bother if a page exceeds ~100 KB.
+- **Caching for static assets** — `Cache-Control: no-cache` plus `ETag`/304. "No-cache" does not mean
+  "do not cache"; it means "revalidate first". On localhost that gives you both: an edit shows
+  immediately and an unchanged file still answers 304 instead of re-downloading. A plain `max-age`
+  is how a fixed image keeps rendering cropped for an hour.
+- **gzip for text** — Node's built-in `zlib` via `zlib.gzipSync()`, content-type gated. Do this as soon
+  as the page has content at all; it is four lines and it is the single biggest win.
+- **A real 404** for a missing file. Never fall back to `index.html` for an asset path: a silent 200
+  hides a broken image until a person looks at the page.
+- **Path traversal guard** — resolve the path and check it still starts with `PUBLIC`.
 
 Do not add frameworks "for performance" — on localhost, fewer moving parts is faster.
 
@@ -71,9 +87,13 @@ After starting the site, confirm:
 
 1. Every page returns 200: fetch `/`, then each nav link.
 2. Every referenced asset returns 200: favicon, CSS, JS, fonts, images. A 404 here is a failed quality gate.
-3. No console errors. Without a browser: read the logs (`GET /api/sites/:id/logs`) and the served HTML/JS for obvious errors; with a browser or Playwright, capture console output and screenshots at 375 px and 1280 px.
-4. Measure transfer size of the HTML file (any HTTP client; e.g. `curl -s -o /dev/null -w "%{size_download}"` on macOS/Linux, `curl.exe -s -o NUL -w "%{size_download}"` on Windows). Compare against the budget table.
-5. Check the page with images disabled or slow-network throttling if the browser is available: text must be readable immediately.
-6. Static sanity: CSS braces balance; no icon webfont/CDN `<link>`; no `src="https://…"` image (icons inline, images local in `public/`).
+3. No console errors. Without a browser: read the logs (`GET /api/sites/:id/logs`) and the served HTML/JS for obvious errors; with a browser or Playwright, capture console output and screenshots at 1440 px and 375 px.
+4. **Report the transfer size** of the HTML (`gzip -c public/index.html | wc -c`). Nothing fails on it — you just have to know it.
+5. **In a real browser:** every sized image draws at its own ratio (no crop), no horizontal overflow at
+   1440 px and 375 px, and no image fails to load. `sitebox-verify` → `render-check.js` owns this; a
+   text-level check cannot see it.
+6. Static sanity: CSS braces balance; no CDN `<link>`; no `src="https://…"` image; every `<img>` has
+   real `width`/`height` and an asset version.
 
-If a budget is exceeded, find what dominates before optimizing: usually fonts (too many files) or images (wrong format/size).
+If the page is large, find what dominates before optimising: usually it is content that no screen
+needs early (split it) rather than something that needs to be smaller.

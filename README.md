@@ -37,8 +37,10 @@ sitebox/
 │   └── example-clock/      ← World clock (port 4452)
 │
 ├── skills/                 ← Project skills for SiteBox agents
-│   ├── sitebox-create/     ← Build/redesign/debug sites (+ performance reference)
-│   ├── sitebox-design/     ← Design system, audit, copy passes (+ references)
+│   ├── sitebox-create/     ← Build/redesign/deploy/debug sites (+ performance reference)
+│   ├── sitebox-design/     ← Design system, image geometry, audit, copy passes (+ references)
+│   ├── sitebox-data/       ← Real-data pipelines: provenance, refreshability, fixtures (+ references)
+│   ├── sitebox-verify/     ← Harness, negative controls, browser layout proof, deploy mirror (+ references)
 │   ├── sitebox-config/     ← Dashboard API, lifecycle, logs, troubleshooting
 │   └── sitebox-skill-maintainer/  ← Keeps the skills in sync (meta)
 │
@@ -98,21 +100,27 @@ Just create a folder in `sites/` with a `server.js` and `public/index.html`. The
 
 ### Option 5: Skills
 
-If your agent loads the project skills from `skills/`, use `sitebox-create`
-(build + verify) with `sitebox-design` (quality gate) and `sitebox-config`
-(lifecycle). `sitebox-skill-maintainer` keeps those skills in sync with the
-dashboard.
+If your agent loads the project skills from `skills/`, the entry point is a
+**`sitebox`** router skill that lives with the agent (not in this repo): it decides
+which of the six apply to a whole job and in what order. The six themselves:
+`sitebox-create` (build + deploy), `sitebox-design` (quality gate),
+`sitebox-data` (real content), `sitebox-verify` (proof), `sitebox-config`
+(lifecycle), and `sitebox-skill-maintainer` (keeps them in sync with the dashboard).
 
 ## Skills & Interop
 
-The three working skills are designed to run together:
+The six working skills are designed to run together:
 
 | Skill | Role |
 |-------|------|
-| `sitebox-create` | Orchestrates: brief → design pass → build → register → start → verify → audit → debug |
-| `sitebox-design` | Design tokens and the quality gate (accessibility/UX audit, humanizer + deslop copy passes) |
+| `sitebox-create` | Builds: brief → design pass → build → deploy → register → start → verify → debug. Owns the server template and the deploy mirror |
+| `sitebox-design` | Design tokens, image geometry, and the quality gate (accessibility/UX audit, humanizer + deslop copy passes, accepted deviations) |
+| `sitebox-data` | Real, traceable, refreshable content: source discovery, provenance, coverage floors, fixtures, uncropped assets |
+| `sitebox-verify` | Proof: render harness, negative controls, real-browser layout check, HTTP sweep, checksum-verified deploy |
 | `sitebox-config` | Dashboard API, ports, lifecycle, logs, stale entries, git policy |
-| `sitebox-skill-maintainer` | Meta: conventions and a drift checker for the other three |
+| `sitebox-skill-maintainer` | Meta: conventions and a drift checker for the other five |
+
+Order for a new site: **design → data → create → verify → config**.
 
 Run the drift checker after any API or icon change:
 

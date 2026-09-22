@@ -8,7 +8,7 @@ Lineage: the audit style and many rules follow Vercel's Web Interface Guidelines
 
 1. Read the site's HTML/CSS/JS files (`sites/<id>/public/`). Most findings come from a careful read.
 2. Fetch the running page (`curl -s http://localhost:<port>/`) and each linked asset; a 404 is a finding.
-3. If a browser or Playwright is available, also: keyboard-tab through the page, screenshot at 375 px and 1280 px, capture console errors, check with reduced motion forced.
+3. **Run the browser pass — do not skip it when a browser exists.** Reading CSS cannot tell you how a page *looks*; a text check sees `aspect-ratio: 16/9` and passes while the browser ignores it. With headless Chromium available on both machines, the browser pass is part of the audit, not an extra. `sitebox-verify` owns the tooling (`render-check.js`); at minimum: measure every sized image's drawn ratio against its natural ratio, tab through the page, screenshot at 1440 px and 375 px, capture console errors, force reduced motion.
 4. Report findings as `file:line — [severity] finding — suggested fix`. Severity: **blocker** (unusable/inaccessible), **major** (quality gate fails), **minor** (polish).
 
 Example finding:
@@ -33,6 +33,29 @@ still renders half-styled.
   `lucide-static` CSS link, no `src="https://…"` image. Icons are inline SVG; images live in
   `public/`. Hotlinked images 404 at runtime because the host blocks referrers.
 
+## Image geometry (check second — a crop invalidates every visual judgement after it)
+
+A cropped image makes the rest of this audit lie: the layout is "correct", the tokens are "correct",
+and the picture is still wrong. Nearly shipped 27 %-cropped thumbnails on every card for a full
+session while the text checks reported success.
+
+- [ ] **Every box that shows an image gets its height from that image's ratio.** No fixed `height`,
+  no `max-height` on the same element as `aspect-ratio`, no `align-items: stretch` parent.
+- [ ] **No `aspect-ratio` on a non-replaced inline box.** `<span class="thumb">` with
+  `aspect-ratio: 16/9` and no `display` is a silent no-op — the box takes its height from the line
+  box and `object-fit: cover` then eats ~27 % of the width.
+- [ ] **`aspect-ratio` and `max-height` are never on the same box.** Together they make the browser
+  derive the *width* from the clamped height, so the box is the wrong shape at every viewport, not
+  just small ones.
+- [ ] **Measured in a browser, not read from CSS.** For every sized `<img>`: `drawn ratio` vs
+  `naturalWidth/naturalHeight` must agree within **1 %**. This is the check that catches all of the
+  above at once.
+- [ ] **Every image actually loads.** `img.complete && !img.naturalWidth` is a **failure** — do not
+  `continue` past it. A render check that skips broken images reports a green page full of 404s.
+- [ ] **Files keep their source ratio.** Compare each served file against the ratio recorded when it
+  was downloaded; a mismatch means a crop was baked in and no CSS can undo it.
+- [ ] **No horizontal overflow** at 1440 px and at 375 px.
+
 ## Accessibility checks
 
 ### Structure
@@ -56,6 +79,7 @@ still renders half-styled.
 - [ ] Every interactive element is reachable and operable by keyboard (Tab, Enter/Space, Escape for overlays).
 - [ ] `:focus-visible` styling exists, is high contrast, and is never removed (`outline: none` without replacement is a blocker).
 - [ ] Buttons are `<button>`, links are `<a href>`; no clickable `<div>`.
+- [ ] **No interactive element nested inside another.** `<button>` inside `<button>`, or `<button>` inside `<a>`, is invalid: the browser silently closes the outer element and the layout breaks. A DOM stub will not catch this — it is not a parser. Walk the markup with a tokenizer, or check it in a real browser.
 - [ ] Touch targets ≥ 44×44 px with spacing.
 - [ ] Forms: every input has an associated `<label>`; errors are text next to the field, not color-only; `autocomplete` set on personal fields.
 - [ ] `target="_blank"` links carry `rel="noopener"`.
@@ -76,6 +100,8 @@ still renders half-styled.
 ## UX checks
 
 - [ ] Navigation: current page is indicated; every link goes somewhere real (no dead `href="#"`).
+- [ ] **No stray glyphs in your own UI copy.** Thai and English copy must not contain Chinese characters (`\u4e00-\u9fff`) or Cyrillic that nobody typed on purpose — a model borrows them in through transliterated words and the owner notices immediately. **Scope the scan to the UI copy only:** real scraped content legitimately contains Japanese, Korean, Chinese and Cyrillic, and a whole-file scan flags it as a false positive. Never scan `-` and conclude clean if the copy block was not located — a guard over an empty sample is not a pass.
+- [ ] **Real content is verbatim.** Scraped titles, captions and comments are never translated, shortened, or "improved". If a title is in Japanese, it stays in Japanese.
 - [ ] One primary action per screen; the label states the outcome ("Save changes").
 - [ ] The same action keeps the same name through the flow.
 - [ ] Empty states invite action (what to do next), error states say what happened and how to fix it.
@@ -88,11 +114,12 @@ still renders half-styled.
 
 ## Brand mark
 
-- [ ] The mark is derived from the subject, not a default circle/monogram.
+- [ ] The mark is derived from the subject, not a default circle/monogram. If the mark is the hard part, `alicia-logo-artist` explores and proves it.
 - [ ] Legible at 16 px (favicon size) and works on light *and* dark backgrounds (`currentColor`).
 - [ ] Inline SVG; no webfont-dependent `<text>` (outline the type, or use a metric-safe system stack).
 - [ ] `public/favicon.svg` exists, is referenced from `<head>`, and returns 200.
 - [ ] Concept/scratch preview pages (`*-concepts.html`) are deleted, not shipped.
+- [ ] No indigo `#4f46e5` / violet `#7c3aed` / blue→purple gradient anywhere in the mark — these are the default AI palette and they show up in generated marks most often.
 
 ## Performance cross-check
 
@@ -109,7 +136,31 @@ Run `sitebox-create` → `references/performance.md` budgets in the same pass. C
 | Motion ignoring preference | Wrap in `@media (prefers-reduced-motion: no-preference)` |
 | Form error as red border only | Add text: "อีเมลไม่ถูกต้อง" / "Enter a valid email" next to the field |
 | Missing image size | `width`/`height` attributes or `aspect-ratio` in CSS |
+| Image cropped ~27 % | The box is a non-replaced inline element — add `display: block` |
+| Image cropped ~24 % | `aspect-ratio` and `max-height` are on the same box — remove one |
+| Image cropped ~39 % | A grid/flex parent is stretching the box — `align-items: flex-start` |
+| Image squashed, not cropped | `width: 100%` + `max-height` — use `width: auto; height: auto; max-width/max-height` |
+| The served file is cropped | The crop happened at resize time — re-run the pipeline without the crop; it cannot be undone in CSS |
+| The wrong picture is served | The download cache is keyed on the filename — key it on the source URL |
+| Content stops short of the right edge | A `max-width` on a wrapper that is narrower than the screen — measure the gap and remove the ceiling |
+| Two bands don't share an edge | Give them one parent with one width instead of two matching numbers |
+| Interactive element nested in another | Make the inner one a sibling that is positioned over the outer, not a child |
 
 ## Pass criteria
 
 The audit passes when there are zero **blocker** findings and zero **major** findings. Minor findings may ship only if listed explicitly with a reason. Re-run after fixes — a fix that breaks another check is not a fix.
+
+Two things do **not** count as findings when they are written down properly:
+
+- **An accepted deviation** — a platform behaviour copied on purpose. It needs all four parts: the
+  measured number, why it is worth copying, the restriction that makes it safe, and where it is
+  recorded. Reported as `ACCEPTED DEVIATION`, not as a failure. See `sitebox-design` →
+  [Accepted deviations](../SKILL.md#accepted-deviations).
+- **A size over some number** — there is no page-size budget. Report the byte count; do not fail on it.
+
+## The audit must be able to fail
+
+Every check above is worthless until you have watched it go red. `sitebox-verify` owns this: for each
+guard, break the thing it protects, confirm the guard fails, then restore. A `✓` that has never had a
+chance to be a `✗` proves nothing — Folio had a stray-glyph check whose regex never matched and it
+printed `✓ no stray CJK` for as long as the site existed.

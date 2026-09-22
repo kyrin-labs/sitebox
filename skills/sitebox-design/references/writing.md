@@ -1,8 +1,21 @@
 # Copy Passes: Humanizer & Deslop
 
-Copy is design content, not decoration. Run both passes before a site is considered done — after the first draft and again after any content edits.
+Copy is design content, not decoration. Run all three passes before a site is considered done — after the first draft and again after any content edits.
 
 Lineage: adapted from the `humanizer` and `deslop` skills on skills.sh, plus Anthropic `frontend-design`'s writing guidance. The rules are tuned for Thai-primary sites with English secondary text.
+
+## Pass 0 — Real content is verbatim
+
+Before humanizing anything, split the copy in two. They have opposite rules.
+
+| | Your UI copy | Content from a real source |
+|---|---|---|
+| Rule | Rewrite freely — humanize, deslop, make it Thai that reads Thai | **Never touch it.** Verbatim, in its original language |
+| Examples | nav labels, buttons, empty states, errors, toasts, `<title>`, meta description | video titles, post captions, comments, usernames, product names |
+
+**Never translate scraped content.** A Japanese video title stays Japanese; a Korean caption stays Korean. Translating it is not "localizing", it is fabricating — and it destroys the only reason the site exists. Relay, Folio and Nearly all ship real content in its source language, mixed with Thai chrome.
+
+This also means the stray-glyph scan has to be **scoped**: real content legitimately contains CJK, Cyrillic and Korean, so scanning the whole file produces false positives. Scan **your UI copy only** — the string tables and CSS. `sitebox-verify` owns that check, and it must fail when it cannot locate the copy block, rather than reporting `✓` over an empty sample.
 
 ## Pass 1 — Humanizer
 
@@ -88,4 +101,6 @@ Headline, subhead, body, CTA labels, nav labels, empty states, error messages, t
 - Zero matches from the deslop lists.
 - Thai copy passes the read-aloud test.
 - One vocabulary per concept across the whole site.
-- No claim without a real number behind it.
+- No claim without a real number behind it — and **no number without a source**. If the source does not publish it, omit it; never derive it from something else and label it as the real thing. Nearly shipped a like count computed as 4 % of the view count; the real ratio was 1.21 %, so every number on the page was **3.3× too high**.
+- Real content is verbatim and untranslated (Pass 0).
+- Your own UI copy contains no borrowed Chinese or Cyrillic characters.

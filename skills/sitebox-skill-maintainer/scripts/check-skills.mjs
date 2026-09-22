@@ -5,7 +5,7 @@
  * Usage: node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
  * Exit code 1 when errors are found; warnings do not fail.
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,6 +64,17 @@ function sectionBody(src, headingRe) {
   return out ? out.join('\n') : null;
 }
 
+/* ── Relative links must resolve, from SKILL.md and from every reference ── */
+function checkLinks(dir, from, src) {
+  for (const m of src.matchAll(/\]\((?!https?:|mailto:|#)([^)\s]+)\)/g)) {
+    const target = m[1].split('#')[0].split('?')[0];
+    if (!target) continue;
+    const abs = path.resolve(path.dirname(from), target);
+    if (!existsSync(abs))
+      err(`skills/${dir}/${rel(from).replace('skills/' + dir + '/', '')} links to missing file: ${target}`);
+  }
+}
+
 /* ── Discover skills ── */
 if (!existsSync(SKILLS_DIR)) {
   console.error(`No skills/ directory at ${SKILLS_DIR}`);
@@ -100,11 +111,30 @@ for (const dir of skillDirs) {
   const lineCount = src.split(/\r?\n/).length;
   if (lineCount > 500) warn(`skills/${dir}/SKILL.md is ${lineCount} lines (guideline: < 500, move detail to references/)`);
 
-  for (const m of src.matchAll(/\]\((?!https?:|mailto:|#)([^)\s]+)\)/g)) {
-    const target = m[1].split('#')[0].split('?')[0];
-    if (!/^(references|scripts|assets)\//.test(target)) continue;
-    if (!existsSync(path.join(SKILLS_DIR, dir, target)))
-      err(`skills/${dir}/SKILL.md links to missing file: ${target}`);
+  checkLinks(dir, file, src);
+
+  // The description is the trigger. It must say when NOT to fire as well as when to fire.
+  if (fm.description && !/do not use|not for|never use|ไม่ใช้/i.test(fm.description))
+    warn(`skill "${dir}" description has no anti-trigger ("Do not use…")`);
+
+  // References are read on demand, so their links rot unnoticed — check them too.
+  const refDir = path.join(SKILLS_DIR, dir, 'references');
+  if (existsSync(refDir)) {
+    for (const rf of readdirSync(refDir).filter((f) => f.endsWith('.md'))) {
+      const rp = path.join(refDir, rf);
+      checkLinks(dir, rp, read(rp));
+    }
+  }
+}
+
+/* ── Cross-skill references must name a skill that exists ── */
+// Skills that live outside this repo (the pi-agent skills) are legitimate targets.
+const EXTERNAL_SKILLS = new Set(['sitebox', 'alicia-logo-artist', 'alicia-writer']);
+const knownSkills = new Set([...skills.map((s) => s.dir), ...EXTERNAL_SKILLS]);
+for (const { dir, src } of skills) {
+  for (const m of src.matchAll(/`(sitebox-[a-z0-9-]+|alicia-[a-z0-9-]+)`/g)) {
+    if (!knownSkills.has(m[1]))
+      warn(`skill "${dir}" names "${m[1]}" which is not a skill in skills/ and not a known pi-agent skill`);
   }
 }
 
@@ -112,8 +142,10 @@ for (const dir of skillDirs) {
 const serverSrc = read(SERVER).replace(/\\\//g, '/');
 const endpoints = new Set();
 for (const { src } of skills) {
-  for (const m of src.matchAll(/\/api\/[A-Za-z0-9_:?=&./-]+/g)) {
-    const ep = m[0].replace(/[.,;:`]+$/, '').split('?')[0].replace(/:id/g, 'x');
+  // Only SiteBox's own dashboard endpoints: a bare `/api/...` token, or one after the dashboard host.
+  // A third-party URL such as `instagram.com/api/v1/...` must not be mistaken for one.
+  for (const m of src.matchAll(/(?:localhost:4445|[\s`'"(])(\/api\/[A-Za-z0-9_:?=&./-]+)/g)) {
+    const ep = m[1].replace(/[.,;:`]+$/, '').split('?')[0].replace(/:id/g, 'x');
     endpoints.add(ep);
   }
 }
@@ -121,6 +153,7 @@ for (const ep of endpoints) {
   const parts = ep.split('/').filter(Boolean);
   if (parts.length < 2) continue; // prose placeholder like "/api/..."
   const root = parts[1];
+  if (!/^[a-z]+$/.test(root)) continue; // not a SiteBox endpoint
   if (!serverSrc.includes(`/api/${root}`)) {
     err(`skills reference ${ep} but /api/${root} is not in dashboard/server.js`);
     continue;
@@ -157,6 +190,21 @@ try {
 const readme = read(README);
 for (const { dir } of skills) if (!readme.includes(dir)) warn(`README.md does not mention skill "${dir}"`);
 if (!existsSync(HOOK)) warn('.githooks/pre-commit is missing — the sites.json commit block is not enforced');
+
+/* ── The checker is a guard, so it needs a control too ── */
+if (process.argv.includes('--self-test')) {
+  const probe = path.join(SKILLS_DIR, '__probe__');
+  const probeFile = path.join(probe, 'SKILL.md');
+  mkdirSync(probe, { recursive: true });
+  writeFileSync(probeFile, '---\nname: __probe__\ndescription: probe\n---\n\n[broken](references/nope.md)\n');
+  const before = errors.length;
+  checkLinks('__probe__', probeFile, read(probeFile));
+  const caught = errors.length > before;
+  errors.length = before;
+  rmSync(probe, { recursive: true, force: true });
+  console.log(caught ? '  control: the broken-link check fires' : '  CONTROL MISSED: broken-link check is dead');
+  if (!caught) process.exitCode = 1;
+}
 
 /* ── Report ── */
 console.log(`SiteBox skill check — ${skills.length} skill(s), ${iconSet.size} icons, ${endpoints.size} endpoint reference(s)`);

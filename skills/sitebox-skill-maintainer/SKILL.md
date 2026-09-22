@@ -1,9 +1,9 @@
 ---
 name: sitebox-skill-maintainer
-description: Create, audit, and update the SiteBox skills themselves. Use when editing any skill under skills/, adding a new SiteBox skill, checking skills against the real dashboard API and icons, resolving drift between skills/README/server behavior, or bumping skill versions after a feature change. Not for building sites — use sitebox-create, sitebox-design, and sitebox-config for that.
+description: Create, audit, and update the SiteBox skills themselves. Use when editing any skill under skills/, adding a new SiteBox skill, checking skills against the real dashboard API and icons, resolving drift between skills/README/server behavior, wiring a new skill into the others, or bumping skill versions after a feature change. Not for building sites — use sitebox-create, sitebox-design, sitebox-data, sitebox-verify, and sitebox-config for that.
 metadata:
   author: sitebox
-  version: "1.1.0"
+  version: "2.0.0"
   updated: "2026-09-22"
 ---
 
@@ -13,10 +13,16 @@ The SiteBox skills are the operating manual for building and running sites. This
 
 | Skill | Owns | Source of truth for its facts |
 |-------|------|-------------------------------|
-| `sitebox-create` | Build/redesign/debug workflow, server template, performance requirements | `dashboard/server.js`, `sites/example-*/server.js` |
-| `sitebox-design` | Visual system, audit, copy passes (humanizer/deslop) | design decisions; no code dependency |
+| `sitebox-create` | Build/redesign/deploy/debug workflow, server template, serving additions | `dashboard/server.js`, `sites/example-*/server.js` |
+| `sitebox-design` | Visual system, image geometry, audit, copy passes (humanizer/deslop), accepted deviations | design decisions; no code dependency |
+| `sitebox-data` | Real-data pipelines, provenance, refreshability, fixtures, coverage floors, asset integrity | the platforms themselves; the site's `tools/` |
+| `sitebox-verify` | Render harness, negative controls, real-browser layout proof, HTTP sweep, deploy mirror | the site's `tools/`; the running server |
 | `sitebox-config` | Dashboard API, ports, lifecycle, logs, git policy | `dashboard/server.js`, `dashboard/public/js/main.js` |
 | `sitebox-skill-maintainer` | This file — conventions and drift checks | `skills/` itself |
+
+There is also a `sitebox` **router** skill that lives with the pi agent, not in this repo. It decides
+which of the above apply to a whole job and in what order. It is not checked by this script and is not
+tracked in git here — do not add a copy to `skills/`, because the same facts would then have two homes.
 
 ## Sources of truth (never duplicate, always check)
 
@@ -27,8 +33,24 @@ The SiteBox skills are the operating manual for building and running sites. This
 | Port ranges | `README.md` | `sitebox-config`, `sitebox-create` |
 | `server.js` template | `sitebox-create` SKILL.md | `sites/example-notes/server.js` (simpler variant) |
 | Git policy for `sites.json` | `dashboard/data/README.md` + `.githooks/pre-commit` | `README.md`, `CONTRIBUTING.md`, `sitebox-config` |
+| Which skill owns what | `sitebox-skill-maintainer` (the table above) | each SKILL.md's "Related skills" section |
 
 If a fact needs changing, change every mirror in the same edit. The checker below finds most drift automatically.
+
+## When lessons conflict, earlier experience wins
+
+This repo now has three tiers of recorded experience, and the owner set their authority explicitly:
+
+```
+1  Relay + Folio      the doctrine — these were the two sites whose lessons were distilled on purpose
+2  DEVELOPMENT-EXPERIENCE.md   background and history
+3  Nearly             newest, most specific, most likely to over-fit one site
+```
+
+When a rule in one conflicts with a rule in another, the lower number wins, and the loser is recorded
+(not deleted). The conflicts that have already been resolved this way are listed in `sitebox-data` and
+`sitebox-design`. **Do not re-litigate a resolved conflict** — if you believe the resolution is wrong, change
+it in one place and update the loser's entry in the same edit.
 
 ## Maintain workflow
 
@@ -53,6 +75,9 @@ If a fact needs changing, change every mirror in the same edit. The checker belo
 | Port range change | `README.md`, `sitebox-config`, `sitebox-create` (all three tables) |
 | Server template change | `sitebox-create` template, then decide whether examples follow |
 | git policy change | `dashboard/data/README.md`, `.githooks/pre-commit`, `README.md`, `CONTRIBUTING.md`, `sitebox-config` |
+| New skill | New folder + SKILL.md → add a row to the ownership table above → add to every sibling's "Related skills" → `README.md` tree + table → checker |
+| A lesson learned on a real site | Put it in the skill that owns that phase, **with the failure it prevents** — not in a new section of a skill that happens to mention it. If two skills could own it, the ownership table decides |
+| A conflict between skills | Resolve by the tier order above, then record the loser in the same edit |
 
 ## Rules
 
@@ -76,4 +101,8 @@ If a fact needs changing, change every mirror in the same edit. The checker belo
 node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
 ```
 
-Checks: frontmatter validity, name/folder match, description length and trigger phrasing, `metadata.version`, SKILL.md length, broken relative reference links, referenced `/api/...` endpoints existing in `dashboard/server.js`, icon lists matching `main.js`, `sites.json` containing only the two examples, README mentioning every skill, and the pre-commit hook existing. Exit code 1 on errors; warnings are printed but do not fail.
+Checks: frontmatter validity, name/folder match, description length, trigger phrasing **and anti-trigger phrasing**, `metadata.version`, SKILL.md length, broken relative reference links (in `SKILL.md` **and** in every `references/*.md`), cross-skill name references resolving to a real skill, referenced `/api/...` endpoints existing in `dashboard/server.js`, icon lists matching `main.js`, `sites.json` containing only the two examples, README mentioning every skill, and the pre-commit hook existing. Exit code 1 on errors; warnings are printed but do not fail.
+
+**The checker is a guard, so it needs a negative control too.** Before trusting a new check, break the
+thing it looks for and confirm it reports an error. A checker that has only ever printed `0 error(s)` is in
+the same category as every other guard that never fired.

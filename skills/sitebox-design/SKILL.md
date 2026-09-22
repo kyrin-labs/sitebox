@@ -1,9 +1,9 @@
 ---
 name: sitebox-design
-description: Design system and visual quality guide for SiteBox sites. Use when planning or reviewing the look of a SiteBox site — choosing colors, typography, layout, or spacing; designing or reviewing a logo/brand mark and favicon; auditing accessibility and UX; rewriting or humanizing site copy (humanizer/deslop passes); improving an existing design during a redesign; or when a page renders partially unstyled after a CSS syntax error. Defines the quality floor every SiteBox site must meet.
+description: Design system and visual quality guide for SiteBox sites — color, typography, layout, spacing, components, accessibility, and copy. Use when planning or reviewing the look of a SiteBox site; designing a logo/brand mark and favicon; auditing accessibility and UX; running the humanizer/deslop copy passes; improving a design during a redesign; or when a page renders half-styled after a CSS error, an image is cropped, squashed or stretched, a box has the wrong shape, content stops short of the edge, columns are squeezed, or one theme falls back to the other. Defines the quality floor every SiteBox site must meet. Not for lifecycle, ports or logs (sitebox-config), and not for fetching real content (sitebox-data).
 metadata:
   author: sitebox
-  version: "2.1.0"
+  version: "3.0.0"
   updated: "2026-09-22"
 ---
 
@@ -135,8 +135,9 @@ Use custom properties, not repeated hex values, so a theme change is one edit.
 
 - **Left-aligned** for editorial content (reads naturally). Center only short hero text (3–5 words).
 - **Generous whitespace** — 4–6 rem between sections.
-- **Max-width**: 1100–1200 px for content; text blocks 60–70 ch.
-- **Budget multi-column width before you set `max-width`.** Add the columns plus gaps first — e.g. 260 + 600 + 350 = 1210 px needs a container of ~1280 px or more. A container narrower than the sum squeezes the columns or forces a horizontal scrollbar.
+- **Width comes from the columns, not from a number you like.** Add the columns plus gaps first — e.g. 260 + 600 + 350 = 1210 px needs a container of at least 1210 px, or the columns squeeze and the page scrolls sideways. **There is no house max-width.** 1100–1200 px is too narrow for a three-column shell (Relay is 1280, Folio 1264), and some briefs want the content flush to the right edge with no ceiling at all. Decide from the brief, then measure the result.
+- **Bands stacked on top of each other must share their edges.** A hero and the rail below it start and end at the same x. When they drift, the fix is not two numbers that happen to agree today — give them **one parent with one width** and the edges match by construction.
+- **Text blocks** stay 60–70 ch even when the container is wider. Cap the paragraph, not the page.
 - **`min-width: 0` on flex children** that hold text or media, or the column refuses to shrink below its content and overflows the parent. Pair it with `flex: 1` for the column that should absorb the extra width.
 - **Anchor an overlap to its own container, not to a magic offset from a sibling.** `top: -68px` breaks the moment the sibling's height changes; a `bottom`/`inset` value measured from the container keeps working.
 - Single column on mobile, 2–3 columns on desktop.
@@ -154,6 +155,40 @@ Use custom properties, not repeated hex values, so a theme change is one edit.
 Only multiples of 0.25 rem. If it isn't on the scale, it's a mistake.
 
 ---
+
+## Image geometry — the one rule that prevents every crop bug
+
+> **A box that displays an image gets its height from the image's own ratio — never from a fixed
+> height, never from a stretched parent, never from a line box.**
+
+This is the most expensive rule in the repo. Relay needed three rounds to find three stacked causes;
+Nearly shipped 27 %-cropped thumbnails on every card for a whole session. All six symptoms below are
+the *same* rule broken six ways, so learn the rule, not the six fixes.
+
+| What you see | Cause | Fix |
+|---|---|---|
+| Image cut, ~27 % off the sides | `aspect-ratio` set on a **non-replaced inline** box (`<span>`, or a `<div>` with `display:inline`) — the declaration is ignored and the box takes its height from the line box | `display: block` on the box |
+| Image cut, ~24 % off the top/bottom | `aspect-ratio` **and** `max-height` on the same box — the browser derives the *width* from the clamped height, so the box is the wrong shape at every viewport | Drop one of them; let the container size the box |
+| Image cut, ~39 % | Grid or flex `align-items: stretch` (the default) overrides `aspect-ratio` — the row's height wins | `align-items: flex-start` on the track |
+| Image **squashed**, not cut | `width: 100%` together with `max-height` — width is forced, height is clamped, so the ratio is wrong | `width: auto; height: auto; max-width: …; max-height: …` |
+| The **file itself** is cut, forever | A crop baked in at resize time (`ImageOps.fit`, `object-fit` applied in the pipeline, any hard crop) | Resize must preserve the source ratio; record `[w, h, source_ratio]` per file so a checker can prove it |
+| The **wrong image** appears | Cache keyed on the destination filename — the name is stable across re-fetches, the picture is not | Key the cache on the **source URL**; re-fetch when it changes |
+
+Rules that follow:
+
+- **Never bake a crop into an asset.** Files keep the full frame. Cropping is a *presentation* decision,
+  and presentation is reversible; a byte-level crop is not. Relay's `ImageOps.fit(img, (1400, 467))`
+  destroyed the top of every portrait permanently — no lightbox could recover it.
+- **Cropping is only allowed where it is the platform's own signature view** (Instagram's square profile
+  grid, a circular avatar), the file is still whole, and you say so in the deviations table.
+- **Give every `<img>` real `width` and `height`.** Not only for CLS — a page that does not know how
+  tall an image is will eventually be fixed with a fixed height, and that is how the cropping starts.
+- **`object-fit: cover` is a symptom, not a tool.** It does not crop a *file*, but it does crop what a
+  person sees, and it silently absorbs a box that is the wrong shape. Use it only where the crop is
+  intended; if a box needs `cover` to look right, the box is the wrong shape.
+- **Prove it in a browser, not by reading CSS.** A text-level check sees `aspect-ratio: 16/9` and
+  passes while the browser ignores it entirely. `sitebox-verify` measures every sized image's drawn
+  ratio against its natural ratio and fails above 1 %.
 
 ## Components
 
@@ -173,8 +208,10 @@ Only multiples of 0.25 rem. If it isn't on the scale, it's a mistake.
 - Visible `:focus-visible` ring. Same name through the whole flow (button "Publish" → toast "Published").
 
 ### Icons
-- One set, one style. Use inline SVG (Lucide geometry is the house style) and copy the `<path>` into the markup.
-- Never load an icon webfont or icon-set CSS from a CDN (`lucide-static`, Font Awesome, etc.). It is render-blocking, breaks offline, and violates the zero-dependency rule — the failure mode is blank boxes where icons should be.
+- **Inline SVG first.** Copy the `<path>` into the markup (Lucide geometry is the house style). Zero requests, themes through `currentColor`, works offline. Relay, Folio and Nearly each shipped 32 icons this way.
+- **Lucide as a vendored library is allowed** when the icon count makes hand-copying the wrong call (roughly 40+): download it into `public/vendor/lucide/` and load it from there.
+- **Never a CDN `<link>`** to `lucide-static`, Font Awesome, or any icon webfont. It is render-blocking, breaks offline, and fails as blank boxes. The rule is about the network dependency, not about Lucide.
+- One set, one style, one stroke width. Do not mix a vendored set with hand-inlined paths from a different set.
 - Decorative icons are `aria-hidden="true"`; icon-only buttons carry an `aria-label`.
 
 ### Interactive states
@@ -189,7 +226,11 @@ Only multiples of 0.25 rem. If it isn't on the scale, it's a mistake.
 
 ## Logo & brand mark
 
-Every site ships one mark that survives at 16 px and reads as *this* subject. Plan it with the tokens, not after them. Full workflow, SVG rules, and pass criteria: `references/brand-mark.md`.
+Every site ships one mark that survives at 16 px and reads as *this* subject. Plan it with the tokens, not after them.
+
+**Design the mark with `alicia-logo-artist`** (a pi-agent skill): it explores 3–5 concepts side by side, then **renders them at 16/32/64/256 px on light and dark and makes you look** before choosing. Use it whenever the mark is the hard part.
+
+**Delivery rules for a SiteBox site** — full detail in `references/brand-mark.md`:
 
 - **Derive it from the subject.** A bicycle shop, a research lab, and a bakery must not produce the same mark. A circle, rounded square, or monogram-in-a-badge is what you draw when you haven't decided.
 - **One idea, one accent.** Wordmark plus a single accented character or dot beats wordmark + badge + tagline. Weight contrast (a heavy initial, a lighter remainder) is already the design — don't stack color on top of it.
@@ -200,14 +241,26 @@ Every site ships one mark that survives at 16 px and reads as *this* subject. Pl
 
 ## Performance as a design constraint
 
-Design choices decide performance before any code is optimized:
+**There is no page-size budget.** These sites carry real content in Thai, which is 3 bytes per character,
+and real data is the point of them — a ceiling that every finished site fails only teaches agents to
+ignore ceilings. Relay is 124 KB, Folio 185 KB, Nearly 308 KB raw, and all three are correct.
 
-- Max 2 font families / 4 files; a display font for one word is a cost with no benefit.
-- Every image has an aspect ratio; no stock hero photos (also an anti-pattern).
-- One bold moment per page, then restraint (Chanel rule: before shipping, remove one accessory). Motion is a design element, not decoration.
-- No gradient washes, no glassmorphism layers, no icon fonts.
+What still matters, because it is correctness rather than size:
 
-Full budgets and checks: `sitebox-create` → `references/performance.md`.
+- **Measure and report the size.** `gzip -c public/index.html | wc -c` — know the number even though
+  nothing fails on it.
+- **Serve text gzipped with `ETag`/304.** This is a serving rule (`sitebox-create`), not a budget.
+- **Anything no screen needs before an interaction may be split into its own file** and fetched on
+  demand — Nearly moved 346 KB of comments out and the home page never waits for them. Relay kept
+  everything inline on purpose, for the opposite reason. Both are correct **if you say which and why**.
+- Max 2 font families / 4 files — a *design* rule, not a byte rule. A display font for one word is a
+  cost with no benefit.
+- Every image has a real aspect ratio; no stock hero photos (also an anti-pattern).
+- One bold moment per page, then restraint (Chanel rule: before shipping, remove one accessory).
+  Motion is a design element, not decoration.
+- No gradient washes, no glassmorphism layers, no icon webfonts.
+
+Further detail: `sitebox-create` → `references/performance.md`.
 
 ---
 
@@ -238,7 +291,30 @@ The checklist below is the summary. The executable audit — with checks that ca
 - [ ] Icons are inline SVG from one set and images are local files in `public/` — no icon webfont, no CDN, no hotlinked `src="https://…"`
 - [ ] Every declared theme defines the full token set (no token left to fall back)
 - [ ] Touch targets ≥ 44 px; 16 px minimum body text; no horizontal scroll at 375 px
+- [ ] Every box showing an image gets its height from that image's ratio (see [Image geometry](#image-geometry--the-one-rule-that-prevents-every-crop-bug)) — verified in a browser, not by reading CSS
+- [ ] Bands stacked on top of each other share the same left and right edge
+- [ ] Every brand colour that fails AA is listed in the deviations table with its measured ratio and its restriction
 - [ ] Page works at 200% zoom
+
+---
+
+## Accepted deviations
+
+Some things the platform does are worth copying even when they fail a rule here — a brand colour that
+only works at 3.00:1, an action button smaller than 44 px. The rule is not "never deviate"; it is
+**never deviate silently.**
+
+Every deviation needs all four of these, or it is a bug:
+
+1. **What** the platform does and the measured number (Relay: white on X blue = 3.00:1; Nearly: amber
+   on white = 1.83:1).
+2. **Why** copying it is worth it (the type system / brand colour *is* the brief).
+3. **The restriction that makes it safe** — Nearly's amber is never used for text or links, only as a
+   fill or an indicator, and every label on it is ink at 9.08:1.
+4. **Where it is written down** — in the site's development doc, and reported by the audit as
+   `ACCEPTED DEVIATION` rather than a finding that turns the build red.
+
+A deviation without a restriction is not a deviation, it is a defect with an excuse.
 
 ---
 
@@ -264,6 +340,11 @@ The checklist below is the summary. The executable audit — with checks that ca
 18. A circular monogram as the default logo, with no reason from the subject
 19. Magic-number offsets copied from another element's size
 20. A theme that redefines only background and text, leaving surfaces, borders, and hovers to fall back
+21. **A box that shows an image getting its height from anything but the image's own ratio** — a fixed height, a stretched grid/flex parent, or a line box. This is the single most expensive bug in the repo; see [Image geometry](#image-geometry--the-one-rule-that-prevents-every-crop-bug)
+22. **A crop baked into an asset file** — the picture is destroyed and no CSS can bring it back
+23. **A cache keyed on the destination filename** — the name is stable across re-fetches, the picture is not; changing the source silently serves the old image
+24. **Two stacked bands with different edges** — a hero narrower than the rail below it, by accident
+25. **A brand colour that fails AA with no written deviation** — copying the platform is fine, copying it silently is not
 
 ---
 
@@ -292,6 +373,7 @@ When improving an existing site (see `sitebox-create` → Redesign mode):
 4. Spend boldness in one place; the rest stays disciplined.
 5. Re-run the audit and copy passes after every structural change.
 6. Re-check that the stylesheet still parses (balanced braces) and that the mark still works at 16 px on both themes — breakage hides in the surrounding CSS you didn't touch.
+7. **Re-measure every image box.** A redesign that changes a container's width, a grid's track count, or an `align-items` value can reintroduce a crop without touching a single image rule. Run the browser check from `sitebox-verify` again, at 1440 px and 390 px.
 
 ---
 
@@ -299,4 +381,11 @@ When improving an existing site (see `sitebox-create` → Redesign mode):
 
 - `references/audit.md` — executable accessibility/UX audit with report format
 - `references/writing.md` — humanizer and deslop passes with before/after examples
-- `references/brand-mark.md` — logo/brand-mark workflow, SVG rules, favicon, pass criteria
+- `references/brand-mark.md` — logo/brand-mark delivery rules, SVG craft, favicon, pass criteria
+
+## Companion skills
+
+- `alicia-logo-artist` — explore and *prove* a mark before shipping it (renders at 16/32/64/256 px on light and dark). Load it when the mark is the hard part.
+- `sitebox-verify` — turn this skill's checks into something that can fail: render harness, negative controls, real-browser layout proof, deploy mirror.
+- `sitebox-data` — when the content must be real and refreshable, so "no placeholder text" means something.
+- `sitebox-create` — build workflow and the server template.

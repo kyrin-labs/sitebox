@@ -20,10 +20,16 @@ Page loads (200) but broken?
 ├─ blank                      → JS error, wrong file, or content never written
 ├─ styles missing             → wrong path/case, MIME mismatch, file not in public/
 ├─ styles stop after a point  → unclosed `}` in <style>; every rule after it is discarded
-├─ icons are blank boxes      → icon webfont / CDN icon set failed → inline the SVG
+├─ icons are blank boxes      → CDN icon set / webfont failed → inline the SVG or vendor it
 ├─ images 404 on the site     → hotlinked third-party URL → download into public/
+├─ MANY images 404 at once    → the deploy was partial; mirror the tree and compare checksums
+├─ an image is cropped/squashed → box geometry, not the file → sitebox-design, Image geometry
+├─ a fixed image still looks old → cache: bump the asset version, send no-cache + ETag
 ├─ fonts missing / FOUT       → Google Fonts unreachable (offline) → self-host
 └─ favicon 404                → public/favicon.svg not created
+
+Everything stopped at once (dashboard AND every site)?
+└─ it was running as a bare node process → see "Keeping it alive" in SKILL.md
 
 Dashboard itself unreachable?
 └─ port 4445 occupied / dashboard process not running
@@ -104,8 +110,20 @@ Also look for an orphan declaration left by a previous fix (a property list endi
 
 ### Icons missing or images 404 while the file exists
 
-- Blank boxes where icons should be: an icon webfont or CDN icon set did not load. The fix is inline SVG, not a new CDN link (`sitebox-design` → Icons).
-- An image that renders in an editor preview but 404s on the running site is hotlinked. Download it into `public/` and reference the local path (`sitebox-create` → `references/performance.md`).
+- Blank boxes where icons should be: a CDN icon set or webfont did not load. Fix by inlining the SVG,
+  or vendoring the library into `public/` — **not** by adding another CDN link (`sitebox-design` → Icons).
+- An image that renders in an editor preview but 404s on the running site is hotlinked. Download it into
+  `public/` and reference the local path (`sitebox-create` → `references/performance.md`).
+- **Every image on the page 404s at once, but the page itself returns 200:** the deploy was partial.
+  This happened for real — only `index.html` was copied, and 22 new images plus 180 commenter avatars
+  were missing while every local check stayed green. Confirm with a real request, then mirror the whole
+  tree and compare checksums (`sitebox-verify`). `health.online: true` cannot catch this: the page is
+  served, it is just empty of pictures.
+- **An image is the wrong shape (cropped, squashed, stretched) while the file is correct:** that is a
+  layout bug, not a serving bug. Measure the drawn ratio against the natural ratio in a browser —
+  `sitebox-design` → Image geometry.
+- **A replaced image keeps showing the old version:** the browser has a `max-age` copy, or the asset
+  version was not bumped. Send `Cache-Control: no-cache` + `ETag`, and bump `?v=N`.
 
 ### Fonts missing / text shifts on load
 
@@ -127,6 +145,7 @@ Google Fonts needs network. On an offline machine the site falls back. Fix by se
 ## Dashboard problems
 
 - **4445 unreachable**: is `node dashboard/server.js` running (or the container up)? Check for another process on 4445. In Docker, `network_mode: host` means ports are shared with the host.
+- **Everything stopped at once — dashboard *and* every site**: the dashboard was almost certainly running as a bare `node` process and exited, taking its detached children with it. This is not a per-site failure; do not debug a site. See [Keeping it alive](../SKILL.md#keeping-it-alive--a-bare-node-process-will-die-silently).
 - **Unexpected auto-detected entries**: any folder in `sites/` with `server.js` gets picked up. If it shouldn't be a site, move it out of `sites/` or remove its `server.js`.
 - **Unsaved config edits**: edit through the API or dashboard; the server rewrites the JSON (atomic write via `.tmp` + rename), so hand edits made while the server runs can be overwritten.
 
@@ -145,6 +164,11 @@ curl -s http://localhost:<port>/                             # expect the real p
 curl -s "http://localhost:4445/api/sites/<id>/logs?lines=20" # expect no new [err]
 ```
 
-If the same symptom returns, escalate to `sitebox-create` quality gate — recurring 404s and layout breakage are design/build problems, not lifecycle problems.
+Then, if the change touched files: **re-run the deploy mirror and its checksum**, and re-run the
+browser layout check. A fix that is green locally but was not deployed is the most common form of
+"I already fixed that".
+
+If the same symptom returns, escalate to the `sitebox-create` quality gate and `sitebox-verify` —
+recurring 404s and layout breakage are build problems, not lifecycle problems.
 
 Reminder: never commit changes to `dashboard/data/sites.json`.
