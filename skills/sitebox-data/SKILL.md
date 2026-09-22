@@ -126,8 +126,8 @@ When a value cannot be found, the choices are **omit it** or **fail the build**.
 
 Titles, captions, comments, usernames: byte-for-byte, in the language they were written in. **Never
 translate.** A Japanese video title stays Japanese next to Thai UI chrome. Rewriting a title is the
-exact failure the original `DEVELOPMENT-EXPERIENCE.md` recorded as a problem ("Video titles were changed
-from real titles") — do not reintroduce it.
+exact failure this project has already made once ("video titles were changed from real titles") — do not
+reintroduce it.
 
 Your *own* UI copy is different: that gets the humanizer/deslop passes (`sitebox-design`).
 

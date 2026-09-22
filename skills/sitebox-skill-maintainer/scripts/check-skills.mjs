@@ -129,7 +129,7 @@ for (const dir of skillDirs) {
 
 /* ── Cross-skill references must name a skill that exists ── */
 // Skills that live outside this repo (the pi-agent skills) are legitimate targets.
-const EXTERNAL_SKILLS = new Set(['sitebox', 'alicia-logo-artist', 'alicia-writer']);
+const EXTERNAL_SKILLS = new Set(['sitebox', 'alicia-logo-artist', 'alicia-skill-writer']);
 const knownSkills = new Set([...skills.map((s) => s.dir), ...EXTERNAL_SKILLS]);
 for (const { dir, src } of skills) {
   for (const m of src.matchAll(/`(sitebox-[a-z0-9-]+|alicia-[a-z0-9-]+)`/g)) {

@@ -62,7 +62,7 @@ Skills live in `skills/` and are project-global (they are not agent-specific con
 Conventions and maintenance workflow: `skills/sitebox-skill-maintainer/SKILL.md`.
 
 When two recorded lessons conflict, the earlier experience wins: **Relay + Folio** first,
-then `DEVELOPMENT-EXPERIENCE.md`, then Nearly. The resolutions already made this way are listed in
+then Nearly. The resolutions already made this way are listed in
 `sitebox-data` and `sitebox-design` — do not re-litigate them without changing both sides.
 
 ## Running Locally

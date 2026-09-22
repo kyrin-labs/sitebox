@@ -154,8 +154,8 @@ spec named has eight videos, all from 2013, and 2.8K subscribers. The real chann
 (`@9arm.`) and has 1.61M subscribers, 1,255 videos and 450,289,376 views.
 
 **Trust what you fetched, not what the document says about it** — and when the document turns out to
-have been right all along (it had warned about the missing period), say so. The original
-`DEVELOPMENT-EXPERIENCE.md` recorded that warning, someone "fixed" it away, and the wrong channel shipped.
+have been right all along (it had warned about the missing period), say so. That warning had already
+been written down once, someone "fixed" it away, and the wrong channel shipped.
 
 ## Rate limits and manners
 

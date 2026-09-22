@@ -39,12 +39,11 @@ If a fact needs changing, change every mirror in the same edit. The checker belo
 
 ## When lessons conflict, earlier experience wins
 
-This repo now has three tiers of recorded experience, and the owner set their authority explicitly:
+This repo has two tiers of recorded experience, and the owner set their authority explicitly:
 
 ```
 1  Relay + Folio      the doctrine — these were the two sites whose lessons were distilled on purpose
-2  DEVELOPMENT-EXPERIENCE.md   background and history
-3  Nearly             newest, most specific, most likely to over-fit one site
+2  Nearly             newest, most specific, most likely to over-fit one site
 ```
 
 When a rule in one conflicts with a rule in another, the lower number wins, and the loser is recorded
