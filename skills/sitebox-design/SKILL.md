@@ -3,8 +3,8 @@ name: sitebox-design
 description: Design system and visual quality guide for SiteBox sites — color, typography, layout, spacing, components, accessibility, and copy. Use when planning or reviewing the look of a SiteBox site; designing a logo/brand mark and favicon; auditing accessibility and UX; running the humanizer/deslop copy passes; improving a design during a redesign; or when a page renders half-styled after a CSS error, an image is cropped, squashed or stretched, a box has the wrong shape, content stops short of the edge, columns are squeezed, or one theme falls back to the other. Defines the quality floor every SiteBox site must meet. Not for lifecycle, ports or logs (sitebox-config), and not for fetching real content (sitebox-data).
 metadata:
   author: sitebox
-  version: "3.1.0"
-  updated: "2026-09-22"
+  version: "3.1.1"
+  updated: "2026-09-24"
 ---
 
 # SiteBox Design System
@@ -228,7 +228,7 @@ Rules that follow:
 
 Every site ships one mark that survives at 16 px and reads as *this* subject. Plan it with the tokens, not after them.
 
-**Design the mark with `alicia-logo-artist`** (a pi-agent skill): it explores 3–5 concepts side by side, then **renders them at 16/32/64/256 px on light and dark and makes you look** before choosing. Use it whenever the mark is the hard part.
+**Design the mark with the workflow in `references/brand-mark.md`** — it has you explore 3–5 concepts side by side, then **render them at 16/32/64/256 px on light and dark and look** before choosing. Use it whenever the mark is the hard part.
 
 **Delivery rules for a SiteBox site** — full detail in `references/brand-mark.md`:
 
@@ -385,7 +385,6 @@ When improving an existing site (see `sitebox-create` → Redesign mode):
 
 ## Companion skills
 
-- `alicia-logo-artist` — explore and *prove* a mark before shipping it (renders at 16/32/64/256 px on light and dark). Load it when the mark is the hard part.
 - `sitebox-verify` — turn this skill's checks into something that can fail: render harness, negative controls, real-browser layout proof, deploy mirror.
 - `sitebox-data` — when the content must be real and refreshable, so "no placeholder text" means something.
 - `sitebox-create` — build workflow and the server template.

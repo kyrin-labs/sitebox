@@ -3,8 +3,8 @@ name: sitebox-create
 description: "Build, verify, redesign, and debug static sites for SiteBox. Use when creating a new site under sites/, scaffolding a site's server.js and public/ files, redesigning or improving an existing SiteBox site, registering a site in the dashboard, or when a SiteBox site fails to start, shows a blank page, renders half-styled, 404s, serves a stale or wrong image, has images missing on the server after a partial deploy, or needs a quality pass (performance, accessibility, copy). Covers the full loop: brief, design, build, register, start, verify, deploy, debug. Not for editing the SiteBox skills themselves (sitebox-skill-maintainer), and not for judging a design on its own (sitebox-design)."
 metadata:
   author: sitebox
-  version: "3.0.0"
-  updated: "2026-09-22"
+  version: "3.0.1"
+  updated: "2026-09-24"
 ---
 
 # Create / Redesign a Site (SiteBox)
@@ -49,7 +49,7 @@ If the brief is silent on something, propose a concrete choice and say why. Do n
 Load `sitebox-design` and produce a short design plan there:
 1. Token system: color (4–6 named hex), type (max 2 families), spacing scale.
 2. Layout concept in one sentence, left-aligned unless the brief says otherwise.
-3. Mark: the logo/brand-mark idea in one sentence, plus how it becomes `favicon.svg` (see `sitebox-design` → `references/brand-mark.md`). If the mark is the hard part, `alicia-logo-artist` explores and proves it.
+3. Mark: the logo/brand-mark idea in one sentence, plus how it becomes `favicon.svg` (see `sitebox-design` → `references/brand-mark.md`). If the mark is the hard part, follow that file's workflow: explore 3–5 concepts side by side, render them at 16/32/64/256 px on light and dark, and look before choosing.
 4. Review the plan against the brief; revise anything that reads like the default you'd produce for any similar page. Say what you changed and why.
 
 Only then write code. The plan is the contract; deviations during build should be deliberate. If you explore alternatives in a scratch page, delete that page before shipping — concept previews are never part of the site.
@@ -244,7 +244,8 @@ Run in this order, fix, then re-verify. Steps 1–2 are **executable** — run t
 8. Static self-check: CSS braces balanced (command in step 7), no CDN `<link>`, no `src="https://…"`
    images, every `<img>` has real `width`/`height` and an asset version.
 
-A site is done when all eight pass, not when it renders once.
+A site is done when all eight pass, not when it renders once. These eight are the `sitebox` router's
+Definition of done, phrased as steps — if one list changes, change the other in the same edit.
 
 ---
 
@@ -313,4 +314,3 @@ Read `GET /api/sites/:id/logs?lines=200` before guessing. The last `[err]` line 
 - `sitebox-design` → `references/brand-mark.md` — logo/brand-mark delivery rules, SVG craft, favicon
 - `sitebox-design` → `references/audit.md`, `references/writing.md` — quality gate details
 - `sitebox-config` → `references/troubleshooting.md` — full failure playbook and log interpretation
-- `alicia-logo-artist` — design and prove a mark (pi-agent skill)

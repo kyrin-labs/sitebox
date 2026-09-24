@@ -3,10 +3,9 @@
 A site needs one mark that survives at 16 px and reads as *this* subject. The mark is design
 material, not an afterthought bolted on at the end — plan it with the tokens and the layout.
 
-This file is the **delivery** subset: what a mark must look like once it lands in a SiteBox site.
-For the *design* work — exploring concepts and proving they survive — use the **`alicia-logo-artist`**
-pi-agent skill. It renders candidates at 16/32/64/256 px on light and dark and makes you look before
-you choose.
+This file covers both the *design* work — exploring concepts and proving they survive — and the
+**delivery** subset: what a mark must look like once it lands in a SiteBox site. The hard rule either
+way: render every candidate at 16/32/64/256 px on light and dark and **look** before you choose.
 
 Lineage: the workflow below was distilled from the `SVG Logo Designer` skill (rknall/claude-skills),
 which this project then **replaced**. That skill recommended an indigo `#4f46e5` → violet `#7c3aed`
@@ -25,7 +24,8 @@ the wrong thing.
 3. **Render and look before choosing.** Nearly's mark is a play triangle whose three corners do not
    meet; the gap was chosen by sweeping six values and rendering all of them, not by reasoning about
    it. If you cannot see the candidates at 16 px and at 256 px, on light and on dark, you have not
-   chosen yet. `alicia-logo-artist` ships the script that produces this comparison sheet.
+   chosen yet — build the comparison sheet yourself: one scratch page showing every concept at all
+   four sizes, on light and on dark, side by side.
 4. **Pick one deliberately.** State the reason in one sentence ("the wordmark, because the name is
    the brand; the dot marks 'live'"). If two concepts are equally good, the simpler one wins.
 5. **Refine the winner** — spacing, weight, the single accent. Then run the hard cases below.

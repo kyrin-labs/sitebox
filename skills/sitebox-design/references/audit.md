@@ -114,7 +114,7 @@ session while the text checks reported success.
 
 ## Brand mark
 
-- [ ] The mark is derived from the subject, not a default circle/monogram. If the mark is the hard part, `alicia-logo-artist` explores and proves it.
+- [ ] The mark is derived from the subject, not a default circle/monogram. If the mark is the hard part, follow the workflow in [brand-mark.md](brand-mark.md): explore 3–5 concepts, render them at 16/32/64/256 px on light and dark, and look before choosing.
 - [ ] Legible at 16 px (favicon size) and works on light *and* dark backgrounds (`currentColor`).
 - [ ] Inline SVG; no webfont-dependent `<text>` (outline the type, or use a metric-safe system stack).
 - [ ] `public/favicon.svg` exists, is referenced from `<head>`, and returns 200.

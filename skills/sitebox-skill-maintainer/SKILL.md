@@ -3,8 +3,8 @@ name: sitebox-skill-maintainer
 description: Create, audit, and update the SiteBox skills themselves. Use when editing any skill under skills/, adding a new SiteBox skill, checking skills against the real dashboard API and icons, resolving drift between skills/README/server behavior, wiring a new skill into the others, or bumping skill versions after a feature change. Not for building sites — use sitebox-create, sitebox-design, sitebox-data, sitebox-verify, and sitebox-config for that.
 metadata:
   author: sitebox
-  version: "2.0.0"
-  updated: "2026-09-22"
+  version: "2.0.1"
+  updated: "2026-09-24"
 ---
 
 # SiteBox Skill Maintainer (meta)
@@ -47,9 +47,9 @@ This repo has two tiers of recorded experience, and the owner set their authorit
 ```
 
 When a rule in one conflicts with a rule in another, the lower number wins, and the loser is recorded
-(not deleted). The conflicts that have already been resolved this way are listed in `sitebox-data` and
-`sitebox-design`. **Do not re-litigate a resolved conflict** — if you believe the resolution is wrong, change
-it in one place and update the loser's entry in the same edit.
+(next to the winning rule, in the skill that owns the conflict) — not deleted. **Do not re-litigate a
+resolution** — if you believe it is wrong, change both sides in one edit and update the record in the
+same edit.
 
 ## Maintain workflow
 
