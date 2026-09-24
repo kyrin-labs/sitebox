@@ -250,3 +250,5 @@ With no favicon, the dashboard renders these icons; any other name falls back to
 ## License
 
 MIT
+
+Built-in icons are Lucide SVG geometry (ISC License).
