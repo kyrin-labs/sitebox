@@ -59,6 +59,7 @@ sitebox/
 - **Port availability** — check before assigning ports (duplicate ports are rejected)
 - **Stale detection** — flags entries whose folder/server.js is missing
 - **Auto-detect** — drop a site folder in `sites/` and it appears
+- **Real deletes** — the delete button stops the site, deletes `sites/<id>/` and drops the entry, so auto-detect cannot bring it back
 - **Light/Dark theme** — toggle in header
 - **Custom icon colors** — per-site icon color
 - **Auto-detected favicons** — a site's real favicon replaces its Lucide icon (the manual icon fields lock while it exists)
@@ -107,6 +108,30 @@ which of the six apply to a whole job and in what order. The six themselves:
 `sitebox-create` (build + deploy), `sitebox-design` (quality gate),
 `sitebox-data` (real content), `sitebox-verify` (proof), `sitebox-config`
 (lifecycle), and `sitebox-skill-maintainer` (keeps them in sync with the dashboard).
+
+## Deleting a Site
+
+Delete is a real delete: the site is stopped, its folder is removed from
+`sites/` and the entry is dropped from `sites.json`.
+
+```bash
+# UI: the trash button on the site card, confirmed once
+
+# API — same thing the button does
+curl -X DELETE http://localhost:4445/api/sites/my-site
+```
+
+Removing only the entry is deliberately not the default. Auto-detect scans
+`sites/` for folders with a `server.js`, so a config-only delete would put the
+site straight back — same folder, new port. If that is really what you want:
+
+```bash
+# Delete the entry, keep the files (auto-detect will add it back)
+curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"
+```
+
+The folder is only ever deleted when the resolved path is inside `sites/`; a
+path that points anywhere else is refused with `400` and the entry stays.
 
 ## Skills & Interop
 
@@ -180,7 +205,7 @@ http.createServer((req, res) => {
 |--------|----------|-------------|
 | `GET` | `/api/sites` | List all sites with status (`_running`, `_stale`, `_logLines`) |
 | `POST` | `/api/sites` | Add or update a site (validates id, name, unique port) |
-| `DELETE` | `/api/sites/:id` | Remove a site (`?purge=1` also deletes the folder) |
+| `DELETE` | `/api/sites/:id` | **Delete a site**: stops it, deletes its folder, removes the entry (`?keep=1` deletes the entry only) |
 | `POST` | `/api/sites/:id/start` | Start a site and verify the port is listening |
 | `POST` | `/api/sites/:id/stop` | Stop a site process |
 | `POST` | `/api/sites/:id/restart` | Stop + start |

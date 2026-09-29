@@ -45,7 +45,7 @@ The config points at a path without a server file. Confirm:
 curl -s http://localhost:4445/api/sites   # look for "_stale": true
 ```
 
-Fixes: restore/rename the folder back, POST the corrected `path`, or delete the entry. Auto-detect will not repair the path for you. Delete with `?purge=1` only if the files are truly disposable.
+Fixes: restore/rename the folder back, POST the corrected `path`, or delete the entry. Auto-detect will not repair the path for you. An ordinary `DELETE` also removes the folder, which is what you want when the files are already gone — use `?keep=1` only if you intend to bring them back.
 
 ### `port N is already in use before starting` / `EADDRINUSE`
 
@@ -132,8 +132,8 @@ Google Fonts needs network. On an offline machine the site falls back. Fix by se
 ## Stale entries and delete surprises
 
 - `_stale: true` → path has no `server.js`. Fix path or delete.
-- Deleted a site but it came back with a new port → default DELETE keeps the folder; auto-detect re-adds it. Use `?purge=1`.
-- Deleted with `purge=1` but the port stays occupied → the process was stopped first, but an untracked orphan may still hold the port (see EADDRINUSE above).
+- `DELETE /api/sites/<id>` removes the entry **and** the folder, and it is what the trash button calls. If a site came back with a new port after you deleted it, the delete went through `?keep=1` (or predates the real-delete change) — the folder was still on disk for auto-detect to find.
+- Deleted a site but the port stays occupied → the process was stopped first, but an untracked orphan may still hold the port (see EADDRINUSE above). Delete the folder first, then `GET /api/ports/check?port=N`.
 
 ## Logs
 

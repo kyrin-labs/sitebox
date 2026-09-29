@@ -437,12 +437,20 @@ const server = http.createServer(async (req, res) => {
     if (del && m === 'DELETE') {
       const s = cfg.sites.find(x => x.id === del[1]);
       if (!s) return send(res, 404, { error: 'not found' });
-      const purge = url.searchParams.get('purge') === '1';
+      // Deleting means deleting. Dropping the config entry alone is not a
+      // deletion: auto-detect scans sites/, finds the folder still there, and
+      // the site returns on the very next request with a fresh port. So the
+      // folder goes with the entry. `?keep=1` (or the older `?purge=0`) is the
+      // explicit opt-out for deleting the entry but keeping the files.
+      const purge = url.searchParams.get('keep') !== '1' && url.searchParams.get('purge') !== '0';
       let abs = null;
       if (purge) {
         abs = path.resolve(ROOT, s.path || '');
         if (!abs.startsWith(SITES_DIR + path.sep) || abs === SITES_DIR)
-          return send(res, 400, { error: 'refusing to purge: path is outside sites/' });
+          return send(res, 400, {
+            error: 'refusing to purge: path is outside sites/',
+            hint: `The entry says path "${s.path || '(none)'}". Fix the path (POST /api/sites) so it points inside sites/, or delete the entry only with ?keep=1.`,
+          });
       }
       await stopSite(s);
       if (purge) fs.rmSync(abs, { recursive: true, force: true });
@@ -452,8 +460,9 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, {
         ok: true,
         purged: purge,
+        removed: purge ? s.path || null : null,
         note: purge
-          ? 'config and site folder removed'
+          ? 'site stopped, folder deleted, entry removed'
           : 'config removed only — the folder is still on disk, so it will be auto-detected again',
       });
     }

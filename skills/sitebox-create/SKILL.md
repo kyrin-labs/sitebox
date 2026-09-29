@@ -18,7 +18,7 @@ Build sites that feel like real products — not demos, not templates. Every sit
 | `sitebox-design` | Design tokens, typography, color, layout, **image geometry**, components, visual anti-patterns, accessibility/UX audit, copy passes (humanizer + deslop) | Before any visual work or redesign (step 3), and for the quality gate (step 9) |
 | `sitebox-data` | Real-data pipelines: fetch → build → download → resize → splice, source of truth, refreshability, content fixtures, coverage floors | Step 3 whenever the content must be real and stay refreshable, and step 7 when the page renders data |
 | `sitebox-verify` | Render harness, negative controls, real-browser layout proof, HTTP sweep, deploy mirror + checksum | Steps 7, 9 and 10 — and **before you claim anything works** |
-| `sitebox-config` | Dashboard API, port selection, register/start/stop/restart, logs, health, stale entries, delete/purge | Steps 4 and 8, and any lifecycle/debug work |
+| `sitebox-config` | Dashboard API, port selection, register/start/stop/restart, logs, health, stale entries, real deletes | Steps 4 and 8, and any lifecycle/debug work |
 | `sitebox-skill-maintainer` | The SiteBox skills themselves | Only when editing skills, not when building sites |
 
 If you are not sure which skill applies, the `sitebox` skill is the router: it decides the order for a

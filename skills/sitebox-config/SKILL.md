@@ -53,8 +53,8 @@ create files  →  POST /api/sites       (register; validates id, port, name)
               →  GET  :id/logs         (captured stdout/stderr)
               →  POST :id/stop         (SIGTERM, then SIGKILL after 2.5s)
               →  POST :id/restart      (stop + start)
-              →  DELETE :id            (removes config; folder stays)
-              →  DELETE :id?purge=1    (removes config AND folder)
+              →  DELETE :id            (stop, delete the folder, drop the entry)
+              →  DELETE :id?keep=1     (drop the entry only; auto-detect adds it back)
 ```
 
 ## Port selection
@@ -161,18 +161,22 @@ curl -X POST http://localhost:4445/api/sites/my-site/restart
 
 Stop sends SIGTERM and escalates to SIGKILL if the process hasn't exited after ~2.5s. Restart waits briefly for the port to free before starting, so it's the right tool after config or code changes.
 
-## Delete and purge
+## Delete means delete
 
 ```bash
-# Remove the dashboard entry, keep the folder (it will be auto-detected again!)
+# Stop the site, delete sites/my-site/ and drop the entry — the whole site is gone
 curl -X DELETE http://localhost:4445/api/sites/my-site
 
-# Remove the entry AND the files (safest way to truly delete a site)
-curl -X DELETE "http://localhost:4445/api/sites/my-site?purge=1"
+# Drop the entry but keep the files (auto-detect adds the site back, new port)
+curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"
 ```
 
-- Default delete removes the config only. Because auto-detect scans `sites/`, the folder reappears on the next request with a fresh port — if that surprises you, use `purge`.
-- `purge=1` refuses to delete anything outside `sites/` and deletes the folder only after stopping the process.
+- One `DELETE` is the real delete, and it is what the dashboard's trash button calls. A config-only
+  delete is never the default: auto-detect scans `sites/` for folders with a `server.js`, so the site
+  would return on the next request under a fresh port and the delete would look broken.
+- The folder is removed only when the resolved path is inside `sites/`; anything else is refused with
+  `400` and the entry stays. The process is stopped before the folder goes.
+- `?purge=1` still purges (backwards compatible) and `?purge=0` behaves like `?keep=1`.
 
 ## Stale entries
 
@@ -182,7 +186,7 @@ curl -X DELETE "http://localhost:4445/api/sites/my-site?purge=1"
 - `_stale: true` — `server.js` doesn't exist at `path`. The site can't start.
 - `_logLines` — captured log lines available.
 
-Stale usually means a folder was moved/renamed outside the dashboard. Fix the `path` (POST), or delete the entry (`?purge=1` for cleanup). The dashboard shows a "stale" badge and disables Start/Open.
+Stale usually means a folder was moved/renamed outside the dashboard. Fix the `path` (POST), or delete the entry — an ordinary `DELETE` also removes the folder, which is the cleanup you want when the files are truly gone. The dashboard shows a "stale" badge and disables Start/Open.
 
 Auto-detect never removes entries — it only adds missing folders. The file is only rewritten when something is added; just browsing the dashboard does not modify it.
 
@@ -237,7 +241,7 @@ accepted by `POST /api/sites`.
 |--------|----------|-------------|
 | `GET` | `/api/sites` | List sites with `_running`, `_stale`, `_logLines` |
 | `POST` | `/api/sites` | Add or partially update a site (validated) |
-| `DELETE` | `/api/sites/:id` | Remove config (`?purge=1` also deletes files) |
+| `DELETE` | `/api/sites/:id` | Delete a site: stop, delete the folder, drop the entry (`?keep=1` = entry only) |
 | `POST` | `/api/sites/:id/start` | Start + verify port |
 | `POST` | `/api/sites/:id/stop` | Stop process |
 | `POST` | `/api/sites/:id/restart` | Stop + start |

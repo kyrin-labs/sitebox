@@ -168,7 +168,7 @@ function render() {
         <button class="btn btn--ghost btn--sm" onclick="editSite('${s.id}')" title="Edit">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
         </button>
-        <button class="btn btn--ghost btn--sm" onclick="deleteSite('${s.id}')" title="Delete">
+        <button class="btn btn--ghost btn--sm" onclick="deleteSite('${s.id}')" title="Delete site and its files">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
         </button>
       </div>
@@ -196,8 +196,12 @@ async function stopSite(id) {
 }
 
 async function deleteSite(id) {
-  if (!confirm(`Delete "${id}" from the dashboard?\n\nThe site folder stays on disk (it will be auto-detected again). The API supports ?purge=1 to delete files too.`)) return;
-  await fetch(`${API}/api/sites/${id}`, { method: 'DELETE' });
+  if (!confirm(`Delete "${id}" and its files?\n\nThis stops the site, deletes sites/${id}/ from disk and removes it from the dashboard. It cannot be undone, and the site will not come back on the next refresh.`)) return;
+  const res = await fetch(`${API}/api/sites/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    alert(`Could not delete "${id}"\n\n${data.error || res.statusText}${data.hint ? `\n\n${data.hint}` : ''}`);
+  }
   loadSites();
 }
 
