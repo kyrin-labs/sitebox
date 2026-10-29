@@ -25,7 +25,7 @@ failed ones, so nothing "continues on error".
 | 4 | mint | Host CLI writes `dashboard/data/tokens.json`. Skipped when the existing key still authenticates — a redeploy must not rotate a key out from under a running client. Must run after phase 3, never before: a root-owned store cannot be written by the operator, which is the recovery path. |
 | 5 | up --build | Waits for `/api/health`. Gate: `features` must include `auth` and `port0`, otherwise the image is stale and the script says so. |
 | 6 | smoke | Auth (401/200/wrong token), cookie session, favicon path not 401, capability split, LAN delete matches `mayWrite`, audit delta, 413 on an oversized body, tokens not tracked, file modes. |
-| 6b | MCP round trip | `mcp/test/smoke-live.js` against production: create → check → logs → delete, port freed. |
+| 6b | MCP round trip | `mcp/test/smoke-live.js` against production: create → serve → LAN bind refused before/after restart → audit delta → oversized body 413 → LAN policy gates → delete → port freed. |
 | 7 | restore sites | Starts back **only** what the baseline saw, then re-baselines and compares `(id, port)` as a **set**. Empty diff or the run fails. |
 | 8 | restore drill | Opt-in (`--with-restore-drill`): restores the latest snapshot into a temp dir and serves it on temp ports. |
 
