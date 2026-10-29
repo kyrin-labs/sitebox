@@ -339,7 +339,14 @@ do_preflight() {
 
 case "${1:---preflight}" in
   --preflight)     do_preflight ;;
-  --deploy)        phase_baseline; phase_tag; say "2 · compose down"; dcz "down" >/dev/null; ok "container down"; phase_chown; phase_mint; phase_up; phase_smoke; phase_restore ;;
+  --deploy)        phase_baseline; phase_tag; say "2 · compose down"; dcz "down" >/dev/null; ok "container down"; phase_chown; phase_mint; phase_up; phase_smoke; phase_restore
+                   # Opt-in: the drill runs a second dashboard on its own port from the last
+                   # snapshot, so it is cheap but not free — worth it on any commit that
+                   # touches backup, tokens or restore paths.
+                   if [ "${2:-}" = "--with-restore-drill" ]; then
+                     say "8 · restore drill"
+                     /home/l2s/scripts/sitebox-restore-drill.sh || die "restore drill failed"
+                   fi ;;
   --restore-sites) phase_restore ;;
   --rollback)      do_rollback ;;
   *) echo "usage: $0 [--preflight|--deploy|--restore-sites|--rollback]"; exit 2 ;;
