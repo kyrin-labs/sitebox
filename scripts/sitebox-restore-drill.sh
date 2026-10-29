@@ -34,9 +34,12 @@ SITE_PORT="${DRILL_SITE_PORT:-4621}"
 WORK="$(mktemp -d "${SCRATCH}/sitebox-drill-XXXXXX")"
 DASH_PID=""; SITE_PID=""
 cleanup() {
-  [ -n "${SITE_PID}" ] && kill "${SITE_PID}" 2>/dev/null || true
-  [ -n "${DASH_PID}" ] && kill "${DASH_PID}" 2>/dev/null || true
-  sleep 0.4
+  for pid in "${SITE_PID}" "${DASH_PID}"; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$pid" 2>/dev/null || true
+  done
   rm -rf "${WORK}"
 }
 trap cleanup EXIT
@@ -44,6 +47,15 @@ trap cleanup EXIT
 fails=0
 pass() { printf 'PASS %-46s [%s]\n' "$1" "${2:-}"; }
 fail() { printf 'FAIL %-46s [%s]\n' "$1" "${2:-}"; fails=$((fails+1)); }
+
+port_busy() { ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$1$"; }
+for p in "${DASH_PORT}" "${SITE_PORT}"; do
+  if port_busy "$p"; then
+    echo "FAIL port ${p} is already in use — a leftover drill process would be tested instead of this snapshot" >&2
+    echo "     kill it first: ss -ltnp | grep :${p}" >&2
+    exit 1
+  fi
+done
 
 echo "snapshot: ${SNAPSHOT##*/}"
 
@@ -57,7 +69,7 @@ sed -i "s/^const PORT = 4445;/const PORT = ${DASH_PORT};/" "${WORK}/app/dashboar
 grep -q "const PORT = ${DASH_PORT};" "${WORK}/app/dashboard/server.js" \
   || { echo "FAIL could not rewrite the dashboard port in the copy" >&2; exit 1; }
 
-( cd "${WORK}/app" && SITEBOX_DATA="${WORK}/app/dashboard/data" node dashboard/server.js > "${WORK}/dash.log" 2>&1 ) &
+( cd "${WORK}/app" && exec env SITEBOX_DATA="${WORK}/app/dashboard/data" node dashboard/server.js > "${WORK}/dash.log" 2>&1 ) &
 DASH_PID=$!
 for _ in $(seq 1 30); do
   [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://127.0.0.1:${DASH_PORT}/api/health" || true)" = "200" ] && break
@@ -73,7 +85,9 @@ code="$(curl -s -o /dev/null -m 3 -H "Authorization: Bearer ${TOK}" -w '%{http_c
 [ "${code}" = "200" ] && pass "restored token store accepts the client key" "200" || fail "restored token store accepts the client key" "got ${code}"
 
 got="$(curl -s -m 3 -H "Authorization: Bearer ${TOK}" "http://127.0.0.1:${DASH_PORT}/api/sites" \
-  | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
+  | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print(len(d) if isinstance(d, list) else -1)' 2>/dev/null || echo -1)"
 want="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["sites"]))' "${SNAPSHOT}/dashboard-data/sites.json" 2>/dev/null || echo 0)"
 [ "${got}" = "${want}" ] && pass "registry restored with every entry" "${got} sites" || fail "registry restored with every entry" "${got} != ${want}"
 
@@ -93,7 +107,7 @@ cp -a "${SNAPSHOT}/sites/${VICTIM}" "${WORK}/app/sites/${VICTIM}"
   && pass "folder restored from the snapshot" "$(du -sh "${WORK}/app/sites/${VICTIM}" | cut -f1)" \
   || fail "folder restored from the snapshot" "missing index.html"
 
-( cd "${WORK}/app/sites/${VICTIM}" && PORT="${SITE_PORT}" HOST=127.0.0.1 node server.js > "${WORK}/site.log" 2>&1 ) &
+( cd "${WORK}/app/sites/${VICTIM}" && exec env PORT="${SITE_PORT}" HOST=127.0.0.1 node server.js > "${WORK}/site.log" 2>&1 ) &
 SITE_PID=$!
 site_code=""
 for _ in $(seq 1 20); do
