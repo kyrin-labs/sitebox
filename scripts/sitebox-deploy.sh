@@ -209,6 +209,20 @@ phase_smoke() {
     | curl -s -o /dev/null -m 10 -b "$jar2" -X POST -H "Origin: ${API}" -H 'Content-Type: application/json' --data-binary @- -w '%{http_code}' "${API}/api/sites")"
   [ "$big_code" = "413" ] || die "an oversized POST body answered ${big_code}, expected 413"
   ok "oversized body rejected with 413"
+  # Rotation invariants: proving rotation needs a megabyte of writes, which belongs in a
+  # unit test — production only has to prove the shape a reader depends on.
+  local gens perms
+  gens="$(ls -1 "${ROOT}"/dashboard/data/audit.log* 2>/dev/null | wc -l)"
+  [ "$gens" -le 6 ] || die "${gens} audit log files on disk (live + five rotations is the cap)"
+  ok "audit generations on disk: ${gens} (cap 6)"
+  if [ -f "${ROOT}/dashboard/data/audit.log" ]; then
+    perms="$(stat -c '%a %u' "${ROOT}/dashboard/data/audit.log")"
+    [ "$perms" = "600 1000" ] || die "audit.log is '${perms}', expected '600 1000'"
+    ok "audit.log is 600 uid 1000"
+    node -e 'const fs=require("fs");const p=process.argv[1];let n=0,bad=0;for(const l of fs.readFileSync(p,"utf8").split("\n")){if(!l.trim())continue;n++;try{JSON.parse(l)}catch{bad++}}if(bad){console.error("unparseable audit lines: "+bad);process.exit(1)}console.log("    audit JSONL: "+n+" line(s), 0 bad")' "${ROOT}/dashboard/data/audit.log"
+    ok "every audit line parses"
+  fi
+
 
   rm -f "$jar2"
 
