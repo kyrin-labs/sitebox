@@ -18,11 +18,13 @@ const store = require('../tokenstore');
 const auth = require('../auth');
 
 const mkres = () => {
-  const r = { status: 0, body: null, headers: {} };
+  const r = { status: 0, body: null, headers: {}, _finish: [] };
   r.setHeader = (k, v) => { r.headers[k.toLowerCase()] = v; };
+  r.once = (ev, fn) => { if (ev === 'finish') r._finish.push(fn); };
+  r.finish = () => { const fns = r._finish; r._finish = []; fns.forEach((fn) => fn()); };
   return r;
 };
-const send = (res, status, data) => { res.status = status; res.body = data; };
+const send = (res, status, data) => { res.status = status; res.statusCode = status; res.body = data; };
 const req = (o) => ({ method: 'GET', url: '/api/sites', headers: {}, socket: { remoteAddress: '::ffff:127.0.0.1' }, ...o });
 
 async function guard(o, pathname) {
@@ -215,7 +217,8 @@ test('every write leaves exactly one audit line, and the actor names the credent
   const ck = uiCookie();
   const audit = require('../audit');
   const before = fs.existsSync(audit.LOG) ? fs.readFileSync(audit.LOG, 'utf8').trim().split('\n').length : 0;
-  await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/reorder');
+  const first = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/reorder');
+  first.res.finish(); // the line lands when the response finishes, with its real status
   const lines = fs.readFileSync(audit.LOG, 'utf8').trim().split('\n');
   assert.equal(lines.length, before + 1, 'one write must be exactly one line');
   const row = JSON.parse(lines[lines.length - 1]);
@@ -225,7 +228,8 @@ test('every write leaves exactly one audit line, and the actor names the credent
 
   // A bearer token is named by its label — the only real identity in the system.
   const key = store.createToken('audit-bearer', 'write');
-  await guard({ method: 'POST', headers: { authorization: 'Bearer ' + key }, ...fromLan }, '/api/sites/reorder');
+  const second = await guard({ method: 'POST', headers: { authorization: 'Bearer ' + key }, ...fromLan }, '/api/sites/reorder');
+  second.res.finish();
   const after = fs.readFileSync(audit.LOG, 'utf8').trim().split('\n');
   const bearerRow = JSON.parse(after[after.length - 1]);
   assert.equal(bearerRow.actor, 'token:audit-bearer');
@@ -239,8 +243,9 @@ test('every write leaves exactly one audit line, and the actor names the credent
 
 test('delete fails closed when the audit log cannot be written', async () => {
   const audit = require('../audit');
-  const original = audit.record;
+  const original = { record: audit.record, assertWritable: audit.assertWritable };
   audit.record = () => { throw new Error('disk full'); };
+  audit.assertWritable = () => { throw new Error('disk full'); };
   try {
     const ck = uiCookie();
     const g = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/sites/relay');
@@ -250,7 +255,8 @@ test('delete fails closed when the audit log cannot be written', async () => {
     const other = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/relay/start');
     assert.equal(other.handled, false);
   } finally {
-    audit.record = original;
+    audit.record = original.record;
+    audit.assertWritable = original.assertWritable;
   }
 });
 
@@ -262,6 +268,7 @@ test('a forwarded-for header cannot fake loopback', async () => {
     socket: { remoteAddress: '192.168.1.50' },
   }, '/api/sites');
   assert.equal(spoof.handled, false, 'the header neither grants nor denies anything now');
+  spoof.res.finish(); // the line lands on finish now
   const audit = require('../audit');
   const row = JSON.parse(fs.readFileSync(audit.LOG, 'utf8').trim().split('\n').pop());
   assert.match(row.actor, /192\.168\.1\.50/, 'the recorded address is the socket, never the header');
@@ -364,4 +371,62 @@ test('GET /api/audit shows the newest lines to any authenticated caller, with no
   // ...but an anonymous caller cannot.
   const anon = await guard({}, '/api/audit');
   assert.equal(anon.res.status, 401);
+});
+
+/* ── everything that happens at the point of refusal ── */
+const audit = require('../audit');
+const auditLines = () => {
+  try { return fs.readFileSync(audit.LOG, 'utf8').split('\n').filter(Boolean); } catch { return []; }
+};
+
+test('a refused write leaves exactly one audit line that says why', async () => {
+  const ck = uiCookie();
+  const before = auditLines().length;
+  const res = mkres();
+  await auth.guard(req({
+    method: 'POST',
+    url: '/api/sites',
+    headers: { cookie: ck.cookie, host: '192.168.1.102:4445', origin: 'http://evil.example' },
+    socket: { remoteAddress: '192.168.1.50' },
+  }), res, send, new URL('http://box/api/sites'), 'POST', '/api/sites');
+
+  const after = auditLines();
+  assert.equal(after.length, before + 1, 'a blocked CSRF attempt must not be invisible');
+  const rec = JSON.parse(after[after.length - 1]);
+  assert.equal(rec.status, 403);
+  assert.equal(rec.actor, 'denied:origin');
+  assert.equal(rec.path, '/api/sites');
+  assert.equal(rec.method, 'POST');
+  assert.equal(res.status, 403);
+});
+
+test('an unauthenticated write is recorded as anon with 401', async () => {
+  const before = auditLines().length;
+  const res = mkres();
+  await auth.guard(req({ method: 'DELETE', url: '/api/sites/relay' }), res, send, new URL('http://box/api/sites/relay'), 'DELETE', '/api/sites/relay');
+  const after = auditLines();
+  assert.equal(after.length, before + 1);
+  const rec = JSON.parse(after[after.length - 1]);
+  assert.equal(rec.status, 401);
+  assert.equal(rec.actor, 'anon');
+  assert.equal(rec.path, '/api/sites/relay');
+});
+
+test('an allowed write records the status the client actually got', async () => {
+  const key = store.createToken('status-probe', 'write');
+  const res = mkres();
+  const handled = await auth.guard(
+    req({ method: 'POST', url: '/api/sites/reorder', headers: { authorization: 'Bearer ' + key } }),
+    res, send, new URL('http://box/api/sites/reorder'), 'POST', '/api/sites/reorder',
+  );
+  assert.equal(handled, false, 'the route still has to run');
+  assert.equal(auditLines().pop().includes('reorder'), false, 'nothing is written before the handler answers');
+
+  res.status = 200;
+  res.statusCode = 200;
+  res.finish();
+  const rec = JSON.parse(auditLines().pop());
+  assert.equal(rec.status, 200);
+  assert.equal(rec.actor, 'token:status-probe');
+  assert.equal(rec.path, '/api/sites/reorder');
 });

@@ -64,20 +64,53 @@ function rotate() {
  * Append one line. Throws when the line could not be written, so the caller can
  * decide whether that is fatal (it is for delete, which cannot be undone).
  */
-function record({ who, req, method, path: target }) {
-  const line = JSON.stringify({
+function line({ actor: who, req, method, path: target, status }) {
+  return JSON.stringify({
     time: new Date().toISOString(),
-    actor: actor(who, req),
+    actor: who,
     method,
     path: target,
-    ip: String((req.socket && req.socket.remoteAddress) || '-'),
+    status: status === undefined ? null : Number(status),
+    ip: String((req && req.socket && req.socket.remoteAddress) || '-'),
   });
-  rotate();
-  fs.appendFileSync(LOG, line + '\n', { mode: 0o600 });
-  return line;
 }
 
-module.exports = { record, actor, tail, LOG };
+function append(text) {
+  rotate();
+  fs.appendFileSync(LOG, text + '\n', { mode: 0o600 });
+  return text;
+}
+
+function record({ who, req, method, path: target, status }) {
+  return append(line({ actor: actor(who, req), req, method, path: target, status }));
+}
+
+/**
+ * A refusal is the event worth investigating later — a rejected CSRF attempt, a client
+ * guessing tokens, a flood of oversized bodies. It gets its own line with an explicit
+ * actor, written at the point of refusal rather than after a handler that never runs.
+ */
+function denied({ req, method, path: target, status, actor: forced }) {
+  return append(line({ actor: forced || 'anon', req, method, path: target, status }));
+}
+
+/** Prove the log is writable before an operation that cannot be undone. */
+function assertWritable() {
+  const fd = fs.openSync(LOG, 'a', 0o600);
+  fs.closeSync(fd);
+}
+
+/**
+ * Record the status the client actually got. The guard runs before the route, so at that
+ * moment only the response object knows whether this became a 200, a 400 or a 404.
+ */
+function recordOnFinish(res, info) {
+  res.once('finish', () => {
+    try { record(Object.assign({}, info, { status: res.statusCode })); } catch { /* best effort */ }
+  });
+}
+
+module.exports = { record, recordOnFinish, denied, assertWritable, actor, tail, LOG };
 
 /**
  * Newest `n` parsed lines, oldest first. Unparseable lines are skipped rather than

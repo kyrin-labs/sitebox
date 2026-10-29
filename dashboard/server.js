@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const auth = require('./auth');
+const audit = require('./audit');
 
 const PORT = 4445;
 const ROOT = path.join(__dirname, '..');
@@ -77,7 +78,10 @@ function parseBody(req, res) {
     req.on('data', (chunk) => {
       size += chunk.length;
       if (size > MAX_BODY) {
-        if (res) send(res, 413, { error: 'request body too large', hint: `the dashboard accepts at most ${MAX_BODY} bytes` });
+        if (res) {
+          try { audit.denied({ req, method: req.method, path: String(req.url || '').split('?')[0], status: 413, actor: 'anon' }); } catch { /* never mask the refusal */ }
+          send(res, 413, { error: 'request body too large', hint: `the dashboard accepts at most ${MAX_BODY} bytes` });
+        }
         req.destroy();
         return finish(null);
       }

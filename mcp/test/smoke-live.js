@@ -257,6 +257,7 @@ function connect() {
     const listed = await api('GET', '/api/sites', token);
     const order = (listed.json || []).map((s) => s.id);
     const write = await raw('POST', '/api/sites/reorder', { base: API, token, body: { order } });
+    await new Promise((r) => setTimeout(r, 120)); // the line is written when the response finishes
     const after = auditLines();
     gate('audit: one write = exactly one line', after.length === before.length + 1,
       before.length + ' -> ' + after.length + ' (reorder answered ' + write.status + ')');
@@ -332,6 +333,25 @@ function connect() {
         JSON.stringify(me.json || me.status).slice(0, 150));
       gate('LAN session can open the keys pane', Boolean(me.json && me.json.canAdminTokens === true),
         'canAdminTokens=' + (me.json && me.json.canAdminTokens));
+
+      // A refusal is the event worth investigating, so it must leave a line — and the line
+      // has to name the reason, not just the path.
+      const denyBefore = auditLines();
+      const refused = await raw('DELETE', '/api/sites/relay', { base, cookie, origin: 'http://evil.example' });
+      await new Promise((r) => setTimeout(r, 120));
+      const denyAfter = auditLines();
+      if (denyBefore === null || denyAfter === null) {
+        skip('refused write leaves an audit line', 'no audit.log yet');
+      } else {
+        let rec = null;
+        try { rec = JSON.parse(denyAfter[denyAfter.length - 1]); } catch { rec = null; }
+        gate('refused write (bad Origin) answered 403', refused.status === 403, 'status=' + refused.status);
+        gate('refused write leaves exactly one audit line', denyAfter.length === denyBefore.length + 1,
+          denyBefore.length + ' -> ' + denyAfter.length);
+        gate('refused line records status and reason',
+          Boolean(rec) && rec.status === 403 && /^denied:/.test(String(rec.actor)),
+          'actor=' + (rec && rec.actor) + ' status=' + (rec && rec.status));
+      }
 
       // Keys are a dashboard surface: any device that can load the dashboard may manage
       // them. The probe key is read-scoped and revoked in the same run, so a fast click on

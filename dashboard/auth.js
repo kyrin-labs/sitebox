@@ -95,7 +95,7 @@ function sameOrigin(req) {
 }
 
 const MAX_BODY = 64 * 1024;
-function parseBody(req, res) {
+function parseBody(req, res, sendFn) {
   return new Promise((resolve) => {
     let d = '';
     let size = 0;
@@ -104,7 +104,7 @@ function parseBody(req, res) {
     req.on('data', (c) => {
       size += c.length;
       if (size > MAX_BODY) {
-        if (res) send(res, 413, { error: 'request body too large', hint: `at most ${MAX_BODY} bytes` });
+        if (res) deny(sendFn, res, req, req.method, String(req.url || '').split('?')[0], 413, { error: 'request body too large', hint: `at most ${MAX_BODY} bytes` }, 'anon');
         req.destroy();
         return finish(null);
       }
@@ -113,6 +113,15 @@ function parseBody(req, res) {
     req.on('end', () => { try { finish(JSON.parse(d)); } catch { finish(null); } });
     req.on('error', () => finish(null));
   });
+}
+
+/**
+ * Refuse, and leave a trace. A failure to write the audit line must never mask the
+ * refusal itself, so the log attempt is best-effort here and the refusal always wins.
+ */
+function deny(send, res, req, method, pathname, status, payload, actor) {
+  try { audit.denied({ req, method, path: pathname, status, actor }); } catch { /* never mask the refusal */ }
+  send(res, status, payload);
 }
 
 /**
@@ -125,13 +134,13 @@ async function guard(req, res, send, url, method, pathname) {
     const now = Date.now();
     if (now - attempts.start > LIMIT.windowMs) attempts = { start: now, count: 0 };
     if (++attempts.count > LIMIT.max) {
-      send(res, 429, { error: 'too many attempts', hint: 'wait a minute' });
+      deny(send, res, req, method, pathname, 429, { error: 'too many attempts', hint: 'wait a minute' }, 'denied:rate');
       return true;
     }
-    const body = await parseBody(req, res);
+    const body = await parseBody(req, res, send);
     const t = body && body.token ? store.verify(String(body.token)) : null;
     if (!t) {
-      send(res, 401, { error: 'unauthorized' });
+      deny(send, res, req, method, pathname, 401, { error: 'unauthorized' }, 'anon');
       return true;
     }
     const secret = store.createSession(t.label);
@@ -151,17 +160,17 @@ async function guard(req, res, send, url, method, pathname) {
 
   const who = authenticate(req);
   if (!who.ok) {
-    send(res, 401, { error: 'unauthorized' });
+    deny(send, res, req, method, pathname, 401, { error: 'unauthorized' }, 'anon');
     return true;
   }
 
   const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method);
   if (who.via === 'cookie' && unsafe && !sameOrigin(req)) {
-    send(res, 403, { error: 'origin not allowed' });
+    deny(send, res, req, method, pathname, 403, { error: 'origin not allowed' }, 'denied:origin');
     return true;
   }
   if (req.headers['sec-fetch-site'] === 'cross-site') {
-    send(res, 403, { error: 'cross-site request refused' });
+    deny(send, res, req, method, pathname, 403, { error: 'cross-site request refused' }, 'denied:cross-site');
     return true;
   }
 
@@ -174,15 +183,15 @@ async function guard(req, res, send, url, method, pathname) {
     // is gate LAN writes — see the note in the route table below.
     const mayAdmin = Boolean(who.ui) || isLoopback(req) || (who.via === 'bearer' && who.scope === 'write');
     if (!mayAdmin) {
-      send(res, 403, {
+      deny(send, res, req, method, pathname, 403, {
         error: 'token administration needs a dashboard session or a write-scoped token',
         hint: 'open the dashboard and use Keys, run node dashboard/token.js … on the host, or present a write-scoped Bearer token',
-      });
+      }, 'denied:admin');
       return true;
     }
     // Only a bearer token can be read-only; a dashboard session is not a token.
     if (who.scope !== 'write' && !who.ui) {
-      send(res, 403, { error: 'this token is read-only' });
+      deny(send, res, req, method, pathname, 403, { error: 'this token is read-only' }, 'denied:scope');
       return true;
     }
     if (pathname === '/api/tokens' && method === 'GET') {
@@ -190,8 +199,8 @@ async function guard(req, res, send, url, method, pathname) {
       return true;
     }
     if (pathname === '/api/tokens' && method === 'POST') {
-      const body = await parseBody(req, res);
-      try { audit.record({ who, req, method, path: pathname }); } catch { /* best effort */ }
+      const body = await parseBody(req, res, send);
+      audit.recordOnFinish(res, { who, req, method, path: pathname });
       try {
         const raw = store.createToken(body && body.label, (body && body.scope) || 'write');
         // The key is printed exactly once; only its hash is stored.
@@ -203,7 +212,7 @@ async function guard(req, res, send, url, method, pathname) {
     }
     const m2 = pathname.match(/^\/api\/tokens\/([^/]+)$/);
     if (m2 && method === 'DELETE') {
-      try { audit.record({ who, req, method, path: pathname }); } catch { /* best effort */ }
+      audit.recordOnFinish(res, { who, req, method, path: pathname });
       const r = store.revokeToken(decodeURIComponent(m2[1]));
       send(res, r.removed ? 200 : 404, { ok: Boolean(r.removed), label: decodeURIComponent(m2[1]), sessionsDropped: r.sessions });
       return true;
@@ -221,19 +230,20 @@ async function guard(req, res, send, url, method, pathname) {
   }
 
   if (unsafe && who.scope !== 'write' && !who.ui) {
-    send(res, 403, { error: 'this token is read-only', hint: 'mint a write-scoped token for this action' });
+    deny(send, res, req, method, pathname, 403, { error: 'this token is read-only', hint: 'mint a write-scoped token for this action' }, 'denied:scope');
     return true;
   }
 
   // The network boundary is the gate now: any authenticated dashboard request may
   // write. What is left is what actually protects us — Origin on cookie writes (CSRF,
-  // above) and this record. A guard that a two-step mint bypasses is a guard that lies,
-  // so it is gone rather than half-true.
+  // above) and the record this branch guarantees.
   if (unsafe) {
     try {
-      audit.record({ who, req, method, path: pathname });
+      // Delete cannot be undone, so the log must be provably writable before it happens.
+      // For everything else the line is written with the real status once the route answers.
+      if (method === 'DELETE') audit.assertWritable();
+      audit.recordOnFinish(res, { who, req, method, path: pathname });
     } catch (e) {
-      // Delete is the one operation that cannot be undone, so it fails closed.
       if (method === 'DELETE') {
         send(res, 503, {
           error: 'audit log is not writable',
