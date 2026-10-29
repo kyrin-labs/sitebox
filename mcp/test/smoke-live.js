@@ -64,6 +64,36 @@ const api = (method, pathname, token) => new Promise((resolve) => {
   req.end();
 });
 
+/* Raw request with optional cookie/Origin, addressed at an explicit base URL so the LAN
+ * gates really come from the network and not from loopback. */
+const raw = (method, pathname, opts = {}) => new Promise((resolve) => {
+  const payload = opts.body ? JSON.stringify(opts.body) : null;
+  const headers = {};
+  if (payload) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(payload); }
+  if (opts.cookie) headers.cookie = opts.cookie;
+  if (opts.origin) headers.origin = opts.origin;
+  const req = http.request(new URL(pathname, opts.base || API), { method, headers, timeout: 5000 }, (res) => {
+    let d = '';
+    res.on('data', (c) => (d += c));
+    res.on('end', () => {
+      let j = null;
+      try { j = JSON.parse(d); } catch { j = null; }
+      resolve({ status: res.statusCode, json: j, setCookie: res.headers['set-cookie'] || [] });
+    });
+  });
+  req.on('error', () => resolve({ status: 0, json: null, setCookie: [] }));
+  req.on('timeout', () => { req.destroy(); resolve({ status: 0, json: null, setCookie: [] }); });
+  if (payload) req.write(payload);
+  req.end();
+});
+
+/** Open the dashboard page as a network visitor would and keep the session it hands out. */
+async function uiCookieFrom(lan) {
+  const res = await raw('GET', '/', { base: 'http://' + lan + ':4445' });
+  const first = (res.setCookie || [])[0];
+  return first ? first.split(';')[0] : null;
+}
+
 function connect() {
   const child = spawn('node', [MCP], {
     env: { ...process.env, SITEBOX_API: API, SITEBOX_SITES: SITES },
@@ -190,6 +220,31 @@ function connect() {
     gate('token store has no plaintext key', !/sbx_[A-Za-z0-9_-]{20,}/.test(raw), path.join(DATA, 'tokens.json'));
   } catch {
     skip('token store has no plaintext key', 'cannot read ' + path.join(DATA, 'tokens.json'));
+  }
+
+  // The bypass test: the dashboard page hands a session to anyone who opens it, so the
+  // LAN guard is only real if that session cannot mint a token or create/delete a site.
+  if (!lan) {
+    skip('LAN cookie cannot mint a token', 'no non-loopback IPv4 on this host');
+  } else {
+    const cookie = await uiCookieFrom(lan);
+    if (!cookie) {
+      skip('LAN cookie cannot mint a token', 'GET / from ' + lan + ' returned no session cookie');
+    } else {
+      const origin = 'http://' + lan + ':4445';
+      const base = origin;
+      const mint = await raw('POST', '/api/tokens', { base, cookie, origin, body: { label: 'bypass-' + Date.now().toString(36), scope: 'write' } });
+      gate('LAN cookie cannot mint a token', mint.status === 403, 'status=' + mint.status);
+
+      const create = await raw('POST', '/api/sites', { base, cookie, origin, body: { id: 'lan-bypass', name: 'LAN', port: 0, host: '127.0.0.1' } });
+      gate('LAN cookie cannot create a site', create.status === 403, 'status=' + create.status);
+
+      const del = await raw('DELETE', '/api/sites/lan-bypass', { base, cookie, origin });
+      gate('LAN cookie cannot delete a site', del.status === 403, 'status=' + del.status);
+
+      const start = await raw('POST', '/api/sites/relay/start', { base, cookie, origin });
+      gate('LAN cookie can still start/stop', start.status !== 403, 'status=' + start.status);
+    }
   }
 
   c.close();

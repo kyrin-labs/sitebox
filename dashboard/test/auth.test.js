@@ -23,7 +23,7 @@ const mkres = () => {
   return r;
 };
 const send = (res, status, data) => { res.status = status; res.body = data; };
-const req = (o) => ({ method: 'GET', url: '/api/sites', headers: {}, ...o });
+const req = (o) => ({ method: 'GET', url: '/api/sites', headers: {}, socket: { remoteAddress: '::ffff:127.0.0.1' }, ...o });
 
 async function guard(o, pathname) {
   const res = mkres();
@@ -188,4 +188,84 @@ test('the UI session does not remove the token gate for clients', async () => {
   const secret = decodeURIComponent(res.headers['set-cookie'].split(';')[0].split('=')[1]);
   const post = await guard({ method: 'POST', headers: { cookie: store.COOKIE + '=' + encodeURIComponent(secret) } });
   assert.equal(post.res.status, 403);
+});
+
+/* ── LAN blast-radius guard ── */
+function uiCookie() {
+  const res = mkres();
+  auth.issueUiSession(req({ url: '/' }), res);
+  const secret = decodeURIComponent(res.headers['set-cookie'].split(';')[0].split('=')[1]);
+  return { cookie: store.COOKIE + '=' + encodeURIComponent(secret), host: '192.168.1.102:4445', origin: 'http://192.168.1.102:4445' };
+}
+const fromLan = { socket: { remoteAddress: '192.168.1.50' } };
+
+test('a LAN visitor can read and start/stop, but cannot create, delete or reorder', async () => {
+  const ck = uiCookie();
+  const read = await guard({ headers: ck, ...fromLan }, '/api/sites');
+  assert.equal(read.handled, false, 'reading stays open to the LAN');
+
+  const start = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/relay/start');
+  assert.equal(start.handled, false, 'start/stop stay available to the LAN');
+
+  const create = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites');
+  assert.equal(create.res.status, 403);
+  assert.match(create.res.body.error, /outside loopback/);
+
+  const del = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/sites/relay');
+  assert.equal(del.res.status, 403);
+
+  const reorder = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/reorder');
+  assert.equal(reorder.res.status, 403);
+});
+
+test('the LAN cookie cannot mint or revoke a token (that would undo every guard)', async () => {
+  const ck = uiCookie();
+  const mint = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/tokens');
+  assert.equal(mint.res.status, 403);
+  assert.match(mint.res.body.error, /loopback-only/);
+
+  const revoke = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/tokens/mcp');
+  assert.equal(revoke.res.status, 403);
+
+  const list = await guard({ headers: ck, ...fromLan }, '/api/tokens');
+  assert.equal(list.res.status, 403, 'even listing labels is not for the LAN');
+});
+
+test('a forwarded-for header cannot fake loopback', async () => {
+  const ck = uiCookie();
+  const spoof = await guard({
+    method: 'POST',
+    headers: { ...ck, 'x-forwarded-for': '127.0.0.1', 'x-real-ip': '127.0.0.1' },
+    socket: { remoteAddress: '192.168.1.50' },
+  }, '/api/sites');
+  assert.equal(spoof.res.status, 403);
+});
+
+test('loopback counts in both of the forms Node actually reports', async () => {
+  const ck = uiCookie();
+  for (const addr of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+    const g = await guard({ method: 'POST', headers: ck, socket: { remoteAddress: addr } }, '/api/sites');
+    assert.equal(g.handled, false, addr + ' must be treated as local');
+  }
+  // Same cookie, same method, from the network: refused. Proves the address decides.
+  const lan = await guard({ method: 'POST', headers: ck, socket: { remoteAddress: '192.168.1.50' } }, '/api/sites');
+  assert.equal(lan.res.status, 403);
+});
+
+test('a write-scoped Bearer token is exempt, so an agent may live on another machine', async () => {
+  const key = store.createToken('agent-lan', 'write');
+  const g = await guard({
+    method: 'POST',
+    headers: { authorization: 'Bearer ' + key },
+    socket: { remoteAddress: '192.168.1.50' },
+  }, '/api/sites');
+  assert.equal(g.handled, false);
+
+  const ro = store.createToken('agent-ro', 'read');
+  const denied = await guard({
+    method: 'POST',
+    headers: { authorization: 'Bearer ' + ro },
+    socket: { remoteAddress: '192.168.1.50' },
+  }, '/api/sites');
+  assert.equal(denied.res.status, 403);
 });

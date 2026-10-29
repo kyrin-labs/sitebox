@@ -66,6 +66,20 @@ function issueUiSession(req, res) {
   return true;
 }
 
+// Never read X-Forwarded-For: any client can write "127.0.0.1" into it. The socket
+// address is the only one the kernel wrote. Node reports IPv4 peers of a 0.0.0.0
+// listener as "::ffff:127.0.0.1", so the v4-mapped form has to be normalised or the
+// operator cannot create a site from a browser on the machine itself.
+function isLoopback(req) {
+  const raw = String((req.socket && req.socket.remoteAddress) || '');
+  const ip = raw.startsWith('::ffff:') ? raw.slice(7) : raw;
+  return ip === '127.0.0.1' || ip === '::1';
+}
+
+// The only writes a LAN visitor may perform: start and stop. Everything that creates,
+// deletes or reorders is local-only (or needs a write-scoped Bearer token).
+const LIFECYCLE = /^\/api\/sites\/[^/]+\/(start|stop|restart)$/;
+
 function sameOrigin(req) {
   const origin = req.headers.origin;
   if (!origin) return false; // cookie + write + no Origin is refused, not trusted
@@ -136,8 +150,18 @@ async function guard(req, res, send, url, method, pathname) {
     return true;
   }
 
-  // token administration is a write surface of its own
+  // token administration is a write surface of its own — and the one that would undo
+  // every other guard: a cookie minted by anyone on the LAN must not be able to issue
+  // itself a write token.
   if (pathname === '/api/tokens' || pathname.startsWith('/api/tokens/')) {
+    const mayAdmin = isLoopback(req) || (who.via === 'bearer' && who.scope === 'write');
+    if (!mayAdmin) {
+      send(res, 403, {
+        error: 'token administration is loopback-only',
+        hint: 'mint or revoke tokens on the machine running sitebox (node dashboard/token.js …), or with a write-scoped Bearer token',
+      });
+      return true;
+    }
     if (who.scope !== 'write') {
       send(res, 403, { error: 'this token is read-only' });
       return true;
@@ -171,7 +195,20 @@ async function guard(req, res, send, url, method, pathname) {
     send(res, 403, { error: 'this token is read-only', hint: 'mint a write-scoped token for this action' });
     return true;
   }
+
+  // Default deny: any unsafe method is local-only or write-Bearer, unless it is one of the
+  // few lifecycle verbs. A route added later is therefore safe without being listed here.
+  if (unsafe) {
+    const mayWrite = isLoopback(req) || (who.via === 'bearer' && who.scope === 'write');
+    if (!mayWrite && !LIFECYCLE.test(pathname)) {
+      send(res, 403, {
+        error: 'write refused from outside loopback',
+        hint: 'the dashboard is open on the LAN for viewing and start/stop only; create, delete, reorder and token changes need a write-scoped Bearer token or the machine running sitebox',
+      });
+      return true;
+    }
+  }
   return false;
 }
 
-module.exports = { guard, authenticate, sameOrigin, issueUiSession };
+module.exports = { guard, authenticate, sameOrigin, isLoopback, issueUiSession };
