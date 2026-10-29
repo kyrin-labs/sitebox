@@ -637,7 +637,7 @@ function runHttp() {
     log('http: no token configured — refusing to start. Set SITEBOX_API_TOKEN or ~/.config/sitebox/mcp.token (600).');
     process.exit(1);
   }
-  const port = Number(process.env.SITEBOX_MCP_HTTP_PORT || 4446);
+  const port = Number(process.env.SITEBOX_MCP_HTTP_PORT || 4444);
   const host = process.env.SITEBOX_MCP_HTTP_HOST || '127.0.0.1';
   const server = createHttpTransport({ dispatch, token, protocolVersions: SUPPORTED, log });
   server.on('error', (e) => { log('http error:', e.message); process.exit(1); });

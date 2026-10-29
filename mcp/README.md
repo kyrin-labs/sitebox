@@ -37,7 +37,7 @@ Use the **deployed** tree (`~/sitebox/mcp/...`), not the working clone: sites li
 | `SITEBOX_DATA_HOST` | `~/sitebox/dashboard/data` | used by `doctor` to check the host can mint |
 | `SITEBOX_BASELINE_DIR` | `~/backups/sitebox-baseline` | `doctor` reads the last pre-deploy baseline |
 | `SITEBOX_MCP_TRANSPORT` | `stdio` | `http` serves `/mcp` instead of reading stdin |
-| `SITEBOX_MCP_HTTP_PORT` | `4446` | HTTP listen port; `0` picks a free one and logs it |
+| `SITEBOX_MCP_HTTP_PORT` | `4444` | HTTP listen port; `0` picks a free one and logs it |
 | `SITEBOX_MCP_HTTP_HOST` | `127.0.0.1` | `0.0.0.0` exposes the endpoint on the LAN |
 
 Keep the key **out of the client config** when you can: a config file gets copied and
@@ -56,7 +56,7 @@ reports that as `E_SCOPE` instead of letting the first write discover it.
 ## Over HTTP (opt-in)
 
 `node mcp/sitebox-mcp.js --http` (or `SITEBOX_MCP_TRANSPORT=http`) serves the same eight
-tools at `http://127.0.0.1:4446/mcp` using the streamable-HTTP transport. stdio stays the
+tools at `http://127.0.0.1:4444/mcp` using the streamable-HTTP transport. stdio stays the
 default: a client that can spawn a process does not need a port.
 
 ```bash
@@ -78,7 +78,7 @@ Rules this endpoint enforces, so it is never a second, weaker door to `delete_si
   carries no site data.
 
 ```bash
-BASE=http://127.0.0.1:4446
+BASE=http://127.0.0.1:4444
 SID=$(curl -si -X POST "$BASE/mcp" \
   -H "Authorization: Bearer $(cat ~/.config/sitebox/mcp.token)" \
   -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
@@ -92,7 +92,7 @@ curl -s -X POST "$BASE/mcp" \
 ```
 
 An MCP client only needs the URL, the bearer header, and `accept: application/json,
-text/event-stream` — for example `pi mcp add sitebox --url http://127.0.0.1:4446/mcp
+text/event-stream` — for example `pi mcp add sitebox --url http://127.0.0.1:4444/mcp
 --bearer-token-env-var SITEBOX_KEY`.
 
 The dashboard UI needs no token — but that browser session authenticates **people**, not
