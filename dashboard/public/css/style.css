@@ -370,3 +370,8 @@ a:hover { text-decoration: underline; }
   padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border);
 }
 .keys-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-l); color: var(--text-2); }
+
+/* Keys pane: the audit tail answers "who changed this" next to the keys that name them. */
+.audit-panel { margin-top: 18px; border-top: 1px solid var(--border, rgba(255,255,255,.08)); padding-top: 12px; }
+.audit-panel summary { cursor: pointer; font-size: 13px; color: var(--muted, #8b949e); }
+.audit-lines { margin: 10px 0 0; padding: 12px; max-height: 180px; overflow: auto; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; background: var(--surface-2, rgba(255,255,255,.03)); border-radius: 6px; }

@@ -501,6 +501,25 @@ async function loadKeys() {
   } catch (e) {
     body.innerHTML = `<tr><td colspan="5">Cannot read keys: ${esc(String(e.message || e))}</td></tr>`;
   }
+  loadAuditTail();
+}
+
+/* The audit log is the only record of who changed what, so it belongs next to the keys
+ * that name those actors — otherwise the answer lives in a file you can only read over SSH. */
+async function loadAuditTail() {
+  const out = document.getElementById('audit-lines');
+  if (!out) return;
+  try {
+    const res = await fetch(`${API}/api/audit?lines=5`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.status);
+    const lines = data.lines || [];
+    out.textContent = lines.length
+      ? lines.map((l) => `${String(l.time || '').slice(0, 16).replace('T', ' ')}  ${l.actor}  ${l.method} ${l.path}`).join('\n')
+      : 'No activity recorded yet.';
+  } catch (e) {
+    out.textContent = 'Cannot read the audit log: ' + String(e.message || e);
+  }
 }
 
 async function createKey() {

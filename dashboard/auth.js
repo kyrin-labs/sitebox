@@ -212,6 +212,14 @@ async function guard(req, res, send, url, method, pathname) {
     return true;
   }
 
+  // Read-only window on the audit log: the answer to "who touched this" without SSH.
+  // Any authenticated caller may read it — it is the same information they can cause.
+  if (pathname === '/api/audit' && method === 'GET') {
+    const asked = Number(new URLSearchParams(url.search).get('lines'));
+    send(res, 200, { lines: audit.tail(asked || 5) });
+    return true;
+  }
+
   if (unsafe && who.scope !== 'write' && !who.ui) {
     send(res, 403, { error: 'this token is read-only', hint: 'mint a write-scoped token for this action' });
     return true;

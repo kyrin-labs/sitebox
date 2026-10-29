@@ -335,3 +335,33 @@ test('a LAN UI cookie may start and delete alike', async () => {
   const del = await auth.guard(lan('DELETE', '/api/sites/x'), mkres(), send, new URL('http://box/api/sites/x'), 'DELETE', '/api/sites/x');
   assert.equal(del, false, 'delete is allowed from the LAN too — the brake lives in the UI');
 });
+
+test('GET /api/audit shows the newest lines to any authenticated caller, with no secrets', async () => {
+  const audit = require('../audit');
+  const key = store.createToken('audit-reader', 'read');
+  // Seed lines whose request carries a cookie value that must never reach the response.
+  const leaky = 'sbx_session=supersecretcookievaluethatmustneverappear123456';
+  for (let i = 0; i < 2; i++) {
+    audit.record({ who: { via: 'bearer', label: 'seed' }, req: req({ headers: { cookie: leaky } }), method: 'POST', path: '/api/sites' });
+  }
+
+  const asToken = await guard({ headers: { authorization: 'Bearer ' + key } }, '/api/audit');
+  assert.equal(asToken.handled, true);
+  assert.equal(asToken.res.status, 200);
+  assert.ok(asToken.res.body.lines.length >= 2);
+  assert.ok(asToken.res.body.lines.every((l) => l.time && l.actor && l.method && l.path));
+  assert.ok(!JSON.stringify(asToken.res.body).includes('supersecretcookievalue'),
+    'the cookie value must never appear in the audit response');
+
+  // The keys pane is a browser surface, so a session must be able to read it as well.
+  const res = mkres();
+  auth.issueUiSession(req({ url: '/' }), res);
+  const cookie = store.COOKIE + '=' + res.headers['set-cookie'].split(';')[0].split('=')[1];
+  const asSession = await guard({ headers: { cookie }, socket: { remoteAddress: '192.168.1.50' } }, '/api/audit');
+  assert.equal(asSession.res.status, 200);
+  assert.ok(Array.isArray(asSession.res.body.lines));
+
+  // ...but an anonymous caller cannot.
+  const anon = await guard({}, '/api/audit');
+  assert.equal(anon.res.status, 401);
+});

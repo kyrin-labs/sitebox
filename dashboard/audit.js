@@ -77,4 +77,21 @@ function record({ who, req, method, path: target }) {
   return line;
 }
 
-module.exports = { record, actor, LOG };
+module.exports = { record, actor, tail, LOG };
+
+/**
+ * Newest `n` parsed lines, oldest first. Unparseable lines are skipped rather than
+ * thrown: a UI that shows four good lines is more useful than one that shows an error
+ * because a fifth was cut off by a full disk.
+ */
+function tail(n = 5) {
+  const want = Math.min(Math.max(Number(n) || 5, 1), 50);
+  let rawText = '';
+  try { rawText = fs.readFileSync(LOG, 'utf8'); } catch { return []; }
+  const lines = rawText.split('\n').filter(Boolean).slice(-want);
+  const out = [];
+  for (const line of lines) {
+    try { out.push(JSON.parse(line)); } catch { /* skip a torn line */ }
+  }
+  return out;
+}
