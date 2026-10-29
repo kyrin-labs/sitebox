@@ -66,11 +66,22 @@ const api = (method, pathname, token) => new Promise((resolve) => {
 
 /** Line count of the audit log, or null when the dashboard does not write one yet. */
 function auditCount() {
+  const lines = auditLines();
+  return lines === null ? null : lines.length;
+}
+
+/** Raw audit log text, or null when it does not exist yet. */
+function auditRaw() {
   try {
-    return fs.readFileSync(path.join(DATA, 'audit.log'), 'utf8').split('\n').filter(Boolean).length;
+    return fs.readFileSync(path.join(DATA, 'audit.log'), 'utf8');
   } catch {
     return null;
   }
+}
+
+function auditLines() {
+  const raw = auditRaw();
+  return raw === null ? null : raw.split('\n').filter(Boolean);
 }
 
 /* Raw request with optional cookie/Origin, addressed at an explicit base URL so the LAN
@@ -81,6 +92,7 @@ const raw = (method, pathname, opts = {}) => new Promise((resolve) => {
   if (payload) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(payload); }
   if (opts.cookie) headers.cookie = opts.cookie;
   if (opts.origin) headers.origin = opts.origin;
+  if (opts.token) headers.authorization = 'Bearer ' + opts.token;
   const req = http.request(new URL(pathname, opts.base || API), { method, headers, timeout: 5000 }, (res) => {
     let d = '';
     res.on('data', (c) => (d += c));
@@ -229,6 +241,42 @@ function connect() {
     gate('token store has no plaintext key', !/sbx_[A-Za-z0-9_-]{20,}/.test(raw), path.join(DATA, 'tokens.json'));
   } catch {
     skip('token store has no plaintext key', 'cannot read ' + path.join(DATA, 'tokens.json'));
+  }
+
+  // Audit: a gate that only checks "a line exists" goes green on a line left by an earlier
+  // request. Pin the delta and the content of the newest line instead.
+  if (auditRaw() === null) {
+    skip('audit: one write = exactly one line', 'no audit.log yet');
+    skip('audit line is JSON with method, path and actor', 'no audit.log yet');
+    skip('audit log is JSONL end to end', 'no audit.log yet');
+    skip('audit: no secret material', 'no audit.log yet');
+  } else {
+    const token = process.env.SITEBOX_API_TOKEN;
+    const before = auditLines();
+    const listed = await api('GET', '/api/sites', token);
+    const order = (listed.json || []).map((s) => s.id);
+    const write = await raw('POST', '/api/sites/reorder', { base: API, token, body: { order } });
+    const after = auditLines();
+    gate('audit: one write = exactly one line', after.length === before.length + 1,
+      before.length + ' -> ' + after.length + ' (reorder answered ' + write.status + ')');
+
+    let rec = null;
+    try { rec = JSON.parse(after[after.length - 1]); } catch { rec = null; }
+    gate('audit line is JSON with method, path and actor',
+      Boolean(rec) && String(rec.method).toUpperCase() === 'POST'
+        && /\/api\/sites\/reorder$/.test(String(rec.path)) && Boolean(rec.actor),
+      JSON.stringify(rec || after[after.length - 1]).slice(0, 180));
+
+    let parseable = true;
+    for (const line of after) { try { JSON.parse(line); } catch { parseable = false; break; } }
+    gate('audit log is JSONL end to end', parseable, after.length + ' line(s)');
+
+    const txt = auditRaw() || '';
+    const leak = /sbx_[A-Za-z0-9_-]{20,}/.test(txt)
+      || /sbx_session=[A-Za-z0-9_%-]{10,}/.test(txt)
+      || /bearer\s+[A-Za-z0-9_-]{10,}/i.test(txt);
+    gate('audit log contains no secret material', !leak,
+      leak ? 'a key or cookie value reached the file' : 'no key, no cookie value, no bearer header');
   }
 
   // The dashboard page hands a session to anyone who opens it, so what a LAN visitor may
