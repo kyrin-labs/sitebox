@@ -248,6 +248,7 @@ function connect() {
   if (auditRaw() === null) {
     skip('audit: one write = exactly one line', 'no audit.log yet');
     skip('audit line is JSON with method, path and actor', 'no audit.log yet');
+    skip('audit actor names the credential that wrote', 'no audit.log yet');
     skip('audit log is JSONL end to end', 'no audit.log yet');
     skip('audit: no secret material', 'no audit.log yet');
   } else {
