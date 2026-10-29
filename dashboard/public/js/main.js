@@ -515,7 +515,7 @@ async function loadAuditTail() {
     if (!res.ok) throw new Error(data.error || res.status);
     const lines = data.lines || [];
     out.textContent = lines.length
-      ? lines.map((l) => `${String(l.time || '').slice(0, 16).replace('T', ' ')}  ${l.actor}  ${l.method} ${l.path}`).join('\n')
+      ? lines.map((l) => `${String(l.time || '').slice(0, 16).replace('T', ' ')}  ${l.status == null ? '---' : String(l.status).padEnd(3)}  ${l.actor}  ${l.method} ${l.path}`).join('\n')
       : 'No activity recorded yet.';
   } catch (e) {
     out.textContent = 'Cannot read the audit log: ' + String(e.message || e);
