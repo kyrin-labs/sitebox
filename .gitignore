@@ -12,6 +12,7 @@ dashboard/data/.pids.json
 # Secrets: token hashes and browser sessions. Never in a public repo, never in history.
 dashboard/data/tokens.json
 dashboard/data/sessions.json
+dashboard/data/audit.log
 
 # Ignore all sites EXCEPT the two examples
 # Any new site added to sites/ will NOT be tracked

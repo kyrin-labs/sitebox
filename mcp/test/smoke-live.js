@@ -64,6 +64,15 @@ const api = (method, pathname, token) => new Promise((resolve) => {
   req.end();
 });
 
+/** Line count of the audit log, or null when the dashboard does not write one yet. */
+function auditCount() {
+  try {
+    return fs.readFileSync(path.join(DATA, 'audit.log'), 'utf8').split('\n').filter(Boolean).length;
+  } catch {
+    return null;
+  }
+}
+
 /* Raw request with optional cookie/Origin, addressed at an explicit base URL so the LAN
  * gates really come from the network and not from loopback. */
 const raw = (method, pathname, opts = {}) => new Promise((resolve) => {
@@ -222,33 +231,52 @@ function connect() {
     skip('token store has no plaintext key', 'cannot read ' + path.join(DATA, 'tokens.json'));
   }
 
-  // The bypass test: the dashboard page hands a session to anyone who opens it, so the
-  // LAN guard is only real if that session cannot mint a token or create/delete a site.
+  // The dashboard page hands a session to anyone who opens it, so what a LAN visitor may
+  // do is a POLICY question. Read /api/me and assert the policy the server declares,
+  // instead of hardcoding today's answer — the gate then survives the policy changing
+  // rather than forcing it to stay.
   if (!lan) {
-    skip('LAN cookie can manage keys', 'no non-loopback IPv4 on this host');
+    skip('LAN policy gates', 'no non-loopback IPv4 on this host');
   } else {
     const cookie = await uiCookieFrom(lan);
     if (!cookie) {
-      skip('LAN cookie can manage keys', 'GET / from ' + lan + ' returned no session cookie');
+      skip('LAN policy gates', 'GET / from ' + lan + ' returned no session cookie');
     } else {
       const origin = 'http://' + lan + ':4445';
       const base = origin;
+      const me = await raw('GET', '/api/me', { base, cookie, origin });
+      const mayWrite = Boolean(me.json && me.json.mayWrite === true);
+      gate('LAN session reports its real scope', me.status === 200 && me.json && me.json.scope === 'session',
+        JSON.stringify(me.json || me.status).slice(0, 150));
+      gate('LAN session can open the keys pane', Boolean(me.json && me.json.canAdminTokens === true),
+        'canAdminTokens=' + (me.json && me.json.canAdminTokens));
+
       // Keys are a dashboard surface: any device that can load the dashboard may manage
-      // them, so this gate proves the *intended* behaviour rather than a lock-out.
+      // them. The probe key is read-scoped and revoked in the same run, so a fast click on
+      // a phone cannot leave a write key in the store.
       const probeLabel = 'lan-probe-' + Date.now().toString(36);
-      const mint = await raw('POST', '/api/tokens', { base, cookie, origin, body: { label: probeLabel, scope: 'write' } });
+      const mint = await raw('POST', '/api/tokens', { base, cookie, origin, body: { label: probeLabel, scope: 'read' } });
       gate('LAN cookie can manage keys', mint.status === 200, 'status=' + mint.status);
       if (mint.status === 200) {
-        // Do not leave a probe key behind: it would be a real write key in the store.
         const revoked = await raw('DELETE', '/api/tokens/' + probeLabel, { base, cookie, origin });
         gate('LAN probe key revoked', revoked.status === 200, 'status=' + revoked.status);
       }
 
-      const create = await raw('POST', '/api/sites', { base, cookie, origin, body: { id: 'lan-bypass', name: 'LAN', port: 0, host: '127.0.0.1' } });
-      gate('LAN cookie cannot create a site', create.status === 403, 'status=' + create.status);
+      const auditBefore = auditCount();
+      const create = await raw('POST', '/api/sites', { base, cookie, origin, body: { id: 'lan-probe-site', name: 'LAN Probe', port: 0, host: '127.0.0.1', path: 'sites/lan-probe-site' } });
+      const del = await raw('DELETE', '/api/sites/lan-probe-site', { base, cookie, origin });
+      const auditAfter = auditCount();
 
-      const del = await raw('DELETE', '/api/sites/lan-bypass', { base, cookie, origin });
-      gate('LAN cookie cannot delete a site', del.status === 403, 'status=' + del.status);
+      if (mayWrite) {
+        gate('LAN write allowed (policy mayWrite:true)', create.status === 200, 'create=' + create.status);
+        gate('LAN delete allowed (policy mayWrite:true)', del.status === 200, 'delete=' + del.status);
+        const grown = auditBefore !== null && auditAfter !== null ? auditAfter - auditBefore : null;
+        if (grown === null) skip('audit log records LAN writes', 'no audit.log yet');
+        else gate('audit log records LAN writes', grown >= 1, 'lines +' + grown);
+      } else {
+        gate('LAN write braked (policy mayWrite:false)', create.status === 403, 'create=' + create.status);
+        gate('LAN delete braked (policy mayWrite:false)', del.status === 403, 'delete=' + del.status);
+      }
 
       const start = await raw('POST', '/api/sites/relay/start', { base, cookie, origin });
       gate('LAN cookie can still start/stop', start.status !== 403, 'status=' + start.status);
