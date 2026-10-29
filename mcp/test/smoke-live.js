@@ -87,13 +87,13 @@ function auditLines() {
 /* Raw request with optional cookie/Origin, addressed at an explicit base URL so the LAN
  * gates really come from the network and not from loopback. */
 const raw = (method, pathname, opts = {}) => new Promise((resolve) => {
-  const payload = opts.body ? JSON.stringify(opts.body) : null;
+  const payload = opts.rawBody || (opts.body ? JSON.stringify(opts.body) : null);
   const headers = {};
   if (payload) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(payload); }
   if (opts.cookie) headers.cookie = opts.cookie;
   if (opts.origin) headers.origin = opts.origin;
   if (opts.token) headers.authorization = 'Bearer ' + opts.token;
-  const req = http.request(new URL(pathname, opts.base || API), { method, headers, timeout: 5000 }, (res) => {
+  const req = http.request(new URL(pathname, opts.base || API), { method, headers, timeout: 5000, agent: false }, (res) => {
     let d = '';
     res.on('data', (c) => (d += c));
     res.on('end', () => {
@@ -274,6 +274,14 @@ function connect() {
       Boolean(rec) && /^token:[a-z0-9][a-z0-9-]*$/.test(String(rec.actor)),
       'actor=' + (rec && rec.actor));
 
+    // Shape is not truth: ask the dashboard which token we are holding and require the log
+    // to name exactly that one. A gate that only checks the prefix would pass for any label.
+    const whoami = await raw('GET', '/api/me', { base: API, token: process.env.SITEBOX_API_TOKEN });
+    const usedLabel = whoami.json && whoami.json.label;
+    gate('audit actor matches the token actually used',
+      Boolean(rec) && Boolean(usedLabel) && rec.actor === 'token:' + usedLabel,
+      'actor=' + (rec && rec.actor) + ' expected token:' + usedLabel);
+
     let parseable = true;
     for (const line of after) { try { JSON.parse(line); } catch { parseable = false; break; } }
     gate('audit log is JSONL end to end', parseable, after.length + ' line(s)');
@@ -284,6 +292,25 @@ function connect() {
       || /bearer\s+[A-Za-z0-9_-]{10,}/i.test(txt);
     gate('audit log contains no secret material', !leak,
       leak ? 'a key or cookie value reached the file' : 'no key, no cookie value, no bearer header');
+
+    const mode = (fs.statSync(path.join(DATA, 'audit.log')).mode & 0o777).toString(8);
+    gate('audit log mode is 600', mode === '600', '0' + mode);
+
+    // Rotation invariant on production: prove the ceiling holds without writing a megabyte.
+    const rotated = fs.readdirSync(DATA).filter((f) => f !== 'audit.log' && /^audit\.log/.test(f));
+    gate('audit rotation keeps at most 5 files', rotated.length <= 5, rotated.length + ' rotated file(s)');
+  }
+
+  // Body cap: the process that accepts writes also parents every site process, so an
+  // unbounded body is not one failed request — it is every site going down together.
+  if (!process.env.SITEBOX_API_TOKEN) {
+    skip('oversized body rejected with 413', 'no SITEBOX_API_TOKEN');
+  } else {
+    const big = JSON.stringify({ id: 'x'.repeat(70000) });
+    const oversize = await raw('POST', '/api/sites', { base: API, token: process.env.SITEBOX_API_TOKEN, rawBody: big });
+    gate('oversized body rejected with 413', oversize.status === 413, 'status=' + oversize.status + ' bytes=' + big.length);
+    const alive = await raw('GET', '/api/health', { base: API });
+    gate('dashboard survives an oversized body', alive.status === 200, 'health=' + alive.status);
   }
 
   // The dashboard page hands a session to anyone who opens it, so what a LAN visitor may
