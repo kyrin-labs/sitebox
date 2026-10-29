@@ -653,7 +653,12 @@ const server = http.createServer(async (req, res) => {
   let fp = path.join(PUBLIC, p === '/' ? '/index.html' : p);
   if (!fp.startsWith(PUBLIC)) return send(res, 403, 'Forbidden');
   if (fs.existsSync(fp) && fs.statSync(fp).isFile()) {
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream' });
+    // A dashboard asset must not outlive a deploy in a browser cache: a stale main.js
+    // keeps rendering decisions the server no longer makes. Revalidate every load.
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+    });
     return fs.createReadStream(fp).pipe(res);
   }
   // A missing asset is a real 404 — only extension-less routes fall back to the SPA.

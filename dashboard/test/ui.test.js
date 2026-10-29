@@ -38,6 +38,16 @@ test('the default key scope is read + write, because the pane exists for MCP cli
   assert.match(html, /write includes read/, 'the pane must explain that one key covers both');
 });
 
+test('the dashboard does not nag a LAN visitor with a policy banner', () => {
+  assert.ok(!html.includes('remote-note'), 'the banner element is gone');
+  assert.ok(!main.includes('no per-device permissions'), 'and so is its copy');
+  assert.ok(!main.includes('SITEBOX_BIND=127.0.0.1'), 'the UI must not tell the operator how to bind the server');
+  // The page mints its own session, so the controls are shown by default and the
+  // server stays the authority. A failed /api/me must not hide Add Site.
+  assert.match(main, /let ME = \{ canManage: true/);
+  assert.match(main, /ME\.canManage === false \? 'none'/);
+});
+
 test('the page loads the URL decision before the code that renders it', () => {
   const urlAt = html.indexOf('/js/site-url.js');
   const mainAt = html.indexOf('/js/main.js');

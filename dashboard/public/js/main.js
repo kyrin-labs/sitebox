@@ -6,33 +6,28 @@ let activeFilter = 'all';
 let lastSig = '';
 let lastCats = '';
 
-/* ── What this browser is allowed to do ──
- * The UI is open on the LAN by design, but destructive writes (create, delete,
- * reorder, mint keys) are loopback-only on the server. Rather than let the buttons
- * exist and fail with 403 — which reads as "the app is broken" — the page asks the
- * server what it may do and hides what it may not. The 403 stays the authority; this
- * only stops us from offering a button we know will be refused.
+/* ── What this browser may do ──
+ * The UI is the operator's surface: the page mints a session for itself, so the
+ * destructive controls are shown and the server stays the authority (a refused write
+ * is a 403, not a hidden button). Start optimistic and let /api/me narrow it only when
+ * the answer actually arrives — a failed status fetch must not quietly remove Add Site.
  */
-let ME = { canManage: false, loopback: false };
+let ME = { canManage: true, canAdminTokens: true, loopback: false };
 
 async function loadMe() {
   try {
-    const res = await fetch(`${API}/api/me`);
+    const res = await fetch(`${API}/api/me`, { cache: 'no-store' });
     if (res.ok) ME = await res.json();
   } catch (e) {
-    ME = { canManage: false, loopback: false }; // fail closed: offer nothing destructive
+    // Keep the optimistic defaults: the dashboard is still usable, and every write is
+    // checked by the server anyway.
   }
   const add = document.getElementById('btn-add');
   const keys = document.getElementById('btn-keys');
-  if (add) add.style.display = ME.canManage ? '' : 'none';
+  if (add) add.style.display = ME.canManage === false ? 'none' : '';
   // Keys are dashboard business, not machine business: any device that can open the
   // dashboard can manage them.
-  if (keys) keys.style.display = ME.canAdminTokens ? '' : 'none';
-  const note = document.getElementById('remote-note');
-  if (note && !ME.canManage) {
-    note.hidden = false;
-    note.textContent = 'This dashboard has no per-device permissions — anything reachable here can change anything. Restrict access at the network (SITEBOX_BIND=127.0.0.1, or a reverse proxy with auth) rather than in the UI.';
-  }
+  if (keys) keys.style.display = ME.canAdminTokens === false ? 'none' : '';
 }
 
 
