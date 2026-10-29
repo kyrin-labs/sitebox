@@ -124,13 +124,28 @@ function readSessions() {
   return parsed.sessions;
 }
 
-function createSession(label) {
+function createSession(label, opts) {
   const secret = crypto.randomBytes(32).toString('base64url');
   const now = Date.now();
-  const sessions = readSessions().filter((s) => now - Date.parse(s.lastSeen || s.created) < SESSION_TTL_MS);
-  sessions.push({ id: hex(secret), label, created: new Date(now).toISOString(), lastSeen: new Date(now).toISOString() });
+  let sessions = readSessions().filter((s) => now - Date.parse(s.lastSeen || s.created) < SESSION_TTL_MS);
+  const row = { id: hex(secret), label, created: new Date(now).toISOString(), lastSeen: new Date(now).toISOString() };
+  if (opts && opts.ui) row.ui = true;
+  sessions.push(row);
+  // A browser that never keeps its cookie would otherwise grow this file without
+  // bound; rows are cheap but not free.
+  if (sessions.length > 200) sessions = sessions.slice(-200);
   atomicWrite(SESSIONS, { sessions });
   return secret;
+}
+
+/**
+ * The dashboard UI is not a client: it is the same origin, opened by a person in a
+ * browser. It gets a session on first page load instead of asking for a token, which
+ * keeps the operator out of the key business entirely. Tokens exist to gate
+ * programmatic access (MCP, curl) — see auth.guard.
+ */
+function createUiSession() {
+  return createSession('ui', { ui: true });
 }
 
 function getSession(secret) {
@@ -164,5 +179,5 @@ function revokeSessionsByLabel(label) {
 module.exports = {
   DATA, TOKENS, SESSIONS, PREFIX, COOKIE, SESSION_TTL_MS, SESSION_MAX_MS,
   listTokens, summary, createToken, revokeToken, verify, findByLabel,
-  createSession, getSession, revokeSessionsByLabel, hex,
+  createSession, createUiSession, getSession, revokeSessionsByLabel, hex,
 };

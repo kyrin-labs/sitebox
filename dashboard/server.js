@@ -590,6 +590,10 @@ const server = http.createServer(async (req, res) => {
     return send(res, 404, { error: 'not found' });
   }
 
+  // Serving the app shell is what mints the browser session. The operator opens the
+  // dashboard and is in; only programmatic callers need a token.
+  if ((p === '/' || p === '/index.html') && m === 'GET') auth.issueUiSession(req, res);
+
   let fp = path.join(PUBLIC, p === '/' ? '/index.html' : p);
   if (!fp.startsWith(PUBLIC)) return send(res, 403, 'Forbidden');
   if (fs.existsSync(fp) && fs.statSync(fp).isFile()) {

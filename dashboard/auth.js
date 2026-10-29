@@ -42,11 +42,28 @@ function authenticate(req) {
   if (secret) {
     const s = store.getSession(secret);
     if (!s) return { ok: false, reason: 'bad_session' };
+    // Browser UI sessions are not tied to a token: the dashboard is the same origin
+    // and the operator is a person, not a client. Revoking an MCP key must never log
+    // the person out of their own dashboard.
+    if (s.ui) return { ok: true, via: 'cookie', label: 'ui', scope: 'write', ui: true };
     const t = store.findByLabel(s.label);
     if (!t) return { ok: false, reason: 'revoked' };
     return { ok: true, via: 'cookie', label: t.label, scope: t.scope };
   }
   return { ok: false, reason: 'none' };
+}
+
+/**
+ * Hand the dashboard page a session on first load. No token, no prompt: the UI is the
+ * thing the operator already has access to. Only programmatic callers (MCP, curl) have
+ * to present a bearer token, which is the whole point of separating the two.
+ */
+function issueUiSession(req, res) {
+  if (cookie(req, store.COOKIE)) return false;
+  const secret = store.createUiSession();
+  res.setHeader('Set-Cookie', store.COOKIE + '=' + encodeURIComponent(secret)
+    + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + Math.floor(store.SESSION_TTL_MS / 1000));
+  return true;
 }
 
 function sameOrigin(req) {
@@ -157,4 +174,4 @@ async function guard(req, res, send, url, method, pathname) {
   return false;
 }
 
-module.exports = { guard, authenticate, sameOrigin };
+module.exports = { guard, authenticate, sameOrigin, issueUiSession };

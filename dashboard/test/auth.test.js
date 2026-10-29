@@ -148,3 +148,44 @@ test('the host CLI is the recovery path and the key is the last line of stdout',
   const revoked = execFileSync('node', [cli, 'revoke', 'cli-test'], { env: { ...process.env, SITEBOX_DATA: tmp }, encoding: 'utf8' });
   assert.match(revoked, /revoked cli-test/);
 });
+
+test('the dashboard page issues a UI session with no token, and it is write-scoped', () => {
+  const res = mkres();
+  assert.equal(auth.issueUiSession(req({ url: '/' }), res), true);
+  const setCookie = res.headers['set-cookie'];
+  assert.match(setCookie, /^sbx_session=/);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /SameSite=Strict/);
+  const secret = decodeURIComponent(setCookie.split(';')[0].split('=')[1]);
+  const who = auth.authenticate(req({ headers: { cookie: store.COOKIE + '=' + encodeURIComponent(secret) } }));
+  assert.equal(who.ok, true);
+  assert.equal(who.ui, true);
+  assert.equal(who.scope, 'write');
+  // A second load must not mint a second session for the same browser.
+  const again = mkres();
+  assert.equal(auth.issueUiSession(req({ url: '/', headers: { cookie: store.COOKIE + '=' + encodeURIComponent(secret) } }), again), false);
+  assert.equal(again.headers['set-cookie'], undefined);
+});
+
+test('revoking an MCP token never logs the browser out', () => {
+  const res = mkres();
+  auth.issueUiSession(req({ url: '/' }), res);
+  const secret = decodeURIComponent(res.headers['set-cookie'].split(';')[0].split('=')[1]);
+  const key = store.createToken('agent', 'write');
+  store.revokeToken('agent');
+  assert.equal(store.verify(key), null, 'the key is dead');
+  const who = auth.authenticate(req({ headers: { cookie: store.COOKIE + '=' + encodeURIComponent(secret) } }));
+  assert.equal(who.ok, true, 'the UI session survives');
+});
+
+test('the UI session does not remove the token gate for clients', async () => {
+  const g = await guard({});
+  assert.equal(g.handled, true);
+  assert.equal(g.res.status, 401);
+  // A UI cookie on an unsafe method still needs a matching Origin.
+  const res = mkres();
+  auth.issueUiSession(req({ url: '/' }), res);
+  const secret = decodeURIComponent(res.headers['set-cookie'].split(';')[0].split('=')[1]);
+  const post = await guard({ method: 'POST', headers: { cookie: store.COOKIE + '=' + encodeURIComponent(secret) } });
+  assert.equal(post.res.status, 403);
+});
