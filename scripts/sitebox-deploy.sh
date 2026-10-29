@@ -173,11 +173,27 @@ phase_smoke() {
     me_lan="$(cat /tmp/sb-me-lan.json)"
     [ "$lan_code" = "200" ] || die "/api/me on the LAN answered ${lan_code}, not 200: ${me_lan}"
     case "$me_lan" in *'"canManage":false'*) ok "LAN view is read-mostly (canManage:false)" ;; *) die "LAN view can manage — the loopback guard is not working: ${me_lan}" ;; esac
-    case "$me_lan" in *'"mayWrite":false'*) ok "LAN view reports mayWrite:false" ;; *) die "LAN view claims it may write: ${me_lan}" ;; esac
-    case "$me_lan" in *'"canAdminTokens":true'*) ok "LAN view can manage API keys (by design)" ;; *) die "LAN view cannot reach the keys pane: ${me_lan}" ;; esac
+    # The policy is whatever the server announces: a build that turns writes off must
+    # answer 403, a build that allows them must answer something else AND leave a record.
+    local audit_log="${ROOT}/dashboard/data/audit.log"
+    local before_lines after_lines
+    before_lines="$( [ -f "$audit_log" ] && wc -l < "$audit_log" || echo 0 )"
     lan_del="$(curl -s -o /dev/null -m 5 -b "$jar3" -X DELETE -H "Origin: http://${lan_ip}:4445" -w '%{http_code}' "http://${lan_ip}:4445/api/sites/nonexistent-probe")"
-    [ "$lan_del" = "403" ] || die "LAN delete was not refused (got ${lan_del})"
-    ok "LAN delete = 403"
+    after_lines="$( [ -f "$audit_log" ] && wc -l < "$audit_log" || echo 0 )"
+    case "$me_lan" in
+      *'"mayWrite":true'*)
+        ok "LAN may write (the network boundary is the gate)"
+        [ "$lan_del" != "403" ] || die "LAN delete refused although /api/me says mayWrite:true"
+        [ "$((after_lines - before_lines))" -eq 1 ] || die "the LAN delete left $((after_lines - before_lines)) audit line(s), expected exactly 1"
+        ok "LAN delete answered ${lan_del} and wrote exactly 1 audit line"
+        ;;
+      *'"mayWrite":false'*)
+        ok "LAN writes are braked by policy"
+        [ "$lan_del" = "403" ] || die "LAN delete allowed although /api/me says mayWrite:false (got ${lan_del})"
+        ok "LAN delete = 403"
+        ;;
+      *) die "cannot tell the write policy from /api/me: ${me_lan}" ;;
+    esac
     rm -f "$jar3"
   fi
   rm -f "$jar2"

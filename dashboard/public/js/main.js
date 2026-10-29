@@ -31,7 +31,7 @@ async function loadMe() {
   const note = document.getElementById('remote-note');
   if (note && !ME.canManage) {
     note.hidden = false;
-    note.textContent = 'Viewing from another device: start/stop and API keys work, but creating, deleting and reordering sites only works on the machine running SiteBox.';
+    note.textContent = 'This dashboard has no per-device permissions — anything reachable here can change anything. Restrict access at the network (SITEBOX_BIND=127.0.0.1, or a reverse proxy with auth) rather than in the UI.';
   }
 }
 
@@ -227,7 +227,11 @@ async function stopSite(id) {
 }
 
 async function deleteSite(id) {
-  if (!confirm(`Delete "${id}" and its files?\n\nThis stops the site, deletes sites/${id}/ from disk and removes it from the dashboard. It cannot be undone, and the site will not come back on the next refresh.`)) return;
+  // There is no per-device permission any more, so the brake has to be here: typing the
+  // id is the difference between a considered delete and a thumb on a phone.
+  const typed = prompt(`Delete "${id}" permanently?\n\nThis stops the site, removes sites/${id}/ from disk and drops it from the dashboard. It cannot be undone.\n\nType the site id to confirm:`);
+  if (typed === null) return;
+  if (typed.trim() !== id) { alert(`Not deleted: "${typed.trim()}" does not match "${id}".`); return; }
   const res = await fetch(`${API}/api/sites/${id}`, { method: 'DELETE' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {

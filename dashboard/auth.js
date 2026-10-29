@@ -12,6 +12,7 @@
  *   - Token-less requests are 401 before any of this matters.
  */
 const store = require('./tokenstore');
+const audit = require('./audit');
 
 const LIMIT = { windowMs: 60 * 1000, max: 10 };
 let attempts = { start: Date.now(), count: 0 };
@@ -80,7 +81,6 @@ function isLoopback(req) {
 
 // The only writes a LAN visitor may perform: start and stop. Everything that creates,
 // deletes or reorders is local-only (or needs a write-scoped Bearer token).
-const LIFECYCLE = /^\/api\/sites\/[^/]+\/(start|stop|restart)$/;
 
 function sameOrigin(req) {
   const origin = req.headers.origin;
@@ -178,6 +178,7 @@ async function guard(req, res, send, url, method, pathname) {
     }
     if (pathname === '/api/tokens' && method === 'POST') {
       const body = await parseBody(req);
+      try { audit.record({ who, req, method, path: pathname }); } catch { /* best effort */ }
       try {
         const raw = store.createToken(body && body.label, (body && body.scope) || 'write');
         // The key is printed exactly once; only its hash is stored.
@@ -189,6 +190,7 @@ async function guard(req, res, send, url, method, pathname) {
     }
     const m2 = pathname.match(/^\/api\/tokens\/([^/]+)$/);
     if (m2 && method === 'DELETE') {
+      try { audit.record({ who, req, method, path: pathname }); } catch { /* best effort */ }
       const r = store.revokeToken(decodeURIComponent(m2[1]));
       send(res, r.removed ? 200 : 404, { ok: Boolean(r.removed), label: decodeURIComponent(m2[1]), sessionsDropped: r.sessions });
       return true;
@@ -202,16 +204,22 @@ async function guard(req, res, send, url, method, pathname) {
     return true;
   }
 
-  // Default deny: any unsafe method is local-only or write-Bearer, unless it is one of the
-  // few lifecycle verbs. A route added later is therefore safe without being listed here.
+  // The network boundary is the gate now: any authenticated dashboard request may
+  // write. What is left is what actually protects us — Origin on cookie writes (CSRF,
+  // above) and this record. A guard that a two-step mint bypasses is a guard that lies,
+  // so it is gone rather than half-true.
   if (unsafe) {
-    const mayWrite = isLoopback(req) || (who.via === 'bearer' && who.scope === 'write');
-    if (!mayWrite && !LIFECYCLE.test(pathname)) {
-      send(res, 403, {
-        error: 'write refused from outside loopback',
-        hint: 'the dashboard is open on the LAN for viewing and start/stop only; create, delete, reorder and token changes need a write-scoped Bearer token or the machine running sitebox',
-      });
-      return true;
+    try {
+      audit.record({ who, req, method, path: pathname });
+    } catch (e) {
+      // Delete is the one operation that cannot be undone, so it fails closed.
+      if (method === 'DELETE') {
+        send(res, 503, {
+          error: 'audit log is not writable',
+          hint: 'refusing to delete without a record: fix dashboard/data ownership (chown 1000:1000) and retry',
+        });
+        return true;
+      }
     }
   }
   return false;

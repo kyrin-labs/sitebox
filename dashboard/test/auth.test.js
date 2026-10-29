@@ -199,38 +199,59 @@ function uiCookie() {
 }
 const fromLan = { socket: { remoteAddress: '192.168.1.50' } };
 
-test('a LAN visitor can read and start/stop, but cannot create, delete or reorder', async () => {
+test('a LAN visitor may write: the network boundary is the gate, not the device', async () => {
   const ck = uiCookie();
   const read = await guard({ headers: ck, ...fromLan }, '/api/sites');
   assert.equal(read.handled, false, 'reading stays open to the LAN');
-
-  const start = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/relay/start');
-  assert.equal(start.handled, false, 'start/stop stay available to the LAN');
-
   const create = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites');
-  assert.equal(create.res.status, 403);
-  assert.match(create.res.body.error, /outside loopback/);
-
+  assert.equal(create.handled, false, 'create is allowed from the LAN');
   const del = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/sites/relay');
-  assert.equal(del.res.status, 403);
-
+  assert.equal(del.handled, false, 'delete is allowed from the LAN');
   const reorder = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/reorder');
-  assert.equal(reorder.res.status, 403);
+  assert.equal(reorder.handled, false, 'reorder is allowed from the LAN');
 });
 
-test('any dashboard session may manage keys, but the LAN still cannot delete sites', async () => {
+test('every write leaves exactly one audit line, and the actor names the credential', async () => {
   const ck = uiCookie();
-  const withBody = (o) => ({ ...o, on: (ev, cb) => { if (ev === 'end') setTimeout(cb, 0); } });
+  const audit = require('../audit');
+  const before = fs.existsSync(audit.LOG) ? fs.readFileSync(audit.LOG, 'utf8').trim().split('\n').length : 0;
+  await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/reorder');
+  const lines = fs.readFileSync(audit.LOG, 'utf8').trim().split('\n');
+  assert.equal(lines.length, before + 1, 'one write must be exactly one line');
+  const row = JSON.parse(lines[lines.length - 1]);
+  assert.equal(row.method, 'POST');
+  assert.equal(row.path, '/api/sites/reorder');
+  assert.match(row.actor, /^session:[0-9a-f]{6}\|192\.168\.1\.50\|/);
 
-  // Keys are dashboard business: a device that can load the dashboard can manage them.
-  const mint = await guard(withBody({ method: 'POST', headers: ck, ...fromLan }), '/api/tokens');
-  assert.notEqual(mint.res.status, 403, 'the keys pane is not loopback-only');
-  const list = await guard({ headers: ck, ...fromLan }, '/api/tokens');
-  assert.notEqual(list.res.status, 403, 'listing keys works from the LAN');
+  // A bearer token is named by its label — the only real identity in the system.
+  const key = store.createToken('audit-bearer', 'write');
+  await guard({ method: 'POST', headers: { authorization: 'Bearer ' + key }, ...fromLan }, '/api/sites/reorder');
+  const after = fs.readFileSync(audit.LOG, 'utf8').trim().split('\n');
+  const bearerRow = JSON.parse(after[after.length - 1]);
+  assert.equal(bearerRow.actor, 'token:audit-bearer');
 
-  // The write guard is unchanged: a cookie alone still cannot delete a site.
-  const del = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/sites/relay');
-  assert.equal(del.res.status, 403);
+  // The log itself must never carry a credential.
+  const raw = fs.readFileSync(audit.LOG, 'utf8');
+  assert.ok(!/sbx_[A-Za-z0-9_-]{20,}/.test(raw), 'no key material');
+  assert.ok(!/sbx_session=/.test(raw), 'no cookie value');
+  assert.ok(!/Bearer\s/.test(raw), 'no Authorization header');
+});
+
+test('delete fails closed when the audit log cannot be written', async () => {
+  const audit = require('../audit');
+  const original = audit.record;
+  audit.record = () => { throw new Error('disk full'); };
+  try {
+    const ck = uiCookie();
+    const g = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/sites/relay');
+    assert.equal(g.handled, true);
+    assert.equal(g.res.status, 503, 'no record, no delete');
+    // Other writes are best-effort: a broken log must not become a new outage.
+    const other = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/sites/relay/start');
+    assert.equal(other.handled, false);
+  } finally {
+    audit.record = original;
+  }
 });
 
 test('a forwarded-for header cannot fake loopback', async () => {
@@ -240,7 +261,10 @@ test('a forwarded-for header cannot fake loopback', async () => {
     headers: { ...ck, 'x-forwarded-for': '127.0.0.1', 'x-real-ip': '127.0.0.1' },
     socket: { remoteAddress: '192.168.1.50' },
   }, '/api/sites');
-  assert.equal(spoof.res.status, 403);
+  assert.equal(spoof.handled, false, 'the header neither grants nor denies anything now');
+  const audit = require('../audit');
+  const row = JSON.parse(fs.readFileSync(audit.LOG, 'utf8').trim().split('\n').pop());
+  assert.match(row.actor, /192\.168\.1\.50/, 'the recorded address is the socket, never the header');
 });
 
 test('loopback counts in both of the forms Node actually reports', async () => {
@@ -249,9 +273,10 @@ test('loopback counts in both of the forms Node actually reports', async () => {
     const g = await guard({ method: 'POST', headers: ck, socket: { remoteAddress: addr } }, '/api/sites');
     assert.equal(g.handled, false, addr + ' must be treated as local');
   }
-  // Same cookie, same method, from the network: refused. Proves the address decides.
+  // Same cookie, same method, from the network: allowed too. The address no longer
+  // grants privilege — it is recorded, which is what audit.log is for.
   const lan = await guard({ method: 'POST', headers: ck, socket: { remoteAddress: '192.168.1.50' } }, '/api/sites');
-  assert.equal(lan.res.status, 403);
+  assert.equal(lan.handled, false);
 });
 
 test('a write-scoped Bearer token is exempt, so an agent may live on another machine', async () => {
@@ -296,7 +321,7 @@ test('a UI session reports session scope but can still mint from the loopback so
   assert.notEqual(out.status, 403, 'loopback UI must not be refused by the write gate');
 });
 
-test('lifecycle verbs stay open to a UI cookie from the LAN, writes do not', async () => {
+test('a LAN UI cookie may start and delete alike', async () => {
   const res = mkres();
   auth.issueUiSession(req({ url: '/' }), res);
   const cookie = store.COOKIE + '=' + res.headers['set-cookie'].split(';')[0].split('=')[1];
@@ -308,5 +333,5 @@ test('lifecycle verbs stay open to a UI cookie from the LAN, writes do not', asy
   const start = await auth.guard(lan('POST', '/api/sites/x/start'), mkres(), send, new URL('http://box/api/sites/x/start'), 'POST', '/api/sites/x/start');
   assert.equal(start, false, 'start is allowed from the LAN');
   const del = await auth.guard(lan('DELETE', '/api/sites/x'), mkres(), send, new URL('http://box/api/sites/x'), 'DELETE', '/api/sites/x');
-  assert.equal(del, true, 'delete is refused from the LAN');
+  assert.equal(del, false, 'delete is allowed from the LAN too — the brake lives in the UI');
 });

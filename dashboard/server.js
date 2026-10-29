@@ -415,14 +415,16 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         loopback,
         via: who.via || null,
-        label: who.label || null,
+        // A browser session has no key label. Saying "ui" would put a name in the audit
+        // log that exists in no token store.
+        label: who.ui ? null : (who.label || null),
         // Reported as it is: a UI session is not a token and gets no token scope.
         scope: who.scope || null,
         // mayWrite: destructive site writes. canAdminTokens: the keys pane, which any
         // dashboard session may use — a device that can load the dashboard can manage
         // the keys for it.
-        mayWrite: loopback || writeBearer,
-        canManage: loopback || writeBearer,
+        mayWrite: Boolean(who.ui) || loopback || writeBearer,
+        canManage: Boolean(who.ui) || loopback || writeBearer,
         canAdminTokens: loopback || writeBearer || Boolean(who.ui),
       });
     }
@@ -633,4 +635,9 @@ const server = http.createServer(async (req, res) => {
   else send(res, 404, 'Not Found');
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`\n  SiteBox Dashboard  →  http://localhost:${PORT}\n`));
+// The dashboard has no per-device permissions: whatever can reach the port can do
+// everything. The network boundary is therefore the real gate, so make it settable:
+// SITEBOX_BIND=127.0.0.1 keeps it on this machine (reach it remotely over tailscale or
+// an SSH tunnel), which is the only way to lock this down without adding an auth system.
+const BIND = process.env.SITEBOX_BIND || '0.0.0.0';
+server.listen(PORT, BIND, () => console.log(`\n  SiteBox Dashboard  →  http://${BIND === '0.0.0.0' ? 'localhost' : BIND}:${PORT}\n`));

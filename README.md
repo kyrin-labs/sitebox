@@ -277,3 +277,28 @@ With no favicon, the dashboard renders these icons; any other name falls back to
 MIT
 
 Built-in icons are Lucide SVG geometry (ISC License).
+
+## Security model
+
+There is **no per-device permission system**. The dashboard has no login, and any
+device that can load it can also create, delete and reorder sites and mint API keys.
+That is a deliberate choice, not an oversight: the gate is the **network boundary**.
+
+What actually protects the install:
+
+| Layer | What it does |
+|---|---|
+| Network boundary | `SITEBOX_BIND=127.0.0.1` keeps the dashboard on this machine. Reach it remotely over tailscale or an SSH tunnel when you need it. |
+| Bearer tokens | Gate programmatic clients (MCP, scripts). They are **not** what stops a browser. |
+| Origin check | Refuses cookie-authenticated writes from a foreign origin — this is CSRF protection, and it is real. |
+| Audit log | `dashboard/data/audit.log` — one JSONL line per write: time, actor (`token:<label>` or a session fingerprint), method, path, address. Append-only, rotated at 1MB × 5, never contains a key or cookie value. |
+| Delete brake | Deleting asks you to type the site id. With no wall left, the brake is the UI. |
+
+Consequences worth knowing:
+
+* Minting a key from a phone is allowed, and a write-scoped key can delete sites.
+  So a LAN visitor can do anything a LAN visitor can do — plan the network accordingly.
+* Site processes bind `127.0.0.1` by default (`host: "0.0.0.0"` opts a site in). That is
+  separate from the dashboard: the dashboard being reachable does not expose the sites.
+* If the audit log cannot be written, **delete is refused** (503) and other writes go
+  through unlogged rather than taking the dashboard down.
