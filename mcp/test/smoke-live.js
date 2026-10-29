@@ -267,6 +267,12 @@ function connect() {
         && /\/api\/sites\/reorder$/.test(String(rec.path)) && Boolean(rec.actor),
       JSON.stringify(rec || after[after.length - 1]).slice(0, 180));
 
+    // This write carried the MCP bearer token, so the actor must name that credential.
+    // "session" or "ui" here would be the fake identity we spent a thread removing.
+    gate('audit actor names the credential that wrote',
+      Boolean(rec) && /^token:[a-z0-9][a-z0-9-]*$/.test(String(rec.actor)),
+      'actor=' + (rec && rec.actor));
+
     let parseable = true;
     for (const line of after) { try { JSON.parse(line); } catch { parseable = false; break; } }
     gate('audit log is JSONL end to end', parseable, after.length + ' line(s)');
