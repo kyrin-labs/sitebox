@@ -44,6 +44,10 @@ node ~/sitebox/dashboard/token.js add mcp-hermes --scope write --print | tail -1
   > ~/.config/sitebox/mcp-hermes.token && chmod 600 ~/.config/sitebox/mcp-hermes.token
 ```
 
+`write` includes `read`; there is no combined value to pass. A `read` key can list and
+check, but `create_site`/`update_site`/`site_ctl`/`delete_site` answer 403 — `doctor`
+reports that as `E_SCOPE` instead of letting the first write discover it.
+
 The dashboard UI needs no token — but that browser session authenticates **people**, not
 clients. A cookie never authorises an agent, and `401` means exactly that.
 
@@ -51,7 +55,7 @@ clients. A cookie never authorises an agent, and `401` means exactly that.
 
 | Tool | What it does |
 |---|---|
-| `doctor` | preflight: capabilities, token, stale listeners, root-owned files, disk, host mint path, plus a fill-in `create_site` skeleton and the layout catalog |
+| `doctor` | preflight: capabilities, token (and what it may do: `token_access.canWrite`), stale listeners, root-owned files, disk, host mint path, plus a fill-in `create_site` skeleton and the layout catalog |
 | `list_sites({id?})` | registered sites with real reachability (HTTP GET on the port, not the `_running` flag) |
 | `create_site` | validate → render → register on a self-allocated port → start → verify `GET /` = 200 with a matching `<title>` |
 | `update_site` | patch `sitebox.json`, re-render, restart, verify — one call for a colour or a sentence |
@@ -61,6 +65,12 @@ clients. A cookie never authorises an agent, and `401` means exactly that.
 | `delete_site({id, confirm})` | deletes entry **and folder**; `confirm` must equal the id |
 
 A prototype costs **two calls**: `doctor` once per session, then `create_site`.
+
+Every tool that names a site (`create_site`, `update_site`, `site_ctl`, `list_sites`)
+returns `url`, `localOnly` and `note`. A site registered on `127.0.0.1` has no LAN URL:
+its `url` is `http://localhost:<port>` and it opens **only on the host running SiteBox**.
+Hand the operator the URL together with that note; do not replace `localhost` with a
+guessed hostname, and do not tell them to open it from a phone.
 
 ## What `create_site` accepts
 
@@ -100,7 +110,8 @@ response so one round of repair is enough.
 `doctor` also reports conditions of the host rather than of the payload:
 `E_ROOT_OWNED` (files owned by root under `sites/`), `E_STALE_LISTENER` (a port answers
 but the dashboard has no process for it), `E_NO_MINT_PATH` (the operator could not mint a
-key — the recovery path is broken), `E_UNREACHABLE`, and two notes that are verdicts
+key — the recovery path is broken), `E_SCOPE` (the configured key is read-only, so every
+write tool answers 403), `E_UNREACHABLE`, and two notes that are verdicts
 rather than failures: `E_BASELINE_GAP` and `E_ALL_STOPPED`.
 
 - `E_TOO_OLD` = the dashboard is older than this server: rebuild it, do not retry.

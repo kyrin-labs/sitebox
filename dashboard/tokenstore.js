@@ -60,7 +60,7 @@ function createToken(label, scope) {
   if (!/^[a-z0-9][a-z0-9-]{1,31}$/.test(String(label || ''))) {
     throw new Error('label must be kebab-case, 2-32 chars (e.g. mcp, ui)');
   }
-  if (!['read', 'write'].includes(scope)) throw new Error('scope must be read or write');
+  if (!['read', 'write'].includes(scope)) throw new Error('scope must be read or write (write includes read, so there is nothing else to grant)');
   const tokens = listTokens() || [];
   if (tokens.some((t) => t.label === label)) {
     throw new Error('a token labelled "' + label + '" already exists — revoke it first');

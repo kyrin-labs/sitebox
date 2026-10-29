@@ -89,6 +89,17 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname, m = req.method;
 
   if (p === '/api/health' && m === 'GET') return send(res, 200, { ok: true, features: FEATURES });
+  // The real dashboard reports what the credential may do; the stub must answer the
+  // same shape or doctor's scope gate is untested. STUB_SCOPE=read simulates a read key.
+  if (p === '/api/me' && m === 'GET') {
+    const scope = process.env.STUB_SCOPE || 'write';
+    const canWrite = scope === 'write';
+    return send(res, 200, {
+      ok: true, loopback: true, via: 'bearer', label: 'stub', scope,
+      canRead: true, canWrite,
+      mayWrite: canWrite, canManage: canWrite, canAdminTokens: canWrite,
+    });
+  }
   if (p === '/api/sites' && m === 'GET') {
     return send(res, 200, sites.map((s) => ({
       ...s, _running: alive(running.get(s.id)),

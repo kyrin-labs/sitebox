@@ -78,6 +78,7 @@ module.exports = {
   BASE,
   hasToken: () => Boolean(TOKEN),
   health: () => call('GET', '/api/health'),
+  me: () => call('GET', '/api/me'),
   sites: () => call('GET', '/api/sites'),
   ports: (port) => call('GET', '/api/ports/check?port=' + port),
   register: (payload) => call('POST', '/api/sites', payload),

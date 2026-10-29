@@ -24,6 +24,9 @@ const flag = (name, fallback) => {
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback;
 };
 const has = (name) => argv.includes(name);
+// One string on disk, two readable labels in the output: write is read + write, so a
+// single value is never ambiguous to a person reading `token.js list`.
+const describeScope = (scope) => scope === 'write' ? 'write (read + write)' : 'read (read only)';
 
 function fail(msg) {
   process.stderr.write('token.js: ' + msg + '\n');
@@ -33,11 +36,11 @@ function fail(msg) {
 try {
   if (cmd === 'add') {
     const label = argv[1];
-    if (!label) fail('usage: add <label> [--scope read|write] [--print]');
+    if (!label) fail('usage: add <label> [--scope read|write] [--print]   (write includes read)');
     const scope = flag('--scope', 'write');
     const key = store.createToken(label, scope);
     process.stdout.write('label:  ' + label + '\n');
-    process.stdout.write('scope:  ' + scope + '\n');
+    process.stdout.write('scope:  ' + describeScope(scope) + '\n');
     process.stdout.write('store:  ' + store.TOKENS + ' (0600, hash only)\n');
     if (has('--print')) {
       process.stdout.write('warning: shown once; store it in ~/.config/sitebox/mcp.token (600)\n');
@@ -68,7 +71,7 @@ try {
     const key = argv[1];
     if (!key) fail('usage: verify <key>');
     const t = store.verify(key);
-    process.stdout.write(t ? 'valid: ' + t.label + ' (' + t.scope + ')\n' : 'invalid\n');
+    process.stdout.write(t ? 'valid: ' + t.label + ' (' + describeScope(t.scope) + ')\n' : 'invalid\n');
     process.exit(t ? 0 : 1);
   } else if (cmd === 'path') {
     process.stdout.write(store.TOKENS + '\n');

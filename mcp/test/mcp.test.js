@@ -22,9 +22,9 @@ const SITES = path.join(tmp, 'sites');
 fs.mkdirSync(SITES, { recursive: true });
 
 /* ── stub lifecycle ── */
-function startStub(features) {
+function startStub(features, extraEnv) {
   const child = spawn('node', [STUB], {
-    env: { ...process.env, STUB_SITES: SITES, STUB_FEATURES: features || 'health,port0,host,auth' },
+    env: { ...process.env, STUB_SITES: SITES, STUB_FEATURES: features || 'health,port0,host,auth', ...(extraEnv || {}) },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   return new Promise((resolve, reject) => {
@@ -241,6 +241,11 @@ test('create_site allocates a port, serves 200 and matches the title', async () 
   assert.equal(r.body.verified.titleMatch, true);
   assert.equal(r.body.files.length, 4);
   assert.ok(r.body.bytes < 48 * 1024);
+  // Every tool that names a site hands back the URL, and says where it works: a
+  // 127.0.0.1 site has no LAN URL, so the caller must not be left to guess one.
+  assert.equal(r.body.url, 'http://localhost:' + r.body.port);
+  assert.equal(r.body.localOnly, true);
+  assert.match(r.body.note, /host running SiteBox/);
   assert.ok(fs.existsSync(path.join(SITES, GOOD.id, 'sitebox.json')));
   assert.ok(fs.existsSync(path.join(SITES, GOOD.id, 'public/index.html')));
 });
@@ -278,6 +283,7 @@ test('check_site catches a hand-edited rendered file', async () => {
   assert.ok(dirty.body.errors.some((e) => e.code === 'E_DRIFT'));
   const fixed = await c.call('update_site', { id: GOOD.id, accent: 'navy' });
   assert.equal(fixed.isError, false, JSON.stringify(fixed.body.errors || fixed.body));
+  assert.equal(fixed.body.url, 'http://localhost:' + fixed.body.port, 'update_site must return the URL too');
   const after = await c.call('check_site', { id: GOOD.id });
   assert.equal(after.isError, false);
   assert.equal(after.body.errors, undefined);
@@ -289,6 +295,8 @@ test('site_ctl stops and starts, list_sites reports real reachability', async ()
   assert.equal(down.body.sites[0].reachable, false);
   const up = await c.call('site_ctl', { id: GOOD.id, action: 'start' });
   assert.equal(up.body.live.status, 200);
+  assert.equal(up.body.url, 'http://localhost:' + up.body.port);
+  assert.equal(up.body.localOnly, true);
 });
 
 test('delete_site refuses a wrong confirm and purges on the right one', async () => {
@@ -301,6 +309,19 @@ test('delete_site refuses a wrong confirm and purges on the right one', async ()
 });
 
 /* ── capability gate ── */
+test('a read-only key is not reported as healthy: doctor names the scope', async () => {
+  const roStub = await startStub('health,port0,host,auth', { STUB_SCOPE: 'read' });
+  const roClient = mcp(roStub.api);
+  await roClient.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ro', version: '1' } });
+  const d = await roClient.call('doctor', {});
+  assert.equal(d.isError, true, 'a read key that cannot create is not a passing preflight');
+  assert.equal(d.body.errors[0].code, 'E_SCOPE');
+  assert.deepEqual(d.body.token_access, { scope: 'read', canRead: true, canWrite: false });
+  assert.match(d.body.errors[0].fix, /write includes read/);
+  roClient.close();
+  roStub.close();
+});
+
 test('an older dashboard is refused instead of guessing at a 400', async () => {
   const oldStub = await startStub('health,host');
   const oldClient = mcp(oldStub.api);

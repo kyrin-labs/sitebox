@@ -289,7 +289,7 @@ What actually protects the install:
 | Layer | What it does |
 |---|---|
 | Network boundary | `SITEBOX_BIND=127.0.0.1` keeps the dashboard on this machine. Reach it remotely over tailscale or an SSH tunnel when you need it. |
-| Bearer tokens | Gate programmatic clients (MCP, scripts). They are **not** what stops a browser. |
+| Bearer tokens | Gate programmatic clients (MCP, scripts). They are **not** what stops a browser. A `write` key can also read — write includes read, so one key covers a full agent; a `read` key is inspection-only. |
 | Origin check | Refuses cookie-authenticated writes from a foreign origin — this is CSRF protection, and it is real. |
 | Audit log | `dashboard/data/audit.log` — one JSONL line per write: time, actor (`token:<label>` or a session fingerprint), method, path, address. Append-only, rotated at 1MB × 5, never contains a key or cookie value. |
 | Delete brake | Deleting asks you to type the site id. It stops a misclick, not a deletion: a script on the same network can still delete anything. |

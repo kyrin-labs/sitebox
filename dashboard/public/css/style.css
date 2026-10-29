@@ -185,6 +185,29 @@ a:hover { text-decoration: underline; }
   background: var(--bg); padding: 0.15rem 0.4rem; border-radius: 4px;
 }
 
+/* The URL gets its own row: a full http://localhost:4451 does not fit beside the
+   status, category and badges without squeezing them, and it is the one string on
+   this card someone actually needs to read and copy. */
+.site-card__url {
+  display: flex; align-items: center; gap: 0.25rem;
+  min-width: 0; margin-top: -0.25rem;
+}
+.site-card__url code {
+  flex: 1; min-width: 0;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+  color: var(--text-2);
+  background: var(--bg); padding: 0.25rem 0.45rem; border-radius: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.site-card__copy {
+  flex-shrink: 0; padding: 0.2rem; border-radius: 4px; color: var(--text-3);
+}
+.site-card__copy:hover { color: var(--text); }
+.site-card__copy svg { display: block; }
+.site-card__copy .icon-check { display: none; color: var(--accent2); }
+.site-card__copy.is-copied .icon-copy { display: none; }
+.site-card__copy.is-copied .icon-check { display: block; }
+
 .site-card__status { display: flex; align-items: center; gap: 0.4rem; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .status-dot--running { background: var(--accent2); box-shadow: 0 0 6px rgba(63,185,80,.4); }

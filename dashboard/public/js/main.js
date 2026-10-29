@@ -155,7 +155,8 @@ function render() {
     const iconHtml = hasFavicon
       ? `<img src="${esc(s._favicon)}" alt="" loading="lazy">`
       : getIcon(s.icon);
-    const openUrl = (s.url || '').replace(/localhost|127\.0\.0\.1/, window.location.hostname);
+    const openUrl = SiteUrl.displayUrl(s, window.location.hostname);
+    const urlHint = SiteUrl.urlHint(s);
     // Destructive controls exist only where the server will accept them.
     const dragHandle = ME.canManage
       ? `<div class="site-card__drag" title="Drag to reorder"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg></div>`
@@ -178,10 +179,16 @@ function render() {
           <span class="status-dot ${s._stale ? 'status-dot--stopped' : s._running ? 'status-dot--running' : 'status-dot--stopped'}"></span>
           <span>${s._stale ? 'Missing files' : s._running ? 'Running' : 'Stopped'}</span>
         </div>
-        <code>:${s.port}</code>
         ${s.category ? `<span>${esc(s.category)}</span>` : ''}
         ${s._stale ? `<span class="badge badge--warn" title="server.js not found — the folder was moved, renamed, or deleted">stale</span>` : ''}
         ${s._localOnly ? `<span class="badge badge--info" title="Bound to 127.0.0.1 — this link only opens on the machine running SiteBox">local</span>` : ''}
+      </div>
+      <div class="site-card__url">
+        <code title="${esc(urlHint)}">${esc(openUrl)}</code>
+        <button class="btn btn--ghost site-card__copy" data-copy="${esc(openUrl)}" title="Copy URL" aria-label="Copy URL for ${esc(s.name)}">
+          <svg class="icon-copy" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+          <svg class="icon-check" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        </button>
       </div>
       <div class="site-card__actions">
         ${s._running
@@ -194,7 +201,7 @@ function render() {
                Start
              </button>`
         }
-        <a href="${openUrl}" target="_blank" rel="noopener" class="btn btn--outline btn--sm" ${s._stale ? 'aria-disabled="true" style="opacity:.5;pointer-events:none"' : ''}>
+        <a href="${esc(openUrl)}" target="_blank" rel="noopener" class="btn btn--outline btn--sm" title="${esc(urlHint)}" ${s._stale ? 'aria-disabled="true" style="opacity:.5;pointer-events:none"' : ''}>
           <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
           Open
         </a>
@@ -209,6 +216,40 @@ function render() {
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+/* The URL is shown so it can be copied, not only opened. navigator.clipboard needs a
+ * secure context; the dashboard is often plain http on a LAN, so keep a fallback that
+ * works there instead of failing silently. */
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the selection fallback */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+document.getElementById('sites-grid').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-copy]');
+  if (!btn) return;
+  e.preventDefault();
+  const ok = await copyText(btn.getAttribute('data-copy'));
+  btn.classList.toggle('is-copied', ok);
+  btn.title = ok ? 'Copied' : 'Copy failed — select the URL instead';
+  setTimeout(() => { btn.classList.remove('is-copied'); btn.title = 'Copy URL'; }, 1200);
+});
 
 /* ── Actions ── */
 async function startSite(id) {

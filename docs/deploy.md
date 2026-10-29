@@ -84,6 +84,9 @@ node dashboard/token.js list
 node dashboard/token.js revoke <label>
 ```
 
+`write` includes `read` — it is a hierarchy, not two independent flags, so there is no
+"read + write" value to pass and no second key to mint for the same client.
+
 Current labels: `mcp` (deploy/smoke), `mcp-hermes`, `mcp-opencode` (one per client, so
 `lastUsed` and the audit actor mean something). Keys live at `~/.config/sitebox/<label>.token`,
 mode 600. The store keeps sha256 hashes only and is re-read per request, so a mint or revoke

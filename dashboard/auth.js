@@ -191,7 +191,7 @@ async function guard(req, res, send, url, method, pathname) {
     }
     // Only a bearer token can be read-only; a dashboard session is not a token.
     if (who.scope !== 'write' && !who.ui) {
-      deny(send, res, req, method, pathname, 403, { error: 'this token is read-only' }, 'denied:scope');
+      deny(send, res, req, method, pathname, 403, { error: 'this token is read-only', hint: 'manage keys with a write-scoped token — write includes read' }, 'denied:scope');
       return true;
     }
     if (pathname === '/api/tokens' && method === 'GET') {
@@ -202,9 +202,13 @@ async function guard(req, res, send, url, method, pathname) {
       const body = await parseBody(req, res, send);
       audit.recordOnFinish(res, { who, req, method, path: pathname });
       try {
-        const raw = store.createToken(body && body.label, (body && body.scope) || 'write');
+        // One scope string, validated by the store: a write key is read + write, so
+        // there is no second value to accept. Echo the scope that was stored, not the
+        // one the request happened to send.
+        const scope = (body && body.scope) || 'write';
+        const raw = store.createToken(body && body.label, scope);
         // The key is printed exactly once; only its hash is stored.
-        send(res, 200, { ok: true, label: body.label, scope: body.scope || 'write', key: raw, note: 'copy it now — it is not stored and cannot be shown again' });
+        send(res, 200, { ok: true, label: body.label, scope, key: raw, note: 'copy it now — it is not stored and cannot be shown again' });
       } catch (e) {
         send(res, 400, { error: e.message });
       }
@@ -230,7 +234,7 @@ async function guard(req, res, send, url, method, pathname) {
   }
 
   if (unsafe && who.scope !== 'write' && !who.ui) {
-    deny(send, res, req, method, pathname, 403, { error: 'this token is read-only', hint: 'mint a write-scoped token for this action' }, 'denied:scope');
+    deny(send, res, req, method, pathname, 403, { error: 'this token is read-only', hint: 'mint a write-scoped token for this action — write includes read, so one key is enough for an agent' }, 'denied:scope');
     return true;
   }
 

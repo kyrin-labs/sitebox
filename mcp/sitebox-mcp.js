@@ -57,6 +57,24 @@ async function probe(port, timeout = 600) {
   return api.get('http://127.0.0.1:' + port + '/', timeout);
 }
 
+/**
+ * The URL a caller can act on, plus whether it is only good on the host. Never invent
+ * a hostname: a site bound to 127.0.0.1 has no LAN URL, and printing one would send the
+ * operator to a dead page. The note says where the URL does work.
+ */
+function siteUrl(site) {
+  const port = Number(site && site.port);
+  if (!Number.isInteger(port) || port <= 0) return { url: null, localOnly: null };
+  const localOnly = site.host === '127.0.0.1' || site._localOnly === true;
+  return {
+    url: 'http://localhost:' + port,
+    localOnly,
+    ...(localOnly
+      ? { note: 'bound to 127.0.0.1 — opens only on the host running SiteBox, not from another device' }
+      : { note: 'reachable on the LAN at the host that serves the dashboard' }),
+  };
+}
+
 /** A started site is only up when `/` answers 200 with the expected title. */
 async function verify(schema, port) {
   const r = await probe(port, 3000);
@@ -160,7 +178,7 @@ const TOOLS = [
     description: 'Preflight before creating anything: dashboard capabilities, token, stale listeners, root-owned files, free disk. Also returns create_site_skeleton — a payload that is structurally valid whose text markers the validator rejects.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     handler: async () => {
-      const report = { api: api.BASE, token: api.hasToken() ? 'present' : 'none', features: null, sites: {}, issues: [] };
+      const report = { api: api.BASE, token: api.hasToken() ? 'present' : 'none', token_access: null, features: null, sites: {}, issues: [] };
       if (!api.hasToken()) {
         report.issues.push({
           code: 'E_AUTH',
@@ -172,6 +190,26 @@ const TOOLS = [
         const h = await api.health();
         report.features = h.features || [];
         if (!report.features.includes('port0')) report.issues.push({ code: 'E_TOO_OLD', message: 'dashboard cannot allocate port 0', fix: 'rebuild the dashboard image' });
+        // A read-only key is the difference between "doctor is green" and "create_site
+        // answers 403". Ask the dashboard what this credential may do instead of
+        // assuming the word "write" means something narrower.
+        if (api.hasToken()) {
+          try {
+            const me = await api.me();
+            report.token_access = {
+              scope: me.scope || null,
+              canRead: me.canRead !== false,
+              canWrite: Boolean(me.canWrite),
+            };
+            if (!report.token_access.canWrite) {
+              report.issues.push({
+                code: 'E_SCOPE',
+                message: 'this token is read-only: create_site, update_site, site_ctl and delete_site will answer 403',
+                fix: 'mint a write key — write includes read, so one key covers every tool: node dashboard/token.js add mcp --scope write --print',
+              });
+            }
+          } catch { /* a dashboard without /api/me: the first write will say so */ }
+        }
       } catch (e) {
         const tooOld = e.code === 'E_NOT_FOUND';
         report.issues.push({
@@ -285,8 +323,7 @@ const TOOLS = [
         running: Boolean(s._running),
         reachable: probes[i].status === 200,
         staleEntry: Boolean(s._stale),
-        localOnly: s.host === '127.0.0.1',
-        url: s.url,
+        ...siteUrl(s),
         prototype: fs.existsSync(schemaPath(s.id)),
       }));
       return ok({ count: rows.length, sites: rows });
@@ -326,7 +363,7 @@ const TOOLS = [
           // identical payload: make it serve, do not fail a retry
           if (!existing._running) await api.start(schema.id).catch(() => null);
           const vfy = await verify(schema, existing.port);
-          return ok({ id: schema.id, noop: true, port: existing.port, url: 'http://localhost:' + existing.port, verified: vfy, files: Object.keys(r.files), bytes: r.bytes, hash: hash.slice(0, 8) });
+          return ok({ id: schema.id, noop: true, port: existing.port, ...siteUrl(existing), verified: vfy, files: Object.keys(r.files), bytes: r.bytes, hash: hash.slice(0, 8) });
         }
         if (hasServer || disk) {
           return one('E_ID_TAKEN', 'sites/' + schema.id + ' already exists with different content',
@@ -362,8 +399,8 @@ const TOOLS = [
       const vfy = await verify(schema, site.port);
       if (!vfy.ok) return one('E_VERIFY_FAILED', 'started but the page did not verify (status ' + vfy.status + ')', vfy.fix, { id: schema.id, port: site.port });
       return ok({
-        id: schema.id, port: site.port, url: 'http://localhost:' + site.port,
-        localOnly: true, files: Object.keys(r.files), bytes: r.bytes, hash: hash.slice(0, 8),
+        id: schema.id, port: site.port, ...siteUrl(site),
+        files: Object.keys(r.files), bytes: r.bytes, hash: hash.slice(0, 8),
         verified: vfy, elapsedMs: Date.now() - startedAt,
       });
     },
@@ -396,8 +433,10 @@ const TOOLS = [
       writeTree(id, r.files, merged);
       const started = await api.restart(id);
       const vfy = await verify(merged, Number(started && started.port) || 0);
+      const fresh = (await api.sites().catch(() => [])).find((s) => s.id === id) || null;
       return ok({
         id, changed: Object.keys(patch), hash: hashSchema(merged).slice(0, 8),
+        ...siteUrl(fresh),
         files: Object.keys(r.files), bytes: r.bytes, verified: vfy,
         ...(vfy.ok ? {} : { warning: 'files updated but the page did not verify' }),
       });
@@ -441,7 +480,7 @@ const TOOLS = [
       const sites = await api.sites();
       const site = sites.find((s) => s.id === id);
       const live = action === 'stop' || !site ? null : await verifyShadow(id, site.port);
-      return ok({ id, action, port: site ? site.port : null, running: site ? Boolean(site._running) : false, live });
+      return ok({ id, action, port: site ? site.port : null, ...siteUrl(site), running: site ? Boolean(site._running) : false, live });
     },
   },
   {

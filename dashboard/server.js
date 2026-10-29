@@ -443,6 +443,11 @@ const server = http.createServer(async (req, res) => {
         label: who.ui ? null : (who.label || null),
         // Reported as it is: a UI session is not a token and gets no token scope.
         scope: who.scope || null,
+        // What this credential can actually do, so a client never has to infer it from
+        // the word "write": a write key reads as well, a read key never writes. This
+        // mirrors exactly what auth.guard enforces below, not a guess.
+        canRead: true,
+        canWrite: Boolean(who.ui) || who.scope === 'write',
         // mayWrite: destructive site writes. canAdminTokens: the keys pane, which any
         // dashboard session may use — a device that can load the dashboard can manage
         // the keys for it.
