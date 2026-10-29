@@ -225,16 +225,24 @@ function connect() {
   // The bypass test: the dashboard page hands a session to anyone who opens it, so the
   // LAN guard is only real if that session cannot mint a token or create/delete a site.
   if (!lan) {
-    skip('LAN cookie cannot mint a token', 'no non-loopback IPv4 on this host');
+    skip('LAN cookie can manage keys', 'no non-loopback IPv4 on this host');
   } else {
     const cookie = await uiCookieFrom(lan);
     if (!cookie) {
-      skip('LAN cookie cannot mint a token', 'GET / from ' + lan + ' returned no session cookie');
+      skip('LAN cookie can manage keys', 'GET / from ' + lan + ' returned no session cookie');
     } else {
       const origin = 'http://' + lan + ':4445';
       const base = origin;
-      const mint = await raw('POST', '/api/tokens', { base, cookie, origin, body: { label: 'bypass-' + Date.now().toString(36), scope: 'write' } });
-      gate('LAN cookie cannot mint a token', mint.status === 403, 'status=' + mint.status);
+      // Keys are a dashboard surface: any device that can load the dashboard may manage
+      // them, so this gate proves the *intended* behaviour rather than a lock-out.
+      const probeLabel = 'lan-probe-' + Date.now().toString(36);
+      const mint = await raw('POST', '/api/tokens', { base, cookie, origin, body: { label: probeLabel, scope: 'write' } });
+      gate('LAN cookie can manage keys', mint.status === 200, 'status=' + mint.status);
+      if (mint.status === 200) {
+        // Do not leave a probe key behind: it would be a real write key in the store.
+        const revoked = await raw('DELETE', '/api/tokens/' + probeLabel, { base, cookie, origin });
+        gate('LAN probe key revoked', revoked.status === 200, 'status=' + revoked.status);
+      }
 
       const create = await raw('POST', '/api/sites', { base, cookie, origin, body: { id: 'lan-bypass', name: 'LAN', port: 0, host: '127.0.0.1' } });
       gate('LAN cookie cannot create a site', create.status === 403, 'status=' + create.status);

@@ -386,6 +386,9 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/')) {
     // Same-origin only: the UI is served from this dashboard and authenticates with a
     // cookie, so a wildcard would only widen what a hostile page can attempt.
+    // Capability and site answers describe *now*: a cached one outlives the policy
+    // change that made it true, which is how a browser keeps offering refused buttons.
+    res.setHeader('Cache-Control', 'no-store');
     if (m === 'OPTIONS') return send(res, 204, '');
 
     // GET /api/health — the only surface a probe needs, so it stays
@@ -407,13 +410,20 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/me' && m === 'GET') {
       const who = auth.authenticate(req) || {};
       const loopback = auth.isLoopback(req);
+      const writeBearer = who.via === 'bearer' && who.scope === 'write';
       return send(res, 200, {
         ok: true,
         loopback,
         via: who.via || null,
         label: who.label || null,
+        // Reported as it is: a UI session is not a token and gets no token scope.
         scope: who.scope || null,
-        canManage: loopback || (who.via === 'bearer' && who.scope === 'write'),
+        // mayWrite: destructive site writes. canAdminTokens: the keys pane, which any
+        // dashboard session may use — a device that can load the dashboard can manage
+        // the keys for it.
+        mayWrite: loopback || writeBearer,
+        canManage: loopback || writeBearer,
+        canAdminTokens: loopback || writeBearer || Boolean(who.ui),
       });
     }
 

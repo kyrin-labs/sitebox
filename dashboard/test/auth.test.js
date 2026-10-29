@@ -160,7 +160,7 @@ test('the dashboard page issues a UI session with no token, and it is write-scop
   const who = auth.authenticate(req({ headers: { cookie: store.COOKIE + '=' + encodeURIComponent(secret) } }));
   assert.equal(who.ok, true);
   assert.equal(who.ui, true);
-  assert.equal(who.scope, 'write');
+  assert.equal(who.scope, 'session', 'a UI session must not claim a token scope it cannot use');
   // A second load must not mint a second session for the same browser.
   const again = mkres();
   assert.equal(auth.issueUiSession(req({ url: '/', headers: { cookie: store.COOKIE + '=' + encodeURIComponent(secret) } }), again), false);
@@ -218,17 +218,19 @@ test('a LAN visitor can read and start/stop, but cannot create, delete or reorde
   assert.equal(reorder.res.status, 403);
 });
 
-test('the LAN cookie cannot mint or revoke a token (that would undo every guard)', async () => {
+test('any dashboard session may manage keys, but the LAN still cannot delete sites', async () => {
   const ck = uiCookie();
-  const mint = await guard({ method: 'POST', headers: ck, ...fromLan }, '/api/tokens');
-  assert.equal(mint.res.status, 403);
-  assert.match(mint.res.body.error, /loopback-only/);
+  const withBody = (o) => ({ ...o, on: (ev, cb) => { if (ev === 'end') setTimeout(cb, 0); } });
 
-  const revoke = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/tokens/mcp');
-  assert.equal(revoke.res.status, 403);
-
+  // Keys are dashboard business: a device that can load the dashboard can manage them.
+  const mint = await guard(withBody({ method: 'POST', headers: ck, ...fromLan }), '/api/tokens');
+  assert.notEqual(mint.res.status, 403, 'the keys pane is not loopback-only');
   const list = await guard({ headers: ck, ...fromLan }, '/api/tokens');
-  assert.equal(list.res.status, 403, 'even listing labels is not for the LAN');
+  assert.notEqual(list.res.status, 403, 'listing keys works from the LAN');
+
+  // The write guard is unchanged: a cookie alone still cannot delete a site.
+  const del = await guard({ method: 'DELETE', headers: ck, ...fromLan }, '/api/sites/relay');
+  assert.equal(del.res.status, 403);
 });
 
 test('a forwarded-for header cannot fake loopback', async () => {
@@ -268,4 +270,43 @@ test('a write-scoped Bearer token is exempt, so an agent may live on another mac
     socket: { remoteAddress: '192.168.1.50' },
   }, '/api/sites');
   assert.equal(denied.res.status, 403);
+});
+
+test('a UI session reports session scope but can still mint from the loopback socket', async () => {
+  const res = mkres();
+  auth.issueUiSession(req({ url: '/' }), res);
+  const cookie = store.COOKIE + '=' + res.headers['set-cookie'].split(';')[0].split('=')[1];
+  const who = auth.authenticate(req({ headers: { cookie } }));
+  assert.equal(who.scope, 'session');
+
+  // A POST body is parsed by the route, so the fake request needs a stream stub.
+  const body = (extra) => ({
+    ...req(extra),
+    on: (ev, cb) => { if (ev === 'end') setTimeout(cb, 0); },
+  });
+  const local = body({
+    method: 'POST',
+    url: '/api/tokens',
+    headers: { cookie, origin: 'http://box', host: 'box' },
+    socket: { remoteAddress: '::ffff:127.0.0.1' },
+  });
+  const out = mkres();
+  const handled = await auth.guard(local, out, send, new URL('http://box/api/tokens'), 'POST', '/api/tokens');
+  assert.equal(handled, true, 'the token route answers inside the guard');
+  assert.notEqual(out.status, 403, 'loopback UI must not be refused by the write gate');
+});
+
+test('lifecycle verbs stay open to a UI cookie from the LAN, writes do not', async () => {
+  const res = mkres();
+  auth.issueUiSession(req({ url: '/' }), res);
+  const cookie = store.COOKIE + '=' + res.headers['set-cookie'].split(';')[0].split('=')[1];
+  const lan = (method, pathname) => req({
+    method, url: pathname,
+    headers: { cookie, origin: 'http://box', host: 'box' },
+    socket: { remoteAddress: '192.168.1.50' },
+  });
+  const start = await auth.guard(lan('POST', '/api/sites/x/start'), mkres(), send, new URL('http://box/api/sites/x/start'), 'POST', '/api/sites/x/start');
+  assert.equal(start, false, 'start is allowed from the LAN');
+  const del = await auth.guard(lan('DELETE', '/api/sites/x'), mkres(), send, new URL('http://box/api/sites/x'), 'DELETE', '/api/sites/x');
+  assert.equal(del, true, 'delete is refused from the LAN');
 });

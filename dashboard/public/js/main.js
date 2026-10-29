@@ -25,11 +25,13 @@ async function loadMe() {
   const add = document.getElementById('btn-add');
   const keys = document.getElementById('btn-keys');
   if (add) add.style.display = ME.canManage ? '' : 'none';
-  if (keys) keys.style.display = ME.canManage ? '' : 'none';
+  // Keys are dashboard business, not machine business: any device that can open the
+  // dashboard can manage them.
+  if (keys) keys.style.display = ME.canAdminTokens ? '' : 'none';
   const note = document.getElementById('remote-note');
   if (note && !ME.canManage) {
     note.hidden = false;
-    note.textContent = 'Viewing from another device: start and stop work, but creating, deleting and reordering sites — and API keys — only work on the machine running SiteBox.';
+    note.textContent = 'Viewing from another device: start/stop and API keys work, but creating, deleting and reordering sites only works on the machine running SiteBox.';
   }
 }
 

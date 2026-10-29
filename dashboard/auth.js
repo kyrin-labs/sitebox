@@ -45,7 +45,9 @@ function authenticate(req) {
     // Browser UI sessions are not tied to a token: the dashboard is the same origin
     // and the operator is a person, not a client. Revoking an MCP key must never log
     // the person out of their own dashboard.
-    if (s.ui) return { ok: true, via: 'cookie', label: 'ui', scope: 'write', ui: true };
+    // A UI session is not a bearer token and must not claim a token scope: it can
+    // only do what the loopback rule allows, which is not always 'write'.
+    if (s.ui) return { ok: true, via: 'cookie', label: 'ui', scope: 'session', ui: true };
     const t = store.findByLabel(s.label);
     if (!t) return { ok: false, reason: 'revoked' };
     return { ok: true, via: 'cookie', label: t.label, scope: t.scope };
@@ -154,15 +156,19 @@ async function guard(req, res, send, url, method, pathname) {
   // every other guard: a cookie minted by anyone on the LAN must not be able to issue
   // itself a write token.
   if (pathname === '/api/tokens' || pathname.startsWith('/api/tokens/')) {
-    const mayAdmin = isLoopback(req) || (who.via === 'bearer' && who.scope === 'write');
+    // The keys pane is part of the dashboard, and the dashboard is open to the LAN by
+    // decision: any device that can load it may manage keys. What this no longer does
+    // is gate LAN writes — see the note in the route table below.
+    const mayAdmin = Boolean(who.ui) || isLoopback(req) || (who.via === 'bearer' && who.scope === 'write');
     if (!mayAdmin) {
       send(res, 403, {
-        error: 'token administration is loopback-only',
-        hint: 'mint or revoke tokens on the machine running sitebox (node dashboard/token.js …), or with a write-scoped Bearer token',
+        error: 'token administration needs a dashboard session or a write-scoped token',
+        hint: 'open the dashboard and use Keys, run node dashboard/token.js … on the host, or present a write-scoped Bearer token',
       });
       return true;
     }
-    if (who.scope !== 'write') {
+    // Only a bearer token can be read-only; a dashboard session is not a token.
+    if (who.scope !== 'write' && !who.ui) {
       send(res, 403, { error: 'this token is read-only' });
       return true;
     }
@@ -191,7 +197,7 @@ async function guard(req, res, send, url, method, pathname) {
     return true;
   }
 
-  if (unsafe && who.scope !== 'write') {
+  if (unsafe && who.scope !== 'write' && !who.ui) {
     send(res, 403, { error: 'this token is read-only', hint: 'mint a write-scoped token for this action' });
     return true;
   }

@@ -153,21 +153,29 @@ phase_smoke() {
   rm -f "$jar"
 
   # The dashboard is open on the LAN by design; destructive writes are loopback-only.
-  # Both halves have to be true at once, so check both from the same build.
-  local jar2; jar2="$(mktemp)"
+  # Both halves have to be true at once, and a 401 must never be mistaken for a verdict:
+  # without the cookie from GET / this would "pass" for exactly the wrong reason.
+  local jar2 me_code me_loop
+  jar2="$(mktemp)"
   curl -s -c "$jar2" -o /dev/null "${API}/" || true
-  local me_loop; me_loop="$(curl -s -m 5 -b "$jar2" "${API}/api/me")"
-  case "$me_loop" in *'"canManage":true'*) ok "loopback view can manage" ;; *) die "loopback view cannot manage: ${me_loop}" ;; esac
-  local lan_ip; lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  me_code="$(curl -s -m 5 -b "$jar2" -o /tmp/sb-me-loop.json -w '%{http_code}' "${API}/api/me")"
+  me_loop="$(cat /tmp/sb-me-loop.json)"
+  [ "$me_code" = "200" ] || die "/api/me on loopback answered ${me_code}, not 200 — the capability gate is meaningless without the UI cookie: ${me_loop}"
+  case "$me_loop" in *'"canManage":true'*) ok "loopback view can manage" ;; *) die "loopback /api/me cannot manage: ${me_loop}" ;; esac
+  case "$me_loop" in *'"scope":"session"'*) ok "UI session reports scope=session (no token scope it cannot use)" ;; *) die "UI session claims a token scope: ${me_loop}" ;; esac
+
+  local lan_ip lan_code me_lan jar3 lan_del
+  lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
   if [ -n "${lan_ip:-}" ]; then
-    local jar3; jar3="$(mktemp)"
+    jar3="$(mktemp)"
     curl -s -c "$jar3" -o /dev/null "http://${lan_ip}:4445/" || true
-    local me_lan; me_lan="$(curl -s -m 5 -b "$jar3" "http://${lan_ip}:4445/api/me")"
-    case "$me_lan" in
-      *'"canManage":false'*) ok "LAN view is read-mostly (canManage:false)" ;;
-      *) die "LAN view can manage — the loopback guard is not working: ${me_lan}" ;;
-    esac
-    local lan_del; lan_del="$(curl -s -o /dev/null -m 5 -b "$jar3" -X DELETE -H "Origin: http://${lan_ip}:4445" -w '%{http_code}' "http://${lan_ip}:4445/api/sites/nonexistent-probe")"
+    lan_code="$(curl -s -m 5 -b "$jar3" -o /tmp/sb-me-lan.json -w '%{http_code}' "http://${lan_ip}:4445/api/me")"
+    me_lan="$(cat /tmp/sb-me-lan.json)"
+    [ "$lan_code" = "200" ] || die "/api/me on the LAN answered ${lan_code}, not 200: ${me_lan}"
+    case "$me_lan" in *'"canManage":false'*) ok "LAN view is read-mostly (canManage:false)" ;; *) die "LAN view can manage — the loopback guard is not working: ${me_lan}" ;; esac
+    case "$me_lan" in *'"mayWrite":false'*) ok "LAN view reports mayWrite:false" ;; *) die "LAN view claims it may write: ${me_lan}" ;; esac
+    case "$me_lan" in *'"canAdminTokens":true'*) ok "LAN view can manage API keys (by design)" ;; *) die "LAN view cannot reach the keys pane: ${me_lan}" ;; esac
+    lan_del="$(curl -s -o /dev/null -m 5 -b "$jar3" -X DELETE -H "Origin: http://${lan_ip}:4445" -w '%{http_code}' "http://${lan_ip}:4445/api/sites/nonexistent-probe")"
     [ "$lan_del" = "403" ] || die "LAN delete was not refused (got ${lan_del})"
     ok "LAN delete = 403"
     rm -f "$jar3"
