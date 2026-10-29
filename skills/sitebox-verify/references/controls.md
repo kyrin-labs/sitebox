@@ -10,7 +10,7 @@ obviously broken — they printed a green tick, which is exactly what a working 
 
 The clearest case: Folio's stray-glyph check used `/const TH=\{[\s\S]*?\n\};/` against real code that says
 `const TH = {`. It never matched, `uiCopy` was empty, and the check printed `✓ no stray CJK` for the entire
-life of the site. It was found only by injecting `图像` into a Thai label and watching the audit still pass.
+life of the site. It was found only by injecting a two-character Chinese word into a Thai label and watching the audit still pass.
 
 **A `✓` that has never had a chance to be a `✗` proves nothing.**
 
