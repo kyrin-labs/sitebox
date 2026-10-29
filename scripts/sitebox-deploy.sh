@@ -152,6 +152,28 @@ phase_smoke() {
   fi
   rm -f "$jar"
 
+  # The dashboard is open on the LAN by design; destructive writes are loopback-only.
+  # Both halves have to be true at once, so check both from the same build.
+  local jar2; jar2="$(mktemp)"
+  curl -s -c "$jar2" -o /dev/null "${API}/" || true
+  local me_loop; me_loop="$(curl -s -m 5 -b "$jar2" "${API}/api/me")"
+  case "$me_loop" in *'"canManage":true'*) ok "loopback view can manage" ;; *) die "loopback view cannot manage: ${me_loop}" ;; esac
+  local lan_ip; lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ -n "${lan_ip:-}" ]; then
+    local jar3; jar3="$(mktemp)"
+    curl -s -c "$jar3" -o /dev/null "http://${lan_ip}:4445/" || true
+    local me_lan; me_lan="$(curl -s -m 5 -b "$jar3" "http://${lan_ip}:4445/api/me")"
+    case "$me_lan" in
+      *'"canManage":false'*) ok "LAN view is read-mostly (canManage:false)" ;;
+      *) die "LAN view can manage — the loopback guard is not working: ${me_lan}" ;;
+    esac
+    local lan_del; lan_del="$(curl -s -o /dev/null -m 5 -b "$jar3" -X DELETE -H "Origin: http://${lan_ip}:4445" -w '%{http_code}' "http://${lan_ip}:4445/api/sites/nonexistent-probe")"
+    [ "$lan_del" = "403" ] || die "LAN delete was not refused (got ${lan_del})"
+    ok "LAN delete = 403"
+    rm -f "$jar3"
+  fi
+  rm -f "$jar2"
+
   # tokens.json must never be committable and never root-owned
   [ -z "$(git -C "$ROOT" ls-files dashboard/data/tokens.json)" ] || die "tokens.json is tracked by git"
   git -C "$ROOT" check-ignore -q dashboard/data/tokens.json || die "tokens.json is not gitignored"

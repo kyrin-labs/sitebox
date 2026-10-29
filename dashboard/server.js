@@ -401,6 +401,22 @@ const server = http.createServer(async (req, res) => {
     // able to rewrite sites.json by the side effect of being looked at.
     if (await auth.guard(req, res, send, url, m, p)) return;
 
+    // GET /api/me — what this caller may do, from where it is. The browser cannot work
+    // this out for itself: hostname lies behind a proxy, and X-Forwarded-For lies
+    // always. The socket address is the only truth, and auth already owns that check.
+    if (p === '/api/me' && m === 'GET') {
+      const who = auth.authenticate(req) || {};
+      const loopback = auth.isLoopback(req);
+      return send(res, 200, {
+        ok: true,
+        loopback,
+        via: who.via || null,
+        label: who.label || null,
+        scope: who.scope || null,
+        canManage: loopback || (who.via === 'bearer' && who.scope === 'write'),
+      });
+    }
+
     const cfg = autoDetect();
     if (configError) return send(res, 500, {
       error: 'sites.json is unreadable',
