@@ -250,6 +250,9 @@ a:hover { text-decoration: underline; }
   font-size: 0.68rem; font-weight: 500;
 }
 .badge--warn { background: rgba(210,153,34,.15); color: var(--orange); }
+/* Loopback-only badge: the link next to it opens on this machine, not from a
+   phone or another box — say so instead of letting the click fail silently. */
+.badge--info { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); cursor: help; }
 
 /* ── Form Fields ── */
 .field { display: flex; flex-direction: column; gap: 0.3rem; }

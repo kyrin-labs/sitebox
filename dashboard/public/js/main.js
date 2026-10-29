@@ -146,6 +146,7 @@ function render() {
         <code>:${s.port}</code>
         ${s.category ? `<span>${esc(s.category)}</span>` : ''}
         ${s._stale ? `<span class="badge badge--warn" title="server.js not found — the folder was moved, renamed, or deleted">stale</span>` : ''}
+        ${s._localOnly ? `<span class="badge badge--info" title="Bound to 127.0.0.1 — this link only opens on the machine running SiteBox">local</span>` : ''}
       </div>
       <div class="site-card__actions">
         ${s._running

@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const auth = require('./auth');
 
 const PORT = 4445;
 const ROOT = path.join(__dirname, '..');
@@ -10,6 +11,15 @@ const PUBLIC = path.join(__dirname, 'public');
 const SITES_DIR = path.join(ROOT, 'sites');
 
 const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Bind addresses a site may be spawned on. Loopback is the default: these
+// prototypes have no auth, so LAN exposure must be an explicit choice per site.
+const SITE_HOSTS = new Set(['127.0.0.1', '0.0.0.0']);
+/* ── Capabilities ──
+ * Advertised by /api/health so a newer MCP client can refuse to talk to an
+ * older dashboard instead of burning retries on a 400 it cannot interpret.
+ * Append-only: a client that sees "port0" will send port: 0.
+ */
+const FEATURES = ['health', 'auth', 'port0', 'host'];
 const LOG_LIMIT = 500;
 const START_TIMEOUT = 6000;
 const LOG_TAIL = 20;
@@ -155,6 +165,44 @@ async function isPortUsed(port) {
   return (await isPortBound(port)) || (await isHttpUp(port));
 }
 
+/* ── Server-side port allocation (POST /api/sites with port: 0) ──
+ * Callers cannot pick a free port themselves: probing then registering over
+ * HTTP is check-then-act, and two concurrent creates (parallel agents) would
+ * both see the same port as free. The dashboard is the single writer of
+ * sites.json, so allocation belongs here.
+ * A candidate is reserved before it is probed and the reservation survives
+ * until the site actually starts (or RESERVE_TTL), so back-to-back requests
+ * never hand out the same number.
+ */
+const RESERVE_TTL = 120000;
+const PORT_BANDS = [[4500, 4899], [4900, 5099]];
+const reservedPorts = new Map(); // port -> expiresAt
+
+function liveReservations() {
+  const now = Date.now();
+  for (const [p, exp] of reservedPorts) if (exp <= now) reservedPorts.delete(p);
+  return reservedPorts;
+}
+
+async function allocatePort(cfg, exceptId) {
+  const used = new Set(
+    cfg.sites.filter((s) => s.id !== exceptId).map((s) => Number(s.port)),
+  );
+  const res = liveReservations();
+  const candidates = [];
+  for (const [lo, hi] of PORT_BANDS) {
+    for (let p = lo; p <= hi; p++) if (!used.has(p) && !res.has(p)) candidates.push(p);
+  }
+  // Probe a bounded slice: a stale listener that is missing from sites.json
+  // must not be handed out, but the loop must stay cheap.
+  for (const p of candidates.slice(0, 40)) {
+    reservedPorts.set(p, Date.now() + RESERVE_TTL);
+    if (!(await isPortUsed(p))) return p;
+    reservedPorts.delete(p);
+  }
+  return null;
+}
+
 /* ── Health check ── */
 function checkUrl(url, timeout = 3000) {
   return new Promise((resolve) => {
@@ -235,7 +283,14 @@ async function startSite(site) {
   try {
     child = spawn('node', [siteFile(site)], {
       cwd: path.join(ROOT, site.path),
-      env: { ...process.env, PORT: String(site.port) },
+      // HOST is an allowlisted knob, not incidental env: templates read
+      // process.env.HOST to decide their bind address, and a site created with
+      // `host: "0.0.0.0"` must actually be reachable on the LAN.
+      env: {
+        ...process.env,
+        PORT: String(site.port),
+        HOST: site.host || process.env.SITEBOX_SITE_HOST || '127.0.0.1',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -279,6 +334,7 @@ async function startSite(site) {
           logs: tail,
         };
       }
+      reservedPorts.delete(site.port);
       return { ok: true, message: 'started and verified', pid: child.pid, port: site.port, verified: true };
     }
     await sleep(150);
@@ -328,10 +384,22 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname, m = req.method;
 
   if (p.startsWith('/api/')) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    // Same-origin only: the UI is served from this dashboard and authenticates with a
+    // cookie, so a wildcard would only widen what a hostile page can attempt.
     if (m === 'OPTIONS') return send(res, 204, '');
+
+    // GET /api/health — the only surface a probe needs, so it stays
+    // unauthenticated and must never carry site data. It is answered before
+    // autoDetect() on purpose: the compose healthcheck runs every 30s, and
+    // autoDetect() rewrites sites.json whenever it finds a new folder — a
+    // probe must not mutate config.
+    if (p === '/api/health' && m === 'GET')
+      return send(res, 200, { ok: true, features: FEATURES });
+
+    // Everything below this line can read or write state, so it needs a credential.
+    // The guard runs BEFORE autoDetect(): an unauthenticated request must never be
+    // able to rewrite sites.json by the side effect of being looked at.
+    if (await auth.guard(req, res, send, url, m, p)) return;
 
     const cfg = autoDetect();
     if (configError) return send(res, 500, {
@@ -348,6 +416,11 @@ const server = http.createServer(async (req, res) => {
           _running: isAlive(running.get(s.id)),
           _stale: !fs.existsSync(siteFile(s)),
           _logLines: (logs.get(s.id) || []).length,
+          // Only an explicit loopback host counts as local. Entries without a
+          // host field (every site that predates this build) bind 0.0.0.0
+          // inside their own server.js, so they must never be labelled
+          // "local only" — a wrong badge is worse than no badge.
+          _localOnly: s.host === '127.0.0.1',
           // Runtime-only: a detected favicon overrides the configured icon and is
           // never written back to sites.json, so removing the file restores it.
           _favicon: fav ? `/api/sites/${encodeURIComponent(s.id)}/icon` : null,
@@ -365,13 +438,32 @@ const server = http.createServer(async (req, res) => {
       const next = idx >= 0 ? { ...cfg.sites[idx], ...body } : { ...body };
       delete next._running; delete next._stale; delete next._logLines;
 
-      const port = Number(next.port);
-      if (!Number.isInteger(port) || port < 1024 || port > 65535)
-        return send(res, 400, { error: 'port must be an integer between 1024 and 65535' });
+      // port: 0 means "assign one you know is free" — the caller must never
+      // guess. Declared as an integer first so "0" and 0 behave the same.
+      const requested = next.port === undefined || next.port === null ? NaN : Number(next.port);
+      let port;
+      if (requested === 0 || body.port === 0) {
+        const assigned = await allocatePort(cfg, body.id);
+        if (!assigned) return send(res, 507, { error: 'no free port in 4500-5099' });
+        port = assigned;
+      } else {
+        port = requested;
+        if (!Number.isInteger(port) || port < 1024 || port > 65535)
+          return send(res, 400, { error: 'port must be 0 (auto-assign) or an integer between 1024 and 65535' });
+      }
       next.port = port;
 
       const clash = cfg.sites.find(s => s.id !== body.id && Number(s.port) === port);
       if (clash) return send(res, 409, { error: `port ${port} is already assigned to "${clash.id}"` });
+
+      // Per-site bind address, forwarded to the site process as HOST. Default
+      // stays loopback: a site with no auth must not appear on the LAN by
+      // accident.
+      if (body.host !== undefined) {
+        if (!SITE_HOSTS.has(body.host))
+          return send(res, 400, { error: `host must be one of: ${[...SITE_HOSTS].join(', ')}` });
+        next.host = body.host;
+      }
 
       if (!next.name) return send(res, 400, { error: 'name required' });
       next.path = next.path || `sites/${next.id}`;
