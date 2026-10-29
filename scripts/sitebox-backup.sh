@@ -125,6 +125,20 @@ if [ "${2:-}" != "--no-prune" ] && [ "${1:-}" != "--no-prune" ]; then
   fi
 fi
 
+# --- 7. off-box copy ------------------------------------------------------------
+# Backups on the same filesystem as the data protect against mistakes, not against the
+# disk. Set OFFBOX_TARGET (an rsync destination: ssh peer, mounted disk) to keep a second
+# copy; unset means the run says so out loud rather than implying coverage it lacks.
+if [ -n "${OFFBOX_TARGET:-}" ]; then
+  if rsync -a --delete "${DEST_ROOT}/" "${OFFBOX_TARGET}/" 2>>"${LOG}"; then
+    log "offbox: synced to ${OFFBOX_TARGET}"
+  else
+    log "FAIL offbox rsync to ${OFFBOX_TARGET}"; ERRORS=$((ERRORS+1))
+  fi
+else
+  log "offbox: NOT configured — this backup lives on the same filesystem as the data"
+fi
+
 if [ "${ERRORS}" -gt 0 ]; then
   log "=== backup ${STAMP} FAILED (${ERRORS} error(s)) ==="
   exit 1

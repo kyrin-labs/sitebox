@@ -66,8 +66,13 @@ with the key the client already holds, the registry count, then a site folder de
 the copy and restored from the snapshot, served 200 by its own `server.js`. Sundays 21:00
 UTC, and optionally at the end of a deploy.
 
-**Known limit:** source and backups are on the same filesystem on this host. Off-box copy
-is pending a destination (a tailnet peer needs SSH enabled, or an external disk).
+**Known limit, and the hook that fixes it:** source and backups sit on the same filesystem
+here. `OFFBOX_TARGET=<rsync destination>` mirrors the whole backup root after each run
+(`rsync -a --delete`), and an unset target logs "NOT configured" instead of implying
+coverage. The mirror keeps every snapshot as a full tree — rsync does not carry hardlinks —
+so budget about 426MB per retained snapshot on the target, and only deltas cross the wire
+after the first copy. Pending: a destination (a tailnet peer needs Remote Login enabled, or
+an external disk).
 
 ## Tokens
 
