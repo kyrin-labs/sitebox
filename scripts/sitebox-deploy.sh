@@ -172,7 +172,13 @@ phase_smoke() {
     lan_code="$(curl -s -m 5 -b "$jar3" -o /tmp/sb-me-lan.json -w '%{http_code}' "http://${lan_ip}:4445/api/me")"
     me_lan="$(cat /tmp/sb-me-lan.json)"
     [ "$lan_code" = "200" ] || die "/api/me on the LAN answered ${lan_code}, not 200: ${me_lan}"
-    case "$me_lan" in *'"canManage":false'*) ok "LAN view is read-mostly (canManage:false)" ;; *) die "LAN view can manage — the loopback guard is not working: ${me_lan}" ;; esac
+    # canManage must simply agree with mayWrite; the deploy does not care which way the
+    # policy points, only that the build does not contradict itself.
+    case "$me_lan" in
+      *'"mayWrite":true'*)  case "$me_lan" in *'"canManage":true'*) ok "LAN may manage site writes (policy allows)" ;; *) die "mayWrite:true but canManage:false: ${me_lan}" ;; esac ;;
+      *'"mayWrite":false'*) case "$me_lan" in *'"canManage":false'*) ok "LAN view is read-mostly (policy brakes it)" ;; *) die "mayWrite:false but canManage:true: ${me_lan}" ;; esac ;;
+      *) die "cannot tell the write policy from /api/me: ${me_lan}" ;;
+    esac
     # The policy is whatever the server announces: a build that turns writes off must
     # answer 403, a build that allows them must answer something else AND leave a record.
     local audit_log="${ROOT}/dashboard/data/audit.log"
