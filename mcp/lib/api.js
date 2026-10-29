@@ -59,7 +59,7 @@ function raw(method, pathname, body, timeout = 8000) {
 function map(status, json, pathname) {
   if (status >= 200 && status < 300) return json;
   const msg = (json && (json.error || json.message)) || ('HTTP ' + status);
-  if (status === 401) throw new ApiFailure('E_AUTH', 'dashboard rejected the token', { fix: 'the token is missing, wrong or revoked — regenerate it and update SITEBOX_API_TOKEN (or ~/.config/sitebox/mcp.token)' });
+  if (status === 401) throw new ApiFailure('E_AUTH', 'dashboard rejected the token', { fix: 'a client needs a Bearer token: mint one with `node dashboard/token.js add mcp --scope write --print` and put it in SITEBOX_API_TOKEN or ~/.config/sitebox/mcp.token (600). The dashboard UI opens without a token by design — that browser cookie does not authenticate an agent.' });
   if (status === 507) throw new ApiFailure('E_BAND_FULL', msg, { fix: 'the port band is full: this is an ops verdict, not something to retry — run doctor, then move or delete a site' });
   if (status === 409) throw new ApiFailure('E_PORT_TAKEN', msg, { retryable: true, fix: 'register again with port 0' });
   if (status === 404) throw new ApiFailure('E_NOT_FOUND', msg, { fix: 'the site id is not registered on this dashboard — list_sites to see what exists' });

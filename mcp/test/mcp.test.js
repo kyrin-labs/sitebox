@@ -49,7 +49,7 @@ function startStub(features) {
 /* ── MCP client over real stdio ── */
 function mcp(apiBase) {
   const child = spawn('node', [MCP], {
-    env: { ...process.env, SITEBOX_API: apiBase, SITEBOX_SITES: SITES },
+    env: { ...process.env, SITEBOX_API: apiBase, SITEBOX_SITES: SITES, SITEBOX_API_TOKEN: 'sbx_test_placeholder_token' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let buf = '';

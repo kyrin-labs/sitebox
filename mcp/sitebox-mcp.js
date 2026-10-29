@@ -161,6 +161,13 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     handler: async () => {
       const report = { api: api.BASE, token: api.hasToken() ? 'present' : 'none', features: null, sites: {}, issues: [] };
+      if (!api.hasToken()) {
+        report.issues.push({
+          code: 'E_AUTH',
+          message: 'no token configured for this MCP server',
+          fix: 'mint one on the host: node dashboard/token.js add mcp --scope write --print, then set SITEBOX_API_TOKEN or ~/.config/sitebox/mcp.token (600). The UI opening without a token in a browser does not help an agent: only Bearer authenticates a client.',
+        });
+      }
       try {
         const h = await api.health();
         report.features = h.features || [];
