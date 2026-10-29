@@ -8,6 +8,15 @@ services:
     # Reap the site processes the dashboard spawns; without an init, node's PID 1
     # does not reap orphans and they accumulate as zombies.
     init: true
+    # Run as the host's own uid/gid. Two reasons, both operational:
+    #   * every file the dashboard or a site writes lands as the host user, so the
+    #     host-side token CLI (the lock-out recovery path) can always write
+    #     dashboard/data/tokens.json — as root it would flip to root:600 on the
+    #     first atomic rename and the CLI would get EACCES;
+    #   * no more root-owned uploads/data files mixed into sites/.
+    # Anything already created as root needs a one-time chown sweep with the
+    # container stopped (see scripts/sitebox-deploy.sh).
+    user: "1000:1000"
     volumes:
       # Runtime config and site folders are mounted from the host, so the image
       # stays code-only and `docker compose up -d --build` picks up source edits.
@@ -15,7 +24,10 @@ services:
       - ./sites:/app/sites
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4445/api/sites',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      # /api/health is the one route that stays unauthenticated, and it is answered
+      # before autoDetect() — a probe must never rewrite sites.json or auto-register
+      # a folder. Never put a token here: healthcheck args show up in `docker inspect`.
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4445/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
