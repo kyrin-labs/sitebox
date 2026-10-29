@@ -77,6 +77,7 @@ const enc = encodeURIComponent;
 module.exports = {
   BASE,
   hasToken: () => Boolean(TOKEN),
+  token: () => TOKEN,
   health: () => call('GET', '/api/health'),
   me: () => call('GET', '/api/me'),
   sites: () => call('GET', '/api/sites'),

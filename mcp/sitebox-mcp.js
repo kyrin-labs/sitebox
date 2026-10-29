@@ -13,6 +13,7 @@ const api = require('./lib/api');
 const { ACCENTS, LAYOUTS, SECTION_TYPES, LANGS, SKELETON, CAPS, hashSchema, KNOBS, seedKnobs, LAYOUT_CATALOG } = require('./lib/schema');
 const { render } = require('./lib/render');
 const { validate, validateOutput, drift } = require('./lib/validate');
+const { createHttpTransport } = require('./lib/http-transport');
 
 const SITES = process.env.SITEBOX_SITES || path.join(os.homedir(), 'sitebox', 'sites');
 const VERSION = '0.1.0';
@@ -552,68 +553,104 @@ async function verifyShadow(id, port) {
   return verify(disk, port);
 }
 
-/* ── JSON-RPC over stdio ── */
+/* ── JSON-RPC ── */
 const SERVER_INFO = { name: 'sitebox', version: VERSION };
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
-function send(msg) { process.stdout.write(JSON.stringify(msg) + '\n'); }
-
-async function handle(msg) {
+/**
+ * One dispatcher for every transport: it returns the response object, or null for a
+ * notification (which carries no response at all). The transports differ only in how
+ * bytes arrive and where the answer goes, so the tool contract cannot drift between
+ * stdio and HTTP.
+ */
+async function dispatch(msg) {
   const { id, method, params } = msg;
   const isNotification = id === undefined || id === null;
   try {
     if (method === 'initialize') {
       const asked = params && params.protocolVersion;
-      return send({ jsonrpc: '2.0', id, result: {
+      return { jsonrpc: '2.0', id, result: {
         protocolVersion: SUPPORTED.includes(asked) ? asked : SUPPORTED[0],
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
-      } });
+      } };
     }
-    if (method === 'notifications/initialized' || method === 'initialized') return;
-    if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
+    if (method === 'notifications/initialized' || method === 'initialized') return null;
+    if (method === 'ping') return { jsonrpc: '2.0', id, result: {} };
     if (method === 'tools/list') {
-      return send({ jsonrpc: '2.0', id, result: { tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) } });
+      return { jsonrpc: '2.0', id, result: { tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) } };
     }
     if (method === 'tools/call') {
       const name = params && params.name;
       const tool = TOOLS.find((t) => t.name === name);
-      if (!tool) return send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify({ ok: false, errors: [{ code: 'E_NO_TOOL', message: 'unknown tool ' + name, fix: 'call tools/list' }] }) }], isError: true } });
+      if (!tool) return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify({ ok: false, errors: [{ code: 'E_NO_TOOL', message: 'unknown tool ' + name, fix: 'call tools/list' }] }) }], isError: true } };
       const args = (params && params.arguments) || {};
       const startedAt = Date.now();
       try {
         const result = await tool.handler(args);
         log(name, Date.now() - startedAt + 'ms', result.isError ? 'error' : 'ok');
-        return send({ jsonrpc: '2.0', id, result });
+        return { jsonrpc: '2.0', id, result };
       } catch (e) {
         log(name, 'threw', e.code || '', e.message);
-        return send({ jsonrpc: '2.0', id, result: one(e.code || 'E_UNEXPECTED', e.message, e.fix || 'read the message above; if it is a stack trace, the MCP server has a bug') });
+        return { jsonrpc: '2.0', id, result: one(e.code || 'E_UNEXPECTED', e.message, e.fix || 'read the message above; if it is a stack trace, the MCP server has a bug') };
       }
     }
-    if (isNotification) return;
-    return send({ jsonrpc: '2.0', id, error: { code: -32601, message: 'method not found: ' + method } });
+    if (isNotification) return null;
+    return { jsonrpc: '2.0', id, error: { code: -32601, message: 'method not found: ' + method } };
   } catch (e) {
     log('handler crash', e.stack || e.message);
-    if (!isNotification) send({ jsonrpc: '2.0', id, error: { code: -32603, message: String(e.message) } });
+    if (isNotification) return null;
+    return { jsonrpc: '2.0', id, error: { code: -32603, message: String(e.message) } };
   }
 }
 
-let buf = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => {
-  buf += chunk;
-  const lines = buf.split('\n');
-  buf = lines.pop();
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let msg;
-    try { msg = JSON.parse(trimmed); } catch (e) {
-      log('bad JSON on stdin:', e.message);
-      send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
-      continue;
+function send(msg) { process.stdout.write(JSON.stringify(msg) + '\n'); }
+
+/* ── stdio (the default) ── */
+function runStdio() {
+  let buf = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    buf += chunk;
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let msg;
+      try { msg = JSON.parse(trimmed); } catch (e) {
+        log('bad JSON on stdin:', e.message);
+        send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
+        continue;
+      }
+      dispatch(msg).then((res) => { if (res) send(res); }).catch((e) => log('dispatch failed', e.message));
     }
-    handle(msg);
+  });
+  process.stdin.on('end', () => process.exit(0));
+}
+
+/* ── streamable HTTP (opt-in) ── */
+function runHttp() {
+  const token = api.token();
+  if (!token) {
+    // An open endpoint that can create and delete sites is not a trade-off worth making.
+    log('http: no token configured — refusing to start. Set SITEBOX_API_TOKEN or ~/.config/sitebox/mcp.token (600).');
+    process.exit(1);
   }
-});
-process.stdin.on('end', () => process.exit(0));
+  const port = Number(process.env.SITEBOX_MCP_HTTP_PORT || 4446);
+  const host = process.env.SITEBOX_MCP_HTTP_HOST || '127.0.0.1';
+  const server = createHttpTransport({ dispatch, token, protocolVersions: SUPPORTED, log });
+  server.on('error', (e) => { log('http error:', e.message); process.exit(1); });
+  server.listen(port, host, () => {
+    const bound = server.address();
+    log('http listening on http://' + host + ':' + bound.port + '/mcp');
+  });
+}
+
+const TRANSPORT = (process.env.SITEBOX_MCP_TRANSPORT || (process.argv.includes('--http') ? 'http' : 'stdio')).toLowerCase();
+if (TRANSPORT === 'http') runHttp();
+else if (TRANSPORT === 'stdio') runStdio();
+else {
+  log('unknown SITEBOX_MCP_TRANSPORT "' + TRANSPORT + '" — expected stdio or http');
+  process.exit(2);
+}

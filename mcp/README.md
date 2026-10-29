@@ -1,11 +1,13 @@
 # sitebox-mcp
 
-A stdio MCP server that lets an agent build a small site on SiteBox in about 450 ms,
-without learning the SiteBox skills.
+An MCP server that lets an agent build a small site on SiteBox in about 450 ms, without
+learning the SiteBox skills. Two transports, one dispatcher: **stdio by default**, and an
+opt-in **streamable HTTP** endpoint for clients that cannot spawn a process.
 
-Zero dependencies, no build step: `node mcp/sitebox-mcp.js` speaks line-delimited
-JSON-RPC 2.0 on stdout. Every log line goes to stderr — stdout is the protocol channel
-and one stray `console.log` corrupts it.
+Zero dependencies, no build step. In stdio mode `node mcp/sitebox-mcp.js` speaks
+line-delimited JSON-RPC 2.0 on stdout. Every log line goes to stderr — stdout is the
+protocol channel and one stray `console.log` corrupts it. In HTTP mode stdout stays
+empty entirely.
 
 The server holds no business logic of its own. It validates and renders files locally,
 then calls the dashboard API for everything that touches state, so there is exactly one
@@ -34,6 +36,9 @@ Use the **deployed** tree (`~/sitebox/mcp/...`), not the working clone: sites li
 | `SITEBOX_API_TOKEN` | — | Bearer token; falls back to `~/.config/sitebox/mcp.token` (600) |
 | `SITEBOX_DATA_HOST` | `~/sitebox/dashboard/data` | used by `doctor` to check the host can mint |
 | `SITEBOX_BASELINE_DIR` | `~/backups/sitebox-baseline` | `doctor` reads the last pre-deploy baseline |
+| `SITEBOX_MCP_TRANSPORT` | `stdio` | `http` serves `/mcp` instead of reading stdin |
+| `SITEBOX_MCP_HTTP_PORT` | `4446` | HTTP listen port; `0` picks a free one and logs it |
+| `SITEBOX_MCP_HTTP_HOST` | `127.0.0.1` | `0.0.0.0` exposes the endpoint on the LAN |
 
 Keep the key **out of the client config** when you can: a config file gets copied and
 shared, a `0600` file in `~/.config` does not. Mint one per client so `lastUsed` and the
@@ -47,6 +52,48 @@ node ~/sitebox/dashboard/token.js add mcp-hermes --scope write --print | tail -1
 `write` includes `read`; there is no combined value to pass. A `read` key can list and
 check, but `create_site`/`update_site`/`site_ctl`/`delete_site` answer 403 — `doctor`
 reports that as `E_SCOPE` instead of letting the first write discover it.
+
+## Over HTTP (opt-in)
+
+`node mcp/sitebox-mcp.js --http` (or `SITEBOX_MCP_TRANSPORT=http`) serves the same eight
+tools at `http://127.0.0.1:4446/mcp` using the streamable-HTTP transport. stdio stays the
+default: a client that can spawn a process does not need a port.
+
+```bash
+SITEBOX_API_TOKEN=$(cat ~/.config/sitebox/mcp.token) node mcp/sitebox-mcp.js --http
+```
+
+Rules this endpoint enforces, so it is never a second, weaker door to `delete_site`:
+
+- **Bearer on every request**, the same key the stdio server uses. It refuses to start
+  with no key configured. One process is one identity; the dashboard stays the authority,
+  so a revoked key fails on the next tool call.
+- **A session after `initialize`.** The response carries `Mcp-Session-Id`; every later
+  request must send it, and `DELETE /mcp` ends it. Unknown or missing → `404`.
+- **`POST /mcp` only** with `content-type: application/json`, 256 KB cap, one JSON-RPC
+  object per request (no batching). Responses are `application/json`; `GET /mcp` is `405`
+  because this server never pushes a message.
+- **Origin must match Host** when an `Origin` header is present (DNS-rebinding defence).
+  Clients that send no Origin are unaffected. `GET /health` answers without a key and
+  carries no site data.
+
+```bash
+BASE=http://127.0.0.1:4446
+SID=$(curl -si -X POST "$BASE/mcp" \
+  -H "Authorization: Bearer $(cat ~/.config/sitebox/mcp.token)" \
+  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' \
+  | sed -n 's/^[Mm]cp-[Ss]ession-[Ii]d: //p' | tr -d '\r')
+
+curl -s -X POST "$BASE/mcp" \
+  -H "Authorization: Bearer $(cat ~/.config/sitebox/mcp.token)" \
+  -H "mcp-session-id: $SID" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_sites","arguments":{}}}'
+```
+
+An MCP client only needs the URL, the bearer header, and `accept: application/json,
+text/event-stream` — for example `pi mcp add sitebox --url http://127.0.0.1:4446/mcp
+--bearer-token-env-var SITEBOX_KEY`.
 
 The dashboard UI needs no token — but that browser session authenticates **people**, not
 clients. A cookie never authorises an agent, and `401` means exactly that.
@@ -123,8 +170,9 @@ rather than failures: `E_BASELINE_GAP` and `E_ALL_STOPPED`.
 ## Tests
 
 ```bash
-node --test mcp/test/mcp.test.js       # 17 gates, stub dashboard, no Docker
-node mcp/test/smoke-live.js            # live round trip against production (needs a token)
+node --test mcp/test/mcp.test.js        # stdio gates, stub dashboard, no Docker
+node --test mcp/test/http.test.js       # HTTP transport: auth, sessions, body cap, origin
+node mcp/test/smoke-live.js             # live round trip against production (needs a token)
 ```
 
 `node mcp/test/doc-check.js` fails when a tool exists but this file does not document it.
