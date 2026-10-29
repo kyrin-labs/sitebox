@@ -202,6 +202,14 @@ phase_smoke() {
     esac
     rm -f "$jar3"
   fi
+  # A body limit that exists only in code is not a limit. Every site is a child of this
+  # process, so an unbounded body would take the dashboard and all sites down together.
+  local big_code
+  big_code="$(python3 -c 'print("{\"x\":\"" + "a"*70000 + "\"}")' \
+    | curl -s -o /dev/null -m 10 -b "$jar2" -X POST -H "Origin: ${API}" -H 'Content-Type: application/json' --data-binary @- -w '%{http_code}' "${API}/api/sites")"
+  [ "$big_code" = "413" ] || die "an oversized POST body answered ${big_code}, expected 413"
+  ok "oversized body rejected with 413"
+
   rm -f "$jar2"
 
   # tokens.json must never be committable and never root-owned

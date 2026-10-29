@@ -58,14 +58,33 @@ function writeConfig(cfg) {
   fs.renameSync(tmp, DATA);
 }
 function send(res, status, data) {
+  // Idempotent on purpose: parseBody may already have answered 413 for a request
+  // that was too large, and a route must not double-write the response.
+  if (res.headersSent || res.writableEnded) return;
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(typeof data === 'string' ? data : JSON.stringify(data));
 }
-function parseBody(req) {
+// Bounded: the dashboard is reachable from the LAN and every site process is a child
+// of this one, so an unbounded buffer is one request away from taking down the whole
+// dashboard. Refuse as soon as the limit is crossed — do not accumulate first.
+const MAX_BODY = 64 * 1024;
+function parseBody(req, res) {
   return new Promise((resolve) => {
     let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
+    let size = 0;
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        if (res) send(res, 413, { error: 'request body too large', hint: `the dashboard accepts at most ${MAX_BODY} bytes` });
+        req.destroy();
+        return finish(null);
+      }
+      body += chunk;
+    });
+    req.on('end', () => { try { finish(JSON.parse(body)); } catch { finish(null); } });
+    req.on('error', () => finish(null));
   });
 }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -457,7 +476,7 @@ const server = http.createServer(async (req, res) => {
       }));
 
     if (p === '/api/sites' && m === 'POST') {
-      const body = await parseBody(req);
+      const body = await parseBody(req, res);
       if (!body || typeof body !== 'object') return send(res, 400, { error: 'invalid JSON body' });
       if (!body.id) return send(res, 400, { error: 'id required' });
       if (!ID_RE.test(body.id)) return send(res, 400, { error: 'id must be kebab-case — lowercase letters, numbers, single hyphens (e.g. my-site)' });
@@ -508,7 +527,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/sites/reorder — reorder sites
     if (p === '/api/sites/reorder' && m === 'POST') {
-      const body = await parseBody(req);
+      const body = await parseBody(req, res);
       if (!body?.order || !Array.isArray(body.order)) return send(res, 400, { error: 'order array required' });
       const order = body.order;
       const reordered = order.map(id => cfg.sites.find(s => s.id === id)).filter(Boolean);

@@ -28,6 +28,7 @@ const DATA = process.env.SITEBOX_DATA
   : path.join(__dirname, 'data');
 const LOG = path.join(DATA, 'audit.log');
 const MAX_BYTES = 1024 * 1024;
+const limit = () => Number(process.env.SITEBOX_AUDIT_MAX_BYTES) || MAX_BYTES;
 const KEEP = 5;
 
 function sessionId(req) {
@@ -48,7 +49,7 @@ function actor(who, req) {
 function rotate() {
   let size = 0;
   try { size = fs.statSync(LOG).size; } catch { return; } // no file yet: nothing to rotate
-  if (size < MAX_BYTES) return;
+  if (size < limit()) return;
   for (let i = KEEP - 1; i >= 1; i--) {
     const from = `${LOG}.${i}`;
     const to = `${LOG}.${i + 1}`;

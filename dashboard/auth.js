@@ -94,11 +94,24 @@ function sameOrigin(req) {
   }
 }
 
-function parseBody(req) {
+const MAX_BODY = 64 * 1024;
+function parseBody(req, res) {
   return new Promise((resolve) => {
     let d = '';
-    req.on('data', (c) => (d += c));
-    req.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+    let size = 0;
+    let settled = false;
+    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) {
+        if (res) send(res, 413, { error: 'request body too large', hint: `at most ${MAX_BODY} bytes` });
+        req.destroy();
+        return finish(null);
+      }
+      d += c;
+    });
+    req.on('end', () => { try { finish(JSON.parse(d)); } catch { finish(null); } });
+    req.on('error', () => finish(null));
   });
 }
 
@@ -115,7 +128,7 @@ async function guard(req, res, send, url, method, pathname) {
       send(res, 429, { error: 'too many attempts', hint: 'wait a minute' });
       return true;
     }
-    const body = await parseBody(req);
+    const body = await parseBody(req, res);
     const t = body && body.token ? store.verify(String(body.token)) : null;
     if (!t) {
       send(res, 401, { error: 'unauthorized' });
@@ -177,7 +190,7 @@ async function guard(req, res, send, url, method, pathname) {
       return true;
     }
     if (pathname === '/api/tokens' && method === 'POST') {
-      const body = await parseBody(req);
+      const body = await parseBody(req, res);
       try { audit.record({ who, req, method, path: pathname }); } catch { /* best effort */ }
       try {
         const raw = store.createToken(body && body.label, (body && body.scope) || 'write');

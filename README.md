@@ -292,7 +292,7 @@ What actually protects the install:
 | Bearer tokens | Gate programmatic clients (MCP, scripts). They are **not** what stops a browser. |
 | Origin check | Refuses cookie-authenticated writes from a foreign origin — this is CSRF protection, and it is real. |
 | Audit log | `dashboard/data/audit.log` — one JSONL line per write: time, actor (`token:<label>` or a session fingerprint), method, path, address. Append-only, rotated at 1MB × 5, never contains a key or cookie value. |
-| Delete brake | Deleting asks you to type the site id. With no wall left, the brake is the UI. |
+| Delete brake | Deleting asks you to type the site id. It stops a misclick, not a deletion: a script on the same network can still delete anything. |
 
 Consequences worth knowing:
 
@@ -302,3 +302,10 @@ Consequences worth knowing:
   separate from the dashboard: the dashboard being reachable does not expose the sites.
 * If the audit log cannot be written, **delete is refused** (503) and other writes go
   through unlogged rather than taking the dashboard down.
+* The log rotates at 1MB x 5, checked **before** each append so the live file cannot
+  grow a line past the limit; `SITEBOX_AUDIT_MAX_BYTES` overrides the limit (tests use
+  it). After a restore, generations may start mid-history — they are a record, not a
+  complete account.
+* Request bodies are capped at 64KB (413 beyond). Without a cap, one oversized POST
+  from any device on the network would take down the dashboard and every site it
+  spawned, because all of them share this process.
