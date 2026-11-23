@@ -442,10 +442,61 @@ fn crash_hint(lines: &[LogLine]) -> String {
 }
 
 /// Load the manifest for `id` under `root`.
+///
+/// A folder with no `sitebox.toml` is still a legitimate site: it was created
+/// before the engine, and it must keep starting after the upgrade. The fallback
+/// derives the contract from the registry plus the folder's `server.js`, and
+/// never writes a manifest into a site the operator did not ask to migrate.
 pub fn load_manifest(root: &Path, id: &str) -> Result<Manifest> {
     let dir = root.join("sites").join(id);
     if !dir.is_dir() {
         bail!("no site folder at {}", dir.display());
     }
-    Manifest::load(&dir)
+    if dir.join(crate::manifest::MANIFEST_FILE).is_file() {
+        return Manifest::load(&dir);
+    }
+    let cfg = crate::registry::SiteConfig::read(root)?;
+    let site = cfg
+        .find(id)
+        .ok_or_else(|| anyhow::anyhow!("site {id} has no manifest and is not registered"))?;
+    let has_api = std::fs::read_to_string(dir.join("server.js"))
+        .map(|t| t.contains("/api/"))
+        .unwrap_or(false);
+    let mut m = Manifest::from_site(site);
+    m.site.path = site.path.clone();
+    m.site.serve = if has_api {
+        "node".into()
+    } else {
+        "static".into()
+    };
+    Ok(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_site_without_manifest_still_starts() {
+        let root = std::env::temp_dir().join(format!("sbx-legacy-{}", std::process::id()));
+        let site = root.join("sites/legacy");
+        std::fs::create_dir_all(site.join("public")).unwrap();
+        std::fs::write(site.join("server.js"), "// has /api/ routes\n").unwrap();
+        std::fs::create_dir_all(root.join("dashboard/data")).unwrap();
+        std::fs::write(
+            root.join("dashboard/data/sites.json"),
+            r##"{"dashboard":{"name":"SiteBox","port":4445},"sites":[
+                {"id":"legacy","name":"Legacy","port":4601,"path":"sites/legacy",
+                 "icon":"globe","iconColor":"#000","category":"tools","url":"http://localhost:4601"}]}"##,
+        )
+        .unwrap();
+
+        let m = load_manifest(&root, "legacy").unwrap();
+        assert_eq!(m.site.id, "legacy");
+        assert_eq!(m.site.port, 4601);
+        assert_eq!(m.site.serve, "node");
+        assert!(m.public_dir(&root).is_dir());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

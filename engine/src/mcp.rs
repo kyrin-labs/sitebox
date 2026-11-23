@@ -287,7 +287,15 @@ pub async fn doctor(root: &PathBuf, sup: &Supervisor) -> Value {
     }
     for s in &cfg.sites {
         if !seen.contains(&s.id) {
-            problems.push(format!("{}: registered but has no sitebox.toml", s.id));
+            // Legacy sites are supported: the registry entry plus server.js is
+            // enough to start them. Not a problem, just worth knowing.
+            let legacy = root.join(&s.path).join("server.js").is_file();
+            if !legacy {
+                problems.push(format!(
+                    "{}: registered but has no sitebox.toml or server.js",
+                    s.id
+                ));
+            }
         }
         if !root.join(&s.path).is_dir() {
             problems.push(format!("{}: folder missing ({})", s.id, s.path));
