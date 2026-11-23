@@ -22,7 +22,6 @@ COPY --from=build /src/engine/target/release/sitebox-mcp /usr/local/bin/sitebox-
 
 COPY dashboard/ ./dashboard/
 COPY sites/ ./sites/
-COPY skills/ ./skills/
 
 EXPOSE 4445
 
