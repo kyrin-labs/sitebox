@@ -1,19 +1,44 @@
 #!/bin/sh
-# SiteBox — dashboard/data/sites.json is runtime state.
-# Deployed servers update it, but those updates must never be committed.
-# Only the two bundled example sites belong in the repository copy.
-if git diff --cached --name-only --diff-filter=ACMR | grep -qx 'dashboard/data/sites.json'; then
+# SiteBox commit guards.
+#
+# Two classes of file are runtime state and must never be committed:
+#   1. dashboard/data/sites.json — rewritten by the dashboard on add/delete
+#      and by auto-detect.
+#   2. anything under sites/ other than the two bundled examples — those are
+#      personal sites; their content, manifests and data do not belong in a
+#      public repository.
+#
+# The .gitignore already excludes them; this hook is the second lock, because
+# `git add -f` exists and mistakes happen.
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if echo "$STAGED" | grep -qx 'dashboard/data/sites.json'; then
   echo ""
   echo "COMMIT BLOCKED: dashboard/data/sites.json is runtime state."
   echo ""
-  echo "This file is rewritten by the dashboard at runtime (site add/delete,"
-  echo "auto-detect). The copy in git must only ever contain the two example"
-  echo "sites: example-notes and example-clock."
+  echo "It is rewritten at runtime (site add/delete, auto-detect). The copy in"
+  echo "git must only ever describe the two bundled examples."
   echo ""
   echo "To unstage it:   git restore --staged dashboard/data/sites.json"
-  echo "To restore it:   git checkout -- dashboard/data/sites.json"
   echo "Do not use --no-verify to bypass this check."
   echo ""
   exit 1
 fi
+
+BAD=$(echo "$STAGED" | grep -E '^sites/' | grep -vE '^sites/(example-notes|example-clock)/' || true)
+if [ -n "$BAD" ]; then
+  echo ""
+  echo "COMMIT BLOCKED: personal site files must not enter the repository."
+  echo ""
+  echo "Only sites/example-notes/ and sites/example-clock/ may be committed."
+  echo "Offending paths:"
+  echo "$BAD" | sed 's/^/  /'
+  echo ""
+  echo "To unstage:  git restore --staged <path>"
+  echo "Do not use --no-verify to bypass this check."
+  echo ""
+  exit 1
+fi
+
 exit 0
