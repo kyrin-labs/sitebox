@@ -1,10 +1,13 @@
-# Keep the build context small; the runtime only needs dashboard/ and sites/.
+# Keep the build context small: the image needs engine/, dashboard/ and sites/.
 .git
 .githooks
 node_modules
 **/node_modules
 *.log
 dashboard/data/*.tmp
+engine/target
+logs
+docs
 skills
 skills-lock.json
 CONTRIBUTING.md
