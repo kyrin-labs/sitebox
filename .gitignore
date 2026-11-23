@@ -16,3 +16,11 @@ sites/*
 !sites/example-notes/**
 !sites/example-clock/
 !sites/example-clock/**
+
+# Rust build output
+engine/target/
+
+# Supervisor logs and pipeline fingerprints are runtime state
+logs/
+.sitebox/
+sites/*/.sitebox/
