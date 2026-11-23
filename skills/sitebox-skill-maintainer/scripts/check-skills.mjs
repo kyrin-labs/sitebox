@@ -176,7 +176,7 @@ for (const { dir, src } of skills) {
   }
 }
 
-/* ── API endpoints referenced by skills must exist in dashboard/server.js ── */
+/* ── API endpoints referenced by skills must exist in engine/src/dashboard.rs ── */
 const serverSrc = read(SERVER).replace(/\\\//g, '/');
 const endpoints = new Set();
 for (const { src } of skills) {
