@@ -1,279 +1,227 @@
 # SiteBox
 
-A lightweight, config-driven dashboard for managing static sites on your local server.
+A self-hosted dashboard and engine for fast, verifiable static sites.
 
-**Zero dependencies. Pure Node.js. One JSON file.**
+**One Rust binary. One manifest per site. One shared server. No per-site
+`node_modules`.**
 
-## Quick Start
-
-```bash
-# Start the dashboard
-cd ~/sitebox/dashboard
-node server.js
-
-# Open http://localhost:4445
-```
-
-### Docker
+## Quick start
 
 ```bash
+# Docker (recommended — survives reboots)
 docker compose up -d
-# Open http://localhost:4445
+# http://localhost:4445
+
+# Or from source
+cd engine && cargo run --release --bin siteboxd -- \
+  --root .. --port 4445 --ui ../dashboard/public
 ```
 
-Uses `network_mode: host` — all site ports are directly accessible on the host. Add new sites to `sites/` and they appear in the dashboard automatically (auto-detect). No rebuild needed.
+The two example sites are auto-detected from their manifests on the first API
+request. Start them from the dashboard, or:
 
-## What's Inside
+```bash
+curl -X POST http://localhost:4445/api/sites/example-notes/start
+curl -X POST http://localhost:4445/api/sites/example-clock/start
+```
+
+## Architecture
 
 ```
-sitebox/
-├── dashboard/              ← Dashboard (port 4445)
-│   ├── server.js           ← Backend: config, process mgmt, verified starts, logs
-│   ├── data/sites.json     ← Site registry (runtime state — never commit changes)
-│   └── public/             ← Dashboard UI (light/dark theme)
-│
-├── sites/                  ← Static sites live here
-│   ├── example-notes/      ← Notes app (port 4451)
-│   └── example-clock/      ← World clock (port 4452)
-│
-├── skills/                 ← Project skills for SiteBox agents
-│   ├── sitebox-create/     ← Build/redesign/deploy/debug sites (+ performance reference)
-│   ├── sitebox-design/     ← Design system, image geometry, audit, copy passes (+ references)
-│   ├── sitebox-data/       ← Real-data pipelines: provenance, refreshability, fixtures (+ references)
-│   ├── sitebox-verify/     ← Harness, negative controls, browser layout proof, deploy mirror (+ references)
-│   ├── sitebox-config/     ← Dashboard API, lifecycle, logs, troubleshooting
-│   └── sitebox-skill-maintainer/  ← Keeps the skills in sync (meta)
-│
-├── .githooks/pre-commit    ← Blocks commits of sites.json
-├── Dockerfile
-├── docker-compose.yml
-└── README.md
+sites/<id>/
+├── sitebox.toml      ← the contract: port, name, serve mode, pipeline, checks
+└── public/           ← what the browser gets
+
+engine/               ← one process owns serving, supervision and checks
+├── src/serve.rs      ← shared static server (guard, ETag/304, gzip, Range, 404)
+├── src/supervisor.rs ← in-process listeners + node children + JSONL logs
+├── src/checks.rs     ← SB0xx static / SB1xx HTTP catalog + negative controls
+├── src/manifest.rs   ← sitebox.toml + JSON Schema
+├── src/assets.rs     ← downscale-only WebP pipeline + dims.json
+├── src/pipeline.rs   ← ordered steps, fingerprints, scaffold
+├── src/deploy.rs     ← mirror + sha256 verification
+├── src/dashboard.rs  ← the API the UI talks to
+└── src/bin/          ← sitebox (CLI), siteboxd (dashboard), sitebox-mcp (MCP)
+
+dashboard/public/     ← the unchanged dashboard UI
+dashboard/data/       ← runtime registry (never committed)
 ```
+
+Static sites are served in-process: one listener task per site, no child Node.
+A site that genuinely owns an HTTP API declares `serve = "node"` and keeps its
+own `server.js`; the supervisor spawns it, verifies the port and persists its
+logs. `serve = "proxy"` serves static files and forwards `/api/*` to an
+upstream.
 
 ## Features
 
-- **Start/Stop sites** from the dashboard
-- **Verified starts** — start fails loudly (with logs + hint) if the port never listens
-- **Live logs** — captured stdout/stderr per site, viewable in the dashboard
-- **Health checks** — see which sites are online
-- **Port availability** — check before assigning ports (duplicate ports are rejected)
-- **Stale detection** — flags entries whose folder/server.js is missing
-- **Auto-detect** — drop a site folder in `sites/` and it appears
-- **Real deletes** — the delete button stops the site, deletes `sites/<id>/` and drops the entry, so auto-detect cannot bring it back
-- **Light/Dark theme** — toggle in header
-- **Custom icon colors** — per-site icon color
-- **Auto-detected favicons** — a site's real favicon replaces its Lucide icon (the manual icon fields lock while it exists)
-- **Search & filter** — by name, description, or category
+- **One shared server** — traversal guard, ETag/304, gzip, Range, security
+  headers and a real 404 for every site, identical everywhere
+- **Manifests, not prose** — `sitebox.toml` is machine-readable and has a JSON
+  Schema (`sitebox schema`)
+- **Provable "done"** — a check catalog with stable ids (`SB001`–`SB107`) and a
+  `self-test` that proves each guard can fail
+- **Verified starts** — `ok:true` only when the port is actually listening
+- **Persisted logs** — 500-line ring in memory plus `logs/<id>.jsonl` on disk
+- **Pipelines with fingerprints** — steps run in order; an unchanged step is
+  skipped, a changed command or input re-runs it
+- **Assets that cannot drift** — downscale-only WebP, `dims.json` written from
+  the encoded files, never cropped
+- **Deploy as a mirror** — copy, delete extraneous files, then compare sha256
+- **MCP server** — 15 typed tools for agents (`sitebox_list`, `check`, `verify`,
+  `build`, `up`, …)
+- **Auto-detect** — drop a folder with a `sitebox.toml` (or legacy `server.js`)
+  into `sites/`
+- Light/dark theme, custom icon colours, auto-detected favicons, search/filter
 
-## Adding a Site
+## Adding a site
 
-### Option 1: Dashboard UI
-
-Click **Add Site** in the dashboard, fill in the form.
-
-### Option 2: API
+### CLI (what agents should use)
 
 ```bash
-curl -X POST http://localhost:4445/api/sites \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "id": "my-site",
-    "name": "My Site",
-    "description": "A cool site",
-    "icon": "globe",
-    "iconColor": "#58a6ff",
-    "port": 4500,
-    "category": "tools",
-    "url": "http://localhost:4500",
-    "path": "sites/my-site"
-  }'
+sitebox --root ~/sitebox new my-site \
+  --name "My Site" --port 4500 --description "One real line"
+sitebox --root ~/sitebox build my-site
+sitebox --root ~/sitebox check my-site
+sitebox --root ~/sitebox verify my-site     # starts, checks HTTP, stops
 ```
 
-### Option 3: Edit sites.json directly (discouraged)
+### API / UI
 
-`dashboard/data/sites.json` is runtime state. Editing it by hand skips
-validation and will be overwritten by the dashboard. Use the API or the UI
-instead, and **never commit your runtime changes** — see
-[Site data & Git policy](#site-data--git-policy).
+The dashboard's **Add Site** button and `POST /api/sites` both work; the engine
+creates or refreshes the manifest beside the site.
 
-### Option 4: Auto-detect
+### Manifest
 
-Just create a folder in `sites/` with a `server.js` and `public/index.html`. The dashboard will detect it automatically.
+```toml
+schema = 1
 
-### Option 5: Skills
+[site]
+id = "my-site"
+name = "My Site"
+description = "One real line"
+port = 4500
+category = "tools"
+icon = "globe"
+icon_color = "#58a6ff"
+path = "sites/my-site"
+public_dir = "public"
+serve = "static"
 
-If your agent loads the project skills from `skills/`, the entry point is a
-**`sitebox`** router skill that lives with the agent (not in this repo): it decides
-which of the six apply to a whole job and in what order. The six themselves:
-`sitebox-create` (build + deploy), `sitebox-design` (quality gate),
-`sitebox-data` (real content), `sitebox-verify` (proof), `sitebox-config`
-(lifecycle), and `sitebox-skill-maintainer` (keeps them in sync with the dashboard).
+[[pipeline]]
+name = "assets"
+kind = "images"
+inputs = ["assets-raw"]
+outputs = ["public/img"]
+rules = { max_edge = 1080, quality = 82 }
+```
 
-## Deleting a Site
+## Deleting a site
 
-Delete is a real delete: the site is stopped, its folder is removed from
-`sites/` and the entry is dropped from `sites.json`.
+Delete is a real delete: stop, remove `sites/<id>/`, drop the entry. Auto-detect
+would otherwise put a config-only delete straight back.
 
 ```bash
-# UI: the trash button on the site card, confirmed once
-
-# API — same thing the button does
 curl -X DELETE http://localhost:4445/api/sites/my-site
+curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"   # entry only
 ```
 
-Removing only the entry is deliberately not the default. Auto-detect scans
-`sites/` for folders with a `server.js`, so a config-only delete would put the
-site straight back — same folder, new port. If that is really what you want:
-
-```bash
-# Delete the entry, keep the files (auto-detect will add it back)
-curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"
-```
-
-The folder is only ever deleted when the resolved path is inside `sites/`; a
-path that points anywhere else is refused with `400` and the entry stays.
-
-## Skills & Interop
-
-The six working skills are designed to run together:
-
-| Skill | Role |
-|-------|------|
-| `sitebox-create` | Builds: brief → design pass → build → deploy → register → start → verify → debug. Owns the server template and the deploy mirror |
-| `sitebox-design` | Design tokens, image geometry, and the quality gate (accessibility/UX audit, humanizer + deslop copy passes, accepted deviations) |
-| `sitebox-data` | Real, traceable, refreshable content: source discovery, provenance, coverage floors, fixtures, uncropped assets |
-| `sitebox-verify` | Proof: render harness, negative controls, real-browser layout check, HTTP sweep, checksum-verified deploy |
-| `sitebox-config` | Dashboard API, ports, lifecycle, logs, stale entries, git policy |
-| `sitebox-skill-maintainer` | Meta: conventions and a drift checker for the other five |
-
-Order for a new site: **design → data → create → verify → config**.
-
-Run the drift checker after any API or icon change:
-
-```bash
-node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
-```
-
-## Site Structure
-
-Each site follows this pattern:
-
-```
-sites/my-site/
-├── server.js       ← Node.js static file server
-└── public/
-    ├── index.html  ← Entry point
-    ├── style.css   ← (optional)
-    └── app.js      ← (optional)
-```
-
-### Minimal server.js
-
-Simplest possible version (always serves `index.html` as a fallback). For
-multi-page sites use the canonical template with proper 404s and clean URLs in
-`skills/sitebox-create/SKILL.md`.
-
-```js
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const PORT = process.env.PORT || 4500;
-const PUBLIC = path.join(__dirname, 'public');
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-};
-
-http.createServer((req, res) => {
-  let file = req.url.split('?')[0];
-  if (file === '/') file = '/index.html';
-  const fp = path.join(PUBLIC, file);
-  if (fs.existsSync(fp) && fs.statSync(fp).isFile()) {
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'text/plain' });
-    fs.createReadStream(fp).pipe(res);
-  } else {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    fs.createReadStream(path.join(PUBLIC, 'index.html')).pipe(res);
-  }
-}).listen(PORT, '0.0.0.0', () => console.log(`Running at http://localhost:${PORT}`));
-```
+The folder is only removed when the resolved path is inside `sites/`.
 
 ## Dashboard API
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/sites` | List all sites with status (`_running`, `_stale`, `_logLines`) |
-| `POST` | `/api/sites` | Add or update a site (validates id, name, unique port) |
-| `DELETE` | `/api/sites/:id` | **Delete a site**: stops it, deletes its folder, removes the entry (`?keep=1` deletes the entry only) |
-| `POST` | `/api/sites/:id/start` | Start a site and verify the port is listening |
-| `POST` | `/api/sites/:id/stop` | Stop a site process |
+| `GET` | `/api/sites` | List sites (`_running`, `_stale`, `_manifest`, `_logLines`, `_favicon`) |
+| `POST` | `/api/sites` | Add or update (validates id, name, unique port) |
+| `POST` | `/api/sites/reorder` | Persist card order |
+| `DELETE` | `/api/sites/:id` | Stop, delete the folder, remove the entry (`?keep=1` keeps files) |
+| `POST` | `/api/sites/:id/start` | Start and verify the port listens |
+| `POST` | `/api/sites/:id/stop` | Stop |
 | `POST` | `/api/sites/:id/restart` | Stop + start |
-| `GET` | `/api/sites/:id/health` | Check if site is reachable |
-| `GET` | `/api/sites/:id/icon` | Auto-detected site favicon (404 when none) |
-| `GET` | `/api/sites/:id/logs` | Captured output (`?lines=1..500`) |
-| `DELETE` | `/api/sites/:id/logs` | Clear captured output |
+| `GET` | `/api/sites/:id/health` | HTTP reachability |
+| `GET` | `/api/sites/:id/icon` | Auto-detected favicon (404 when none) |
+| `GET` | `/api/sites/:id/logs` | Ring + persisted output (`?lines=1..500`) |
+| `DELETE` | `/api/sites/:id/logs` | Clear |
 | `GET` | `/api/ports/check` | Port availability (`?port=4500`) |
+| `GET` | `/api/doctor` | Registry ↔ folders ↔ manifests ↔ ports |
+
+## Checks
+
+`sitebox check <id>` runs the static catalog; `sitebox verify <id>` runs the
+HTTP catalog against a live site.
+
+- `SB001` entry point · `SB002` no third-party assets · `SB003` image geometry
+  · `SB004` splice markers · `SB005` referenced assets exist
+- `SB010` `dims.json` matches files · `SB020` no placeholder data · `SB021` no
+  `NaN`/`undefined` · `SB030` data parses
+- `SB101` 200 HTML · `SB102` 404 · `SB103` ETag/304 · `SB104` gzip · `SB105`
+  Range · `SB106` nosniff · `SB107` traversal refused
+
+Full contract: `skills/sitebox-engine/SKILL.md`. Exit codes: `0` ok, `1`
+operational failure, `2` checks failed.
+
+## Skills
+
+| Skill | Role |
+|-------|------|
+| `sitebox-engine` | The executable contract: commands, check ids, pipeline rules, MCP tools |
+| `sitebox-create` | Brief → design → build → register → verify → debug |
+| `sitebox-design` | Tokens, image geometry, accessibility/UX audit, copy passes |
+| `sitebox-data` | Real, traceable, refreshable content: provenance, coverage, fixtures |
+| `sitebox-verify` | Browser layout proof, negative controls, deploy mirror |
+| `sitebox-config` | Lifecycle API, ports, logs, troubleshooting, git policy |
+| `sitebox-skill-maintainer` | Meta: conventions and the drift checker |
+
+```bash
+node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
+```
 
 ## Site data & Git policy
 
-`dashboard/data/sites.json` is **runtime state** — the dashboard rewrites it
-when sites are added, edited, or deleted, and auto-detect appends folders it
-finds in `sites/`. Deployed servers will always have a different file than the
-repository.
+Two kinds of state never enter the repository:
 
-**The committed copy must only ever contain `example-notes` and
-`example-clock`. Never commit updates to this file.**
+1. `dashboard/data/sites.json` — rewritten at runtime by add/delete and
+   auto-detect. The committed copy describes only the examples.
+2. **Personal sites** — anything under `sites/` except `example-notes` and
+   `example-clock`. Their content, manifests, data and assets are private.
 
-A pre-commit hook enforces it. Enable once per clone:
+`.gitignore` excludes both, and `.githooks/pre-commit` blocks them even if
+forced. Enable the hook once per clone:
 
 ```bash
 git config core.hooksPath .githooks
-chmod +x .githooks/pre-commit   # macOS / Linux (git needs the exec bit)
+chmod +x .githooks/pre-commit
 ```
 
-If you staged runtime changes by accident:
-
-```bash
-git restore --staged dashboard/data/sites.json
-git checkout -- dashboard/data/sites.json
-```
-
-## Port Ranges
+## Port ranges
 
 | Range | Purpose |
 |-------|---------|
-| 4444 | Reserved |
 | 4445 | Dashboard |
-| 4450-4499 | Examples / tests |
-| 4500-4599 | Tools |
-| 4600-4699 | Publishing |
-| 4700-4799 | Widgets |
-| 4800-4899 | Experimental / auto-detected |
+| 4450–4499 | Examples / tests |
+| 4500–4599 | Tools |
+| 4600–4699 | Publishing |
+| 4700–4799 | Widgets |
+| 4800–4899 | Experimental / auto-detected |
 
-## Icon Names
+## Icons
 
-The dashboard first looks for a favicon the site actually ships: the
-`<link rel="icon">` in `public/index.html`, then conventional files
-(`public/favicon.svg`, `favicon.png`, `favicon.ico`, …). When one is found it is
-served at `/api/sites/:id/icon` and shown instead of the configured icon, and
-the icon/color fields in the edit form are locked. A hotlinked or `data:`
-favicon is ignored — only local files count. Remove the favicon file to return
-to the Lucide icon; the stored `icon`/`iconColor` are never rewritten.
+The dashboard prefers a favicon the site actually ships (`<link rel="icon">`,
+then `favicon.svg|png|ico`). Local files only; hotlinked and `data:` icons are
+ignored. Otherwise it renders a Lucide icon — `globe`, `book`, `clock`, `code`,
+`camera`, `gamepad`, `music`, `settings`, `notebook`, `notebook-pen`,
+`database`, `star` — with `globe` as the fallback (source:
+`dashboard/public/js/main.js`).
 
-With no favicon, the dashboard renders these icons; any other name falls back to
-`globe` (source of truth: `dashboard/public/js/main.js`):
+## Testing
 
-`globe` · `book` · `clock` · `code` · `camera` · `gamepad` · `music` · `settings` · `notebook` · `notebook-pen` · `database` · `star`
-
-## Design
-
-- **Light/Dark theme** — toggle via header button
-- **WCAG AA compliant** — 4.5:1+ contrast ratios
-- **Custom icon colors** — per-site hex color
+```bash
+cd engine
+cargo test                 # 13 tests, no network or model required
+sitebox self-test          # negative controls: every check fails on a broken fixture
+```
 
 ## License
 
-MIT
-
-Built-in icons are Lucide SVG geometry (ISC License).
+MIT. Built-in icons are Lucide SVG geometry (ISC License).
