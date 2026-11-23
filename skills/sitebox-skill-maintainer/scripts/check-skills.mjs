@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const SKILLS_DIR = path.join(ROOT, 'skills');
-const SERVER = path.join(ROOT, 'dashboard', 'server.js');
+const SERVER = path.join(ROOT, 'engine', 'src', 'dashboard.rs');
 const MAIN_JS = path.join(ROOT, 'dashboard', 'public', 'js', 'main.js');
 const SITES_JSON = path.join(ROOT, 'dashboard', 'data', 'sites.json');
 const README = path.join(ROOT, 'README.md');
@@ -193,12 +193,12 @@ for (const ep of endpoints) {
   const root = parts[1];
   if (!/^[a-z]+$/.test(root)) continue; // not a SiteBox endpoint
   if (!serverSrc.includes(`/api/${root}`)) {
-    err(`skills reference ${ep} but /api/${root} is not in dashboard/server.js`);
+    err(`skills reference ${ep} but /api/${root} is not in engine/src/dashboard.rs`);
     continue;
   }
   const leaf = parts[parts.length - 1];
   if (leaf !== root && !leaf.startsWith('x') && !serverSrc.includes(leaf))
-    warn(`skills reference ${ep} — leaf "${leaf}" not found in server.js, verify manually`);
+    warn(`skills reference ${ep} — leaf "${leaf}" not found in engine/src/dashboard.rs, verify manually`);
 }
 
 /* ── Icon lists must match dashboard/public/js/main.js ── */

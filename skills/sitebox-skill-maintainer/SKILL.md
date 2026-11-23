@@ -3,8 +3,8 @@ name: sitebox-skill-maintainer
 description: Create, audit, and update the SiteBox skills themselves. Use when editing any skill under skills/, adding a new SiteBox skill, checking skills against the real dashboard API and icons, resolving drift between skills/README/server behavior, wiring a new skill into the others, or bumping skill versions after a feature change. Not for building sites — use sitebox-create, sitebox-design, sitebox-data, sitebox-verify, and sitebox-config for that.
 metadata:
   author: sitebox
-  version: "2.0.1"
-  updated: "2026-09-24"
+  version: "2.1.0"
+  updated: "2026-11-23"
 ---
 
 # SiteBox Skill Maintainer (meta)
@@ -13,11 +13,12 @@ The SiteBox skills are the operating manual for building and running sites. This
 
 | Skill | Owns | Source of truth for its facts |
 |-------|------|-------------------------------|
-| `sitebox-create` | Build/redesign/deploy/debug workflow, server template, serving additions | `dashboard/server.js`, `sites/example-*/server.js` |
+| `sitebox-create` | Build/redesign/deploy/debug workflow, manifest, serving contract | `engine/src/manifest.rs`, `sites/example-*/sitebox.toml` |
+| `sitebox-engine` | The executable contract: commands, check ids, pipeline rules, MCP tools | `engine/src/`, `engine/src/bin/sitebox.rs` |
 | `sitebox-design` | Visual system, image geometry, audit, copy passes (humanizer/deslop), accepted deviations | design decisions; no code dependency |
 | `sitebox-data` | Real-data pipelines, provenance, refreshability, fixtures, coverage floors, asset integrity | the platforms themselves; the site's `tools/` |
 | `sitebox-verify` | Render harness, negative controls, real-browser layout proof, HTTP sweep, deploy mirror | the site's `tools/`; the running server |
-| `sitebox-config` | Dashboard API, ports, lifecycle, logs, git policy | `dashboard/server.js`, `dashboard/public/js/main.js` |
+| `sitebox-config` | Dashboard API, ports, lifecycle, logs, git policy | `engine/src/dashboard.rs`, `dashboard/public/js/main.js` |
 | `sitebox-skill-maintainer` | This file — conventions and drift checks | `skills/` itself |
 
 There is also a `sitebox` **router** skill that lives with the pi agent, not in this repo. It decides
@@ -28,11 +29,11 @@ tracked in git here — do not add a copy to `skills/`, because the same facts w
 
 | Fact | Lives in | Mirrored in |
 |------|----------|-------------|
-| API endpoints + response shapes | `dashboard/server.js` | `sitebox-config` SKILL.md |
+| API endpoints + response shapes | `engine/src/dashboard.rs` | `sitebox-config` SKILL.md |
 | Icon names | `dashboard/public/js/main.js` (`ICONS`) | `sitebox-config` "Icons" section |
 | Port ranges | `README.md` | `sitebox-config`, `sitebox-create` |
-| `server.js` template | `sitebox-create` SKILL.md | `sites/example-notes/server.js` (simpler variant) |
-| Git policy for `sites.json` | `dashboard/data/README.md` + `.githooks/pre-commit` | `README.md`, `CONTRIBUTING.md`, `sitebox-config` |
+| Manifest schema (`sitebox.toml`) | `engine/src/manifest.rs` (+ `sitebox schema`) | `sitebox-create`, `sitebox-engine` |
+| Git policy for `sites.json` and personal sites | `dashboard/data/README.md` + `.githooks/pre-commit` | `README.md`, `CONTRIBUTING.md`, `sitebox-config` |
 | Which skill owns what | `sitebox-skill-maintainer` (the table above) | each SKILL.md's "Related skills" section |
 
 If a fact needs changing, change every mirror in the same edit. The checker below finds most drift automatically.
@@ -53,7 +54,7 @@ same edit.
 
 ## Maintain workflow
 
-1. **Read before editing.** Open the target skill and the source of truth it mirrors. If the change is driven by a server/API change, read the diff in `dashboard/server.js` first.
+1. **Read before editing.** Open the target skill and the source of truth it mirrors. If the change is driven by a server/API change, read the diff in `engine/src/` first.
 2. **Run the checker** to see current drift:
    ```bash
    node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
@@ -68,11 +69,11 @@ same edit.
 
 | Task | Touch |
 |------|-------|
-| New API endpoint | `dashboard/server.js` → `sitebox-config` API table + relevant section → `README.md` table → checker leaf-token list if the verb is new |
+| New API endpoint | `engine/src/dashboard.rs` → `sitebox-config` API table + relevant section → `README.md` table → checker leaf-token list if the verb is new |
 | Endpoint removed/renamed | Same, plus grep all skills for the old path |
 | New dashboard icon | `dashboard/public/js/main.js` → `sitebox-config` Icons section |
 | Port range change | `README.md`, `sitebox-config`, `sitebox-create` (all three tables) |
-| Server template change | `sitebox-create` template, then decide whether examples follow |
+| Manifest schema change | `engine/src/manifest.rs` → `sitebox-create` + `sitebox-engine` → examples |
 | git policy change | `dashboard/data/README.md`, `.githooks/pre-commit`, `README.md`, `CONTRIBUTING.md`, `sitebox-config` |
 | New skill | New folder + SKILL.md → add a row to the ownership table above → add to every sibling's "Related skills" → `README.md` tree + table → checker |
 | A lesson learned on a real site | Put it in the skill that owns that phase, **with the failure it prevents** — not in a new section of a skill that happens to mention it. If two skills could own it, the ownership table decides |
@@ -100,7 +101,7 @@ same edit.
 node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
 ```
 
-Checks: frontmatter validity, name/folder match, description length, trigger phrasing **and anti-trigger phrasing**, `metadata.version`, SKILL.md length, broken relative reference links (in `SKILL.md` **and** in every `references/*.md`), cross-skill name references resolving to a real skill, referenced `/api/...` endpoints existing in `dashboard/server.js`, icon lists matching `main.js`, `sites.json` containing only the two examples, README mentioning every skill, and the pre-commit hook existing. Exit code 1 on errors; warnings are printed but do not fail.
+Checks: frontmatter validity, name/folder match, description length, trigger phrasing **and anti-trigger phrasing**, `metadata.version`, SKILL.md length, broken relative reference links (in `SKILL.md` **and** in every `references/*.md`), cross-skill name references resolving to a real skill, referenced `/api/...` endpoints existing in `engine/src/dashboard.rs`, icon lists matching `main.js`, `sites.json` containing only the two examples, README mentioning every skill, and the pre-commit hook existing. Exit code 1 on errors; warnings are printed but do not fail.
 
 **The checker is a guard, so it needs a negative control too.** Before trusting a new check, break the
 thing it looks for and confirm it reports an error. A checker that has only ever printed `0 error(s)` is in
