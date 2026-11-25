@@ -227,6 +227,7 @@
       const s = await api('/api/studio/status');
       state.settings = s.settings || {};
       state.sites = s.sites || [];
+      state.search = s.search || { configured: false };
       state.browser = s.browser;
       renderStatus();
       fillSites();
@@ -246,7 +247,12 @@
     badge.textContent = s.configured
       ? `${s.model}${state.browser ? ' · shots on' : ' · checks only'}`
       : 'not configured';
-    $('#st-hint').textContent = s.configured ? '' : 'ตั้งค่า base URL + model ก่อน';
+    $('#st-hint').textContent = s.configured
+      ? (state.search && state.search.configured ? '' : 'เว็บค้นหาไม่พร้อม (SEARXNG_URL)')
+      : 'ตั้งค่า base URL + model ก่อน';
+    badge.title = state.search && state.search.configured
+      ? `search: ${state.search.url}`
+      : 'search: not configured';
     $('#st-send').disabled = !s.configured;
   }
 

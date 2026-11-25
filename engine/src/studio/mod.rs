@@ -11,6 +11,7 @@
 
 pub mod apply;
 pub mod config;
+pub mod lang;
 pub mod llm;
 pub mod outline;
 pub mod patch;
@@ -305,7 +306,15 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
     for round in 0..max_rounds {
         let site = current_site(st, thread_id)?;
         let messages = build_messages(st, thread_id, site.as_ref())?;
-        let out = llm::stream_chat(st, &settings, messages, tools.clone(), thread_id).await?;
+        let out = llm::stream_chat(
+            st,
+            &settings,
+            messages,
+            tools.clone(),
+            thread_id,
+            !lang::has_cjk(user_msg),
+        )
+        .await?;
         tokens_in += out.tokens_in;
         tokens_out += out.tokens_out;
 

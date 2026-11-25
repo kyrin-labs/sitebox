@@ -690,9 +690,14 @@ async fn studio_status(State(st): State<DashState>) -> Response {
             .collect(),
         Err(_) => Vec::new(),
     };
+    let search_url = studio::config::env_or_file(&st.root, "SEARXNG_URL");
     Json(json!({
         "settings": cfg.public_json(),
         "browser": studio::shot::browser().map(|p| p.display().to_string()),
+        "search": {
+            "configured": search_url.is_some(),
+            "url": search_url,
+        },
         "sites": sites,
         "data_dir": st.studio.data,
     }))

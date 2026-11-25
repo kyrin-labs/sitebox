@@ -29,6 +29,7 @@ pub async fn stream_chat(
     messages: Vec<Value>,
     tools: Value,
     thread_id: &str,
+    strip_cjk: bool,
 ) -> Result<Outcome> {
     let body = json!({
         "model": settings.model,
@@ -116,6 +117,14 @@ pub async fn stream_chat(
                         .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                         .collect::<String>(),
                     _ => String::new(),
+                };
+                // The operator did not write Chinese; an answer that contains it
+                // is a bug even when it renders. Filter before the panel and the
+                // transcript see it, so streaming and history agree.
+                let piece = if strip_cjk {
+                    super::lang::strip_cjk(&piece)
+                } else {
+                    piece
                 };
                 if !piece.is_empty() {
                     text.push_str(&piece);

@@ -1,14 +1,17 @@
 //! The entire capability surface the model has.
 //!
-//! Note what is absent: no write tool, no shell, no HTTP fetch. The model can
-//! look, measure, and *propose*. A human applies. That asymmetry is the feature.
+//! Note what is absent: no write tool and no shell. The model can look, search
+//! the public web, measure, and *propose*. A human applies. That asymmetry is
+//! the feature; the one HTTP surface it has is read-only and SSRF-guarded.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
+use std::time::Duration;
 
 use super::patch::PatchSpec;
-use super::{outline, shot, site_path, skills, stage, store, SiteRef, StudioState};
+use super::{config, outline, shot, site_path, skills, stage, store, SiteRef, StudioState};
 use crate::checks;
 use crate::util;
 
@@ -47,6 +50,37 @@ pub fn definitions() -> Value {
                         "port": {"type": "integer", "description": "optional; a free port in 4500-4899 is chosen otherwise"}
                     },
                     "required": ["id", "name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_search",
+                "description": "Search the web through the configured SearXNG instance. Use for facts outside the site (companies, places, people, prices, domains, news). Returns titles, URLs and snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "count": {"type": "integer", "description": "1-10, default 5"},
+                        "language": {"type": "string", "description": "ISO code such as th or en; omit for auto"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_fetch",
+                "description": "Fetch one public http(s) page and return its readable text. Refuses private/local addresses. Use after a search when the snippet is not enough.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "max_chars": {"type": "integer", "description": "500-20000, default 6000"}
+                    },
+                    "required": ["url"]
                 }
             }
         },
@@ -365,11 +399,324 @@ pub async fn execute_unbound(
         "sols_skill" => tool_skill(args),
         "sols_plan" => tool_plan(st, thread_id, args),
         "sols_create_site" => create_site(st, thread_id, args).await,
+        "sols_search" => web_search(st, args).await,
+        "sols_fetch" => web_fetch(args).await,
         other => bail!(
             "`{other}` needs a site, and this conversation has none yet. \
              Call sols_create_site first."
         ),
     }
+}
+
+/// Web search through the operator's SearXNG. Configured with `SEARXNG_URL`
+/// (environment first, then `.env` at the data root).
+async fn web_search(st: &StudioState, args: &Value) -> Result<Value> {
+    let base = config::env_or_file(&st.root, "SEARXNG_URL").ok_or_else(|| {
+        anyhow::anyhow!(
+            "web search is not configured: set SEARXNG_URL (for example http://127.0.0.1:8899)"
+        )
+    })?;
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if query.chars().count() < 2 {
+        bail!("query is too short");
+    }
+    let count = args
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .clamp(1, 10) as usize;
+    let mut params: Vec<(&str, String)> = vec![("q", query.clone()), ("format", "json".into())];
+    if let Some(lang) = args
+        .get("language")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        params.push(("language", lang.to_string()));
+    }
+    if let Some(engines) = config::env_or_file(&st.root, "SEARXNG_ENGINES") {
+        params.push(("engines", engines));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent("SiteBox-Sols/1.0")
+        .build()?;
+    let url = format!("{}/search", base.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .query(&params)
+        .send()
+        .await
+        .with_context(|| format!("search request to {url} failed"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("search answered {status}; check SEARXNG_URL and that JSON is enabled in SearXNG");
+    }
+    let body: Value = resp.json().await.context("search returned invalid JSON")?;
+
+    let mut results = Vec::new();
+    for r in body
+        .get("results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
+        if results.len() >= count {
+            break;
+        }
+        let link = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        if link.is_empty() {
+            continue;
+        }
+        results.push(json!({
+            "title": r.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+            "url": link,
+            "snippet": r.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+            "engine": r.get("engine").and_then(|v| v.as_str()).unwrap_or(""),
+        }));
+    }
+    let answers: Vec<String> = body
+        .get("answers")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(json!({
+        "ok": true,
+        "query": query,
+        "results": results,
+        "answers": answers,
+        "note": if results.is_empty() {
+            "No results. Say so in one line; do not fill the gap from memory."
+        } else {
+            "Snippets are unverified search results. Cite the URL you used; fetch it if the detail matters."
+        },
+    }))
+}
+
+fn host_is_public(host: &str) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    !(h.is_empty()
+        || h == "localhost"
+        || h.ends_with(".local")
+        || h.ends_with(".internal")
+        || h.ends_with(".localhost"))
+}
+
+fn ip_is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.is_multicast())
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+/// Parse and vet a URL before any request leaves the box. Name lookups happen
+/// here so a DNS name that resolves to the LAN is refused too.
+fn safe_url(raw: &str) -> Result<reqwest::Url> {
+    let u = reqwest::Url::parse(raw).with_context(|| format!("not a URL: {raw}"))?;
+    if !matches!(u.scheme(), "http" | "https") {
+        bail!("only http(s) URLs can be fetched");
+    }
+    let host = u.host_str().unwrap_or("");
+    if !host_is_public(host) {
+        bail!("refusing to fetch a private or local address");
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if !ip_is_public(ip) {
+            bail!("refusing to fetch {ip}");
+        }
+    }
+    if let Ok(addrs) = (host, u.port_or_known_default().unwrap_or(80)).to_socket_addrs() {
+        for a in addrs {
+            if !ip_is_public(a.ip()) {
+                bail!("{host} resolves to a private address ({})", a.ip());
+            }
+        }
+    }
+    Ok(u)
+}
+
+async fn web_fetch(args: &Value) -> Result<Value> {
+    let raw = args
+        .get("url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if raw.is_empty() {
+        bail!("url is required");
+    }
+    let url = safe_url(raw)?;
+    let max = args
+        .get("max_chars")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(6000)
+        .clamp(500, 20000) as usize;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent("SiteBox-Sols/1.0")
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 4
+                || !host_is_public(attempt.url().host_str().unwrap_or(""))
+            {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()?;
+    let resp = client
+        .get(url.clone())
+        .send()
+        .await
+        .with_context(|| format!("fetching {url} failed"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("{url} answered {status}");
+    }
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !(ctype.contains("text/")
+        || ctype.contains("json")
+        || ctype.contains("xml")
+        || ctype.is_empty())
+    {
+        bail!("{url} is {ctype}; only text pages can be read");
+    }
+    let bytes = resp.bytes().await?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        bail!("{url} is {} bytes; the limit is 2 MB", bytes.len());
+    }
+    let body = String::from_utf8_lossy(&bytes);
+    let text = if ctype.contains("html") {
+        html_to_text(&body)
+    } else {
+        body.to_string()
+    };
+    let total = text.chars().count();
+    let clipped: String = text.chars().take(max).collect();
+    Ok(json!({
+        "ok": true,
+        "url": url.as_str(),
+        "chars": total,
+        "truncated": total > max,
+        "text": clipped,
+    }))
+}
+
+/// Enough HTML understanding for reading a page: drop script/style, turn block
+/// boundaries into newlines, decode the entities that appear in prose.
+fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut tag = String::new();
+    let mut in_tag = false;
+    let mut skip: Option<&str> = None;
+
+    for c in html.chars() {
+        if !in_tag {
+            if c == '<' {
+                in_tag = true;
+                tag.clear();
+            } else if skip.is_none() {
+                out.push(c);
+            }
+            continue;
+        }
+        if c == '>' {
+            in_tag = false;
+            let t = tag.trim().to_ascii_lowercase();
+            let name = t
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            if t.starts_with("script") || t.starts_with("style") {
+                skip = Some(if t.starts_with("script") {
+                    "script"
+                } else {
+                    "style"
+                });
+            } else if t.starts_with("/script") || t.starts_with("/style") {
+                skip = None;
+            } else if matches!(
+                name,
+                "p" | "br"
+                    | "div"
+                    | "section"
+                    | "article"
+                    | "li"
+                    | "tr"
+                    | "h1"
+                    | "h2"
+                    | "h3"
+                    | "h4"
+                    | "h5"
+                    | "h6"
+                    | "blockquote"
+                    | "pre"
+                    | "td"
+            ) {
+                out.push('\n');
+            }
+            continue;
+        }
+        tag.push(c);
+    }
+
+    let decoded = out
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&rsquo;", "'")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–");
+
+    let mut compact = String::with_capacity(decoded.len());
+    let mut blank = 0;
+    for line in decoded.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            blank += 1;
+            if blank > 1 {
+                continue;
+            }
+        } else {
+            blank = 0;
+        }
+        compact.push_str(&line);
+        compact.push('\n');
+    }
+    compact.trim().to_string()
 }
 
 pub async fn execute(
@@ -381,6 +728,8 @@ pub async fn execute(
     auto_apply: bool,
 ) -> Result<Value> {
     match name {
+        "sols_search" => web_search(st, args).await,
+        "sols_fetch" => web_fetch(args).await,
         "sitebox_grep" => {
             let query = args
                 .get("query")
@@ -769,6 +1118,15 @@ Routing: look, layout, copy, tokens -> sitebox-design; real content, numbers, so
 ## Rules that do not change
 You cannot write files except through `sols_create_site` (once, before a site exists) and `sitebox_propose_patch`. During creation a patch is applied as soon as the checks pass, so you may say it is live — only after the tool says `applied`. After the creation turn, patches are queued and you must not call them live. Verify with `sitebox_check` and `sitebox_verify` before you claim anything.
 
+## Looking things up
+- `sols_search` is a real web search through SearXNG. Use it for facts you cannot read from the site: a company, product, place, person, price, domain, or a current event.
+- Cite the result URL you used. Snippets are search results, not verified facts; if the search returns nothing, say so in one line instead of guessing.
+- `sols_fetch` opens one result when its snippet is not enough. Only fetch a URL the request is about or a search returned.
+- You do have search. Never tell the operator you have no search tool.
+
+## Language
+Answer in the language the operator used, and only that language. Never mix scripts: a Chinese or Japanese character inside a Thai or English sentence is a bug, not a style.
+
 ## How to answer
 Three to six short lines, at most three bullets, plain words for checks, `path:line` only for the line you change, one next step. Thai when the operator writes Thai."#
         );
@@ -845,6 +1203,15 @@ You may start, stop and restart the site this conversation is attached to: `site
 
 ## Design
 Reuse the site's existing CSS custom properties. Do not introduce a new colour, font, or spacing scale unless the user asks. Purple/violet/indigo gradients are the default AI look and are not a design choice — avoid them unless the site already uses them.
+
+## Looking things up
+- `sols_search` is a real web search through SearXNG. Use it for facts you cannot read from the site: a company, product, place, person, price, domain, or a current event.
+- Cite the result URL you used. Snippets are search results, not verified facts; if the search returns nothing, say so in one line instead of guessing.
+- `sols_fetch` opens one result when its snippet is not enough. Only fetch a URL the request is about or a search returned.
+- You do have search. Never tell the operator you have no search tool.
+
+## Language
+Answer in the language the operator used, and only that language. Never mix scripts: a Chinese or Japanese character inside a Thai or English sentence is a bug, not a style.
 
 ## How to answer
 Write for a busy operator reading on a phone, not for a log file.

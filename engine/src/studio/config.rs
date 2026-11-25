@@ -116,3 +116,31 @@ impl Settings {
         }
     }
 }
+
+/// Environment first, then a `.env` next to the data root. Docker compose
+/// passes the same names through `environment:`, so both installs configure
+/// search with one setting.
+pub fn env_or_file(root: &Path, key: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(key) {
+        let v = v.trim().trim_matches('"').to_string();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    let text = std::fs::read_to_string(root.join(".env")).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == key {
+                let v = v.trim().trim_matches('"').trim_matches('\'');
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    None
+}

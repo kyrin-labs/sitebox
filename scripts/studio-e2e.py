@@ -28,6 +28,7 @@ SCRATCH = Path(tempfile.mkdtemp(prefix="studio-e2e-"))
 BIN = Path(os.environ.get("STUDIO_BIN") or REPO / "engine/target/debug/siteboxd")
 DASH = 4499
 MOCK = 4811
+SEARCH = 4812
 TOKEN = "e2e-token"
 
 INDEX = """<!doctype html>
@@ -126,6 +127,34 @@ def check(name, cond, detail=""):
         failures.append(name)
 
 
+class MockSearch(BaseHTTPRequestHandler):
+    """Stands in for SearXNG: JSON results, nothing else."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if not self.path.startswith("/search"):
+            self.send_response(404)
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
+        body = json.dumps({
+            "query": "sitebox test",
+            "results": [
+                {"title": "SiteBox test", "url": "https://example.com/sitebox",
+                 "content": "A result about SiteBox.", "engine": "mock"},
+            ],
+        }).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 class MockLLM(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     last_system = ""
@@ -179,6 +208,17 @@ class MockLLM(BaseHTTPRequestHandler):
                 self._stream("Proposing the rename.", {"name": "sitebox_propose_patch", "arguments": json.dumps(args)})
             else:
                 self._stream("Proposed the rename.", None)
+            return
+
+        if "search test" in user_text:
+            if n == 0:
+                self._stream("Searching.", {"name": "sols_search", "arguments": json.dumps({"query": "sitebox test"})})
+            else:
+                self._stream("Found one result.", None)
+            return
+
+        if "lang test" in user_text:
+            self._stream("สวัสดี\u8ba9\u4e5fครับ ผมช่วยได้", None)
             return
 
         if "rollback" in user_text:
@@ -402,9 +442,12 @@ def main():
 
     mock = HTTPServer(("127.0.0.1", MOCK), MockLLM)
     threading.Thread(target=mock.serve_forever, daemon=True).start()
+    search = HTTPServer(("127.0.0.1", SEARCH), MockSearch)
+    threading.Thread(target=search.serve_forever, daemon=True).start()
 
     env = dict(os.environ)
     env["STUDIO_TOKEN"] = TOKEN
+    env["SEARXNG_URL"] = f"http://127.0.0.1:{SEARCH}"
     proc = subprocess.Popen(
         [str(BIN), "--root", str(SCRATCH), "--port", str(DASH), "--ui", str(REPO / "dashboard/public")],
         cwd=str(SCRATCH), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -542,6 +585,41 @@ def main():
         check("new site file changed", b"Fresh Renamed" in (fresh / "public/index.html").read_bytes(), "unchanged")
         s, _, _ = req(base + "/api/studio/sites/fresh/undo", "POST", {}, token=TOKEN)
         check("undo on the new site", s == 200 and (fresh / "public/index.html").read_bytes() == before4, s)
+
+        print("── P2e: web search and script hygiene")
+        s, th5, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
+        send5 = None
+        for _ in range(40):
+            send5, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th5["id"], "message": "search test"}, token=TOKEN)
+            if send5 != 409:
+                break
+            time.sleep(0.4)
+        m5 = {}
+        for _ in range(80):
+            time.sleep(0.3)
+            m5 = req(base + f"/api/studio/threads/{th5['id']}/messages", token=TOKEN)[1]
+            if any("Found one result" in (m.get("content") or "") for m in m5["messages"]):
+                break
+        blob = "\n".join(m.get("content") or "" for m in m5["messages"] if m.get("role") == "tool")
+        check("search reaches searxng", "https://example.com/sitebox" in blob, len(blob))
+        check("search result is structured", '"engine":"mock"' in blob.replace(" ", "") and '"title":"SiteBox test"' in blob, blob[:200])
+
+        s, th6, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
+        for _ in range(40):
+            send6, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th6["id"], "message": "lang test"}, token=TOKEN)
+            if send6 != 409:
+                break
+            time.sleep(0.4)
+        m6 = {}
+        for _ in range(60):
+            time.sleep(0.3)
+            m6 = req(base + f"/api/studio/threads/{th6['id']}/messages", token=TOKEN)[1]
+            if any(m.get("role") == "assistant" and (m.get("content") or "").strip() for m in m6["messages"]):
+                break
+        answer6 = "\n".join(m.get("content") or "" for m in m6["messages"] if m.get("role") == "assistant")
+        bad = [c for c in answer6 if 0x3000 <= ord(c) <= 0x303F or 0x4E00 <= ord(c) <= 0x9FFF or 0xFF00 <= ord(c) <= 0xFFEF]
+        check("no CJK in a Thai answer", not bad, answer6)
+        check("Thai survives the filter", "สวัสดีครับ" in answer6.replace(" ", ""), answer6)
 
         print("── P2/P3: a patch that breaks a check rolls back")
         s, th2, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
