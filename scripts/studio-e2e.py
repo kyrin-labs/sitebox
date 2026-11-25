@@ -447,6 +447,10 @@ def main():
 
     env = dict(os.environ)
     env["STUDIO_TOKEN"] = TOKEN
+    # The test configures the gateway through the API; a deployment's AI_* env
+    # would override it and point the mock at the wrong place.
+    for k in ("AI_BASE_URL", "AI_MODEL", "AI_API_KEY"):
+        env.pop(k, None)
     env["SEARXNG_URL"] = f"http://127.0.0.1:{SEARCH}"
     proc = subprocess.Popen(
         [str(BIN), "--root", str(SCRATCH), "--port", str(DASH), "--ui", str(REPO / "dashboard/public")],
@@ -477,6 +481,7 @@ def main():
             "base_url": f"http://127.0.0.1:{MOCK}/v1", "model": "mock-1", "api_key": "sk-secret",
         }, token=TOKEN)
         check("config saved", s == 200 and cfg.get("configured") is True, cfg)
+        check("status reports env sources", isinstance((cfg.get("from_env") or {}), dict), cfg.get("from_env"))
         check("key never returned", "sk-secret" not in json.dumps(cfg) and cfg.get("has_key") is True, cfg)
         check("endpoint normalised", cfg.get("endpoint") == f"http://127.0.0.1:{MOCK}/v1/chat/completions", cfg.get("endpoint"))
         mode = oct((SCRATCH / "dashboard/data/studio/settings.json").stat().st_mode & 0o777)

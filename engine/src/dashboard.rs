@@ -692,7 +692,7 @@ async fn studio_status(State(st): State<DashState>) -> Response {
     };
     let search_url = studio::config::env_or_file(&st.root, "SEARXNG_URL");
     Json(json!({
-        "settings": cfg.public_json(),
+        "settings": cfg.public_json(&st.root),
         "browser": studio::shot::browser().map(|p| p.display().to_string()),
         "search": {
             "configured": search_url.is_some(),
@@ -706,14 +706,14 @@ async fn studio_status(State(st): State<DashState>) -> Response {
 
 async fn studio_config_get(State(st): State<DashState>) -> Response {
     let cfg = studio::config::Settings::load(&st.root);
-    Json(cfg.public_json()).into_response()
+    Json(cfg.public_json(&st.root)).into_response()
 }
 
 async fn studio_config_put(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
     let mut cfg = studio::config::Settings::load(&st.root);
     cfg.merge(&body);
     match cfg.save(&st.root) {
-        Ok(()) => Json(cfg.public_json()).into_response(),
+        Ok(()) => Json(cfg.public_json(&st.root)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("{e:#}")})),

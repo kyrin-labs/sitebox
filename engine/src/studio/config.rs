@@ -1,14 +1,21 @@
 //! Studio settings: base URL, model, key.
 //!
-//! The key is write-only from the browser's point of view: every response goes
-//! through [`Settings::public_json`], which never contains it. The file is
-//! `0600` so a stray backup or a shared volume does not leak it either.
+//! Values come from two places: `AI_*` variables (environment first, then a
+//! `.env` at the data root) and `settings.json`. The environment wins, so a
+//! deployment configures the agent without touching the data volume. The key is
+//! write-only from the browser's point of view: every response goes through
+//! [`Settings::public_json`], which never contains it. `settings.json` is `0600`
+//! and a key that came from the environment is never copied into it.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+pub const ENV_BASE_URL: &str = "AI_BASE_URL";
+pub const ENV_MODEL: &str = "AI_MODEL";
+pub const ENV_API_KEY: &str = "AI_API_KEY";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
@@ -32,16 +39,33 @@ impl Settings {
     }
 
     pub fn load(root: &Path) -> Self {
-        std::fs::read_to_string(Self::path(root))
+        let mut s: Self = std::fs::read_to_string(Self::path(root))
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Deployment configuration beats the file, so a container can be
+        // pointed at another gateway without editing the mounted volume.
+        if let Some(v) = env_or_file(root, ENV_BASE_URL) {
+            s.base_url = v;
+        }
+        if let Some(v) = env_or_file(root, ENV_MODEL) {
+            s.model = v;
+        }
+        if let Some(v) = env_or_file(root, ENV_API_KEY) {
+            s.api_key = Some(v);
+        }
+        s
     }
 
     pub fn save(&self, root: &Path) -> Result<()> {
+        let mut clean = self.clone();
+        if env_or_file(root, ENV_API_KEY).is_some() {
+            // The secret lives in .env; never duplicate it into settings.json.
+            clean.api_key = None;
+        }
         let p = Self::path(root);
         super::ensure_dir(p.parent().unwrap_or(Path::new(".")))?;
-        super::atomic_write(&p, serde_json::to_string_pretty(self)?.as_bytes())?;
+        super::atomic_write(&p, serde_json::to_string_pretty(&clean)?.as_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -75,7 +99,17 @@ impl Settings {
             .filter(|k| !k.is_empty())
     }
 
-    pub fn public_json(&self) -> Value {
+    /// Which values came from the environment, so the panel can show them as
+    /// read-only instead of pretending an edit will stick.
+    pub fn from_env(root: &Path) -> Value {
+        json!({
+            "base_url": env_or_file(root, ENV_BASE_URL).is_some(),
+            "model": env_or_file(root, ENV_MODEL).is_some(),
+            "has_key": env_or_file(root, ENV_API_KEY).is_some(),
+        })
+    }
+
+    pub fn public_json(&self, root: &Path) -> Value {
         json!({
             "base_url": self.base_url,
             "model": self.model,
@@ -84,6 +118,7 @@ impl Settings {
             "endpoint": if self.base_url.trim().is_empty() { String::new() } else { self.endpoint() },
             "max_rounds": self.max_rounds.unwrap_or(12),
             "extra_headers": self.extra_headers,
+            "from_env": Self::from_env(root),
         })
     }
 
@@ -143,4 +178,37 @@ pub fn env_or_file(root: &Path, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sitebox-cfg-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn env_file_supplies_ai_settings() {
+        let dir = scratch("load");
+        std::fs::write(
+            dir.join(".env"),
+            "AI_BASE_URL=https://gateway.example/v1\nAI_MODEL=test-model\nAI_API_KEY=sk-from-env-123\n",
+        )
+        .unwrap();
+        let s = Settings::load(&dir);
+        assert_eq!(s.base_url, "https://gateway.example/v1");
+        assert_eq!(s.model, "test-model");
+        assert_eq!(s.key(), Some("sk-from-env-123"));
+        assert!(s.configured());
+
+        // Saving must not copy the environment's secret into the data volume.
+        s.save(&dir).unwrap();
+        let written = std::fs::read_to_string(Settings::path(&dir)).unwrap();
+        assert!(!written.contains("sk-from-env-123"), "{written}");
+        assert!(written.contains("test-model"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

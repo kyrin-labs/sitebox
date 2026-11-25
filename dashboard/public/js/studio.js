@@ -270,20 +270,32 @@
   }
 
   function fillSettings() {
+    const env = state.settings.from_env || {};
     $('#st-base').value = state.settings.base_url || '';
     $('#st-model').value = state.settings.model || '';
+    $('#st-base').readOnly = !!env.base_url;
+    $('#st-model').readOnly = !!env.model;
+    $('#st-base').title = env.base_url ? 'ตั้งค่าใน .env (AI_BASE_URL)' : '';
+    $('#st-model').title = env.model ? 'ตั้งค่าใน .env (AI_MODEL)' : '';
     $('#st-key').value = '';
-    $('#st-key').placeholder = state.settings.has_key ? 'unchanged (leave blank)' : 'sk-…';
-    $('#st-settings-hint').textContent = state.settings.endpoint || '';
+    $('#st-key').disabled = !!env.has_key;
+    $('#st-key').placeholder = env.has_key
+      ? 'from .env (AI_API_KEY)'
+      : (state.settings.has_key ? 'unchanged (leave blank)' : 'sk-…');
+    $('#st-settings-hint').textContent = (env.base_url || env.model || env.has_key)
+      ? 'บางค่ามาจาก .env — แก้ที่ไฟล์นั้น'
+      : (state.settings.endpoint || '');
   }
 
   async function saveSettings() {
-    const body = {
-      base_url: $('#st-base').value.trim(),
-      model: $('#st-model').value.trim(),
-    };
+    const env = state.settings.from_env || {};
+    const body = {};
+    // Fields owned by .env stay there; sending them back would copy deployment
+    // config into settings.json and make the two disagree.
+    if (!env.base_url) body.base_url = $('#st-base').value.trim();
+    if (!env.model) body.model = $('#st-model').value.trim();
     const key = $('#st-key').value.trim();
-    if (key) body.api_key = key;
+    if (key && !env.has_key) body.api_key = key;
     try {
       state.settings = await api('/api/studio/config', { method: 'PUT', body: JSON.stringify(body) });
       $('#st-settings-panel').hidden = true;
