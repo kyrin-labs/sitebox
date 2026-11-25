@@ -88,6 +88,43 @@ pub fn definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "sols_import",
+                "description": "Copy a file the operator dropped into `<root>/imports/` into this site (images, data, logos). Use `sitebox_ls` after to confirm. Cannot read anywhere else on the machine.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "from": {"type": "string", "description": "path under imports/, e.g. field-notes/photo.jpg"},
+                        "to": {"type": "string", "description": "site-relative destination; default assets-raw/<file name>"}
+                    },
+                    "required": ["from"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sitebox_build",
+                "description": "Run the site's pipeline (image resize, data generation) now and return each step's status. A build writes into public/, so run it before checking or verifying.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sitebox_ls",
+                "description": "List files in the site (text and binary) with sizes. `sitebox_outline` only knows source files, so use this to see images under public/assets or anything else you or a tool wrote.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "dir": {"type": "string", "description": "site-relative folder, default the whole site"},
+                        "max": {"type": "integer", "description": "default 200"}
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sitebox_http",
                 "description": "Call a route on this site (localhost only) and return the status and body. Use it to test /api/ endpoints you just wrote — a 200 with the wrong JSON is still a bug.",
                 "parameters": {
@@ -1102,6 +1139,18 @@ pub async fn execute(
             }
         }
         "sitebox_read" => {
+            {
+                let path_key = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let key = format!("{thread_id}:{path_key}");
+                let mut reads = st.reads.lock().await;
+                let n = reads.entry(key).or_insert(0);
+                *n += 1;
+                if *n > 2 {
+                    bail!(
+                        "you have already read `{path_key}` twice this turn. Use sitebox_grep to                          find the exact anchor and send a patch instead of reading it again."
+                    );
+                }
+            }
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let p = site_path(&site.dir, path)?;
             let text = std::fs::read_to_string(&p)
@@ -1188,6 +1237,119 @@ pub async fn execute(
             // after auto-decompressing, so SB104 would fail on a correct server.
             let report = checks::run_http(&base, &st.check_client).await;
             Ok(json!({"ok": report.ok(), "base": base, "findings": report.findings}))
+        }
+        "sols_import" => {
+            let from = args
+                .get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim_start_matches('/');
+            if from.is_empty() || from.contains("..") {
+                bail!("`from` must be a path inside imports/");
+            }
+            let src = crate::util::safe_join(&st.root.join("imports"), from)
+                .ok_or_else(|| anyhow::anyhow!("bad path: {from}"))?;
+            if !src.is_file() {
+                bail!("imports/{from} does not exist; ask the operator to drop it there");
+            }
+            let size = std::fs::metadata(&src)?.len();
+            if size > 20 * 1024 * 1024 {
+                bail!("imports/{from} is {size} bytes; the limit is 20 MB");
+            }
+            let name = src
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let to = args
+                .get("to")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("assets-raw/{name}"));
+            let dest = site_path(&site.dir, &to)?;
+            if let Some(parent) = dest.parent() {
+                super::ensure_dir(parent)?;
+            }
+            std::fs::copy(&src, &dest)?;
+            Ok(json!({
+                "ok": true,
+                "path": to,
+                "bytes": size,
+                "next": "If this is a source image, add an images pipeline step in sitebox.toml and run sitebox_build.",
+            }))
+        }
+        "sitebox_build" => {
+            let steps = crate::pipeline::apply(&site.manifest, &st.root, false, None)?;
+            let failed: Vec<String> = steps
+                .iter()
+                .filter(|s| s.status == "fail" || s.status == "blocked")
+                .map(|s| format!("{} ({})", s.name, s.status))
+                .collect();
+            Ok(json!({
+                "ok": failed.is_empty(),
+                "steps": steps.iter().map(|s| json!({"name": s.name, "status": s.status, "ms": s.ms, "detail": s.detail})).collect::<Vec<_>>(),
+                "failed": failed,
+            }))
+        }
+        "sitebox_ls" => {
+            let dir = args
+                .get("dir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim_matches('/');
+            let max = args
+                .get("max")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200)
+                .clamp(1, 500) as usize;
+            let base = if dir.is_empty() {
+                site.dir.clone()
+            } else {
+                site_path(&site.dir, dir)?
+            };
+            if !base.is_dir() {
+                bail!("{dir} is not a folder in this site");
+            }
+            let mut out: Vec<Value> = Vec::new();
+            let mut stack = vec![(base, String::from(dir))];
+            while let Some((folder, prefix)) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&folder) else {
+                    continue;
+                };
+                for entry in rd.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name == "node_modules" || name == ".git" || name == "stage" {
+                        continue;
+                    }
+                    let rel = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{prefix}/{name}")
+                    };
+                    let md = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    if md.is_dir() {
+                        if out.len() < max {
+                            stack.push((entry.path(), rel.clone()));
+                            out.push(json!({"path": rel, "kind": "dir"}));
+                        }
+                    } else if out.len() < max {
+                        out.push(json!({"path": rel, "kind": "file", "bytes": md.len()}));
+                    }
+                    if out.len() >= max {
+                        break;
+                    }
+                }
+                if out.len() >= max {
+                    break;
+                }
+            }
+            out.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+            Ok(
+                json!({"ok": true, "dir": if dir.is_empty() { "." } else { dir }, "entries": out, "truncated": out.len() >= max}),
+            )
         }
         "sitebox_http" => {
             if !st.sup.is_running(&site.id).await {
@@ -1548,6 +1710,8 @@ A site that has to think, remember or call an API is a node site, not a mockup.
 - Listen on `0.0.0.0`, not `127.0.0.1`: the checks only see localhost, but the operator opens the site from another device on the LAN.
 - Keep state (threads, profiles, memory) in a JSON file under the site folder such as `data/store.json`, not under `public/`.
 - Some gateways need extra request headers. SiteBox passes them to node servers as `AI_HEADERS`, a JSON object; send them on every provider request.
+- Files the operator drops in `<root>/imports/` come in with `sols_import`; then a pipeline step (`sitebox_build`) can resize or convert them. Learn the manifest shape from the `sitebox-engine` skill.
+- `sitebox_outline` lists source files only; use `sitebox_ls` to see written assets (public/assets) or anything else on disk.
 - After a restart, call the route with `sitebox_http` and read the body. A 200 with `{{"error":...}}` or `live:false` is a bug, not success.
 - If the provider call fails, log the status and body and return the real error (a `live: false` with a canned reply hides the bug). Never fall back silently.
 - A file that does not exist yet is a creating patch: pass `create: true` and the whole content in `new`.

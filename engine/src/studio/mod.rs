@@ -57,6 +57,9 @@ pub struct StudioState {
     pub turn_log: Arc<Mutex<HashMap<String, Vec<std::time::Instant>>>>,
     /// Recently seen client nonces, so a double submit cannot open two turns.
     pub nonces: Arc<Mutex<HashMap<String, std::time::Instant>>>,
+    /// "thread:path" → reads this turn. A model that re-reads one 60 KB file a
+    /// dozen times burns the budget without learning anything new.
+    pub reads: Arc<Mutex<HashMap<String, u32>>>,
     pub events: broadcast::Sender<Value>,
 }
 
@@ -94,6 +97,7 @@ impl StudioState {
             busy: Default::default(),
             turns: Default::default(),
             turn_log: Default::default(),
+            reads: Default::default(),
             nonces: Default::default(),
             events,
         }
@@ -284,6 +288,11 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
     // are applied as they pass the checks. Later turns go through review. The
     // flag is per turn, so a request that arrives mid-cleanup cannot inherit it.
     let auto_apply = store::get(st, thread_id)?.site_id.trim().is_empty();
+    {
+        let mut r = st.reads.lock().await;
+        let prefix = format!("{thread_id}:");
+        r.retain(|k, _| !k.starts_with(&prefix));
+    }
     store::append_msg(st, thread_id, &store::Message::new("user", user_msg))?;
     if store::get(st, thread_id)?.title.is_empty() {
         store::set_title(st, thread_id, user_msg)?;
@@ -371,13 +380,12 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
                 Ok(v) => v,
                 Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
             };
-            if name == "sitebox_propose_patch"
-                && result
-                    .get("queued")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            {
-                patches_proposed += 1;
+            if name == "sitebox_propose_patch" {
+                patches_proposed += result
+                    .get("patches")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(usize::from(result.get("patch_id").is_some()));
             }
             emit(
                 &st.events,
@@ -402,11 +410,13 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
     // Running out of rounds is a failure the operator has to be able to read.
     // Ending the turn with a stack of tool cards and no sentence looks like a
     // broken panel, not like "I could not decide".
-    let note = if auto_apply {
+    let note = if auto_apply && patches_proposed > 0 {
         format!(
-            "สร้าง site แล้วและลง patch ไป {patches_proposed} จุด แต่ตรวจไม่ครบใน {max_rounds} รอบ — \
-             เปิดหน้าเว็บดูได้เลย ถ้าอยากให้เก็บรายละเอียดต่อ บอกได้"
+            "สร้าง site และลง patch ไป {patches_proposed} จุดแล้ว แต่ยังตรวจ/เก็บงานไม่ครบใน {max_rounds} รอบ — \
+             เปิดหน้าเว็บดูได้เลย บอกจุดที่อยากเก็บต่อได้"
         )
+    } else if auto_apply {
+        format!("สร้าง site แล้วแต่ยังไม่ได้เขียนหน้าใน {max_rounds} รอบ — บอกให้ทำต่อได้เลย")
     } else if patches_proposed > 0 {
         format!(
             "เสนอไปแล้ว {patches_proposed} patch ใน {max_rounds} รอบ — กด Apply ได้เลย \
