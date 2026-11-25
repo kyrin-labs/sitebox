@@ -35,20 +35,57 @@
       .replace(/"/g, '&quot;');
   }
 
-  /* Minimal, safe markdown: escape first, then only the constructs we emit. */
+  /* Minimal, safe markdown: escape first, then build blocks we control.
+     Enough for what an assistant actually emits: headings, lists, quotes,
+     fenced code, inline code, bold/italic and http(s) links. */
   function md(text) {
     let s = esc(text);
     const blocks = [];
-    s = s.replace(/```([\s\S]*?)```/g, (_, code) => {
+    s = s.replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, code) => {
       blocks.push(code);
-      return `\u0000${blocks.length - 1}\u0000`;
+      return `\n\u0000${blocks.length - 1}\u0000\n`;
     });
     s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
     s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|\n)(#{1,4}) (.+)/g, (_, pre, _h, t) => `${pre}<strong>${t}</strong>`);
-    s = s.replace(/\n/g, '<br>');
-    s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre class="st-code">${blocks[+i]}</pre>`);
-    return s;
+    s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?]|$)/g, '$1<em>$2</em>');
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+    const out = [];
+    let list = null;
+    const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+    for (const raw of s.split('\n')) {
+      const line = raw.replace(/\s+$/, '');
+      const code = line.match(/^\u0000(\d+)\u0000$/);
+      if (code) { closeList(); out.push(`<pre class="st-code">${blocks[+code[1]]}</pre>`); continue; }
+      if (!line.trim()) { closeList(); continue; }
+      let m;
+      if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+        closeList();
+        out.push(`<div class="st-h st-h${m[1].length}">${m[2]}</div>`);
+        continue;
+      }
+      if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+        if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; }
+        out.push(`<li>${m[1]}</li>`);
+        continue;
+      }
+      if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+        if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol'; }
+        out.push(`<li>${m[1]}</li>`);
+        continue;
+      }
+      if ((m = line.match(/^&gt;\s?(.*)$/))) {
+        closeList();
+        out.push(`<blockquote>${m[1]}</blockquote>`);
+        continue;
+      }
+      if (/^-{3,}$/.test(line.trim())) { closeList(); out.push('<hr>'); continue; }
+      closeList();
+      out.push(`<p>${line}</p>`);
+    }
+    closeList();
+    return out.join('');
   }
 
   async function api(path, opts) {
@@ -129,7 +166,13 @@
     $('#st-abort').addEventListener('click', abort);
     $('#st-form').addEventListener('submit', (e) => { e.preventDefault(); send(); });
     $('#st-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+      // One path only: Enter asks the form to submit, so the submit handler is
+      // the single place that calls send(). Calling send() here as well is how
+      // one keystroke becomes two turns.
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (e.target.form) e.target.form.requestSubmit();
+      }
     });
 
     refreshStatus();
@@ -288,13 +331,20 @@
   function handleEvent(ev) {
     switch (ev.type) {
       case 'text_delta': {
-        if (!state.streamEl) state.streamEl = addMsg('assistant', '');
-        state.streamEl.insertAdjacentHTML('beforeend', md(ev.text));
+        if (!state.streamEl) {
+          state.streamEl = addMsg('assistant', '');
+          state.streamText = '';
+        }
+        // Render the accumulated text, not the chunk: markdown spans deltas,
+        // and a per-chunk render breaks a list or a bold run into fragments.
+        state.streamText += ev.text;
+        state.streamEl.innerHTML = md(state.streamText);
         scroll();
         break;
       }
       case 'tool_start': {
         state.streamEl = null;
+        state.streamText = '';
         const label = String(ev.name || '').replace(/^sitebox_/, '');
         const d = addToolLine(ev.name, JSON.stringify(ev.args || {}));
         d.dataset.running = '1';
@@ -326,22 +376,26 @@
       }
       case 'patch':
         state.streamEl = null;
+        state.streamText = '';
         renderPatch(ev.patch);
         break;
       case 'done':
         state.busy = false;
         state.streamEl = null;
+        state.streamText = '';
         setBusy(false);
         break;
       case 'error':
         state.busy = false;
         state.streamEl = null;
+        state.streamText = '';
         setBusy(false);
         addMsg('error', ev.message || 'error');
         break;
       case 'aborted':
         state.busy = false;
         state.streamEl = null;
+        state.streamText = '';
         setBusy(false);
         break;
       case 'turn_start':
@@ -457,15 +511,29 @@
     const input = $('#st-input');
     const message = input.value.trim();
     if (!message || state.busy) return;
-    if (!state.thread) { await newThread(); if (!state.thread) return; }
-    input.value = '';
-    addMsg('user', message);
+    // Lock before the first await: two entry points (Enter, submit) must not
+    // both get past the guard while a new thread is being created.
     state.busy = true;
     setBusy(true);
+    input.value = '';
     try {
+      if (!state.thread) {
+        await newThread();
+        if (!state.thread) throw new Error('could not create a conversation');
+      }
+      addMsg('user', message);
       await api('/api/studio/chat', {
         method: 'POST',
-        body: JSON.stringify({ thread_id: state.thread, message }),
+        body: JSON.stringify({
+          thread_id: state.thread,
+          message,
+          // A nonce makes a double submit a no-op on the server instead of a
+          // second turn. Cheap insurance against a browser that fires both
+          // Enter and submit for one keystroke.
+          nonce: (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : String(Date.now()) + Math.random(),
+        }),
       });
     } catch (e) {
       addMsg('error', e.message);

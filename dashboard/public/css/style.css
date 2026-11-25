@@ -491,3 +491,22 @@ a:hover { text-decoration: underline; }
 /* A toast is feedback, not an overlay: keep it off the composer. */
 .st-toast { right: auto; left: 1.25rem; bottom: 1.25rem; max-width: 320px; }
 .st-msg--system { color: var(--text-2); font-size: 0.78rem; }
+
+/* Markdown blocks inside a chat bubble */
+.st-msg p { margin: 0 0 .45rem; }
+.st-msg p:last-child { margin-bottom: 0; }
+.st-msg ul, .st-msg ol { margin: .3rem 0 .5rem 1.15rem; padding: 0; }
+.st-msg li { margin: .12rem 0; }
+.st-msg .st-h { font-weight: 700; margin: .6rem 0 .3rem; line-height: 1.35; }
+.st-msg .st-h1 { font-size: 1.02rem; }
+.st-msg .st-h2 { font-size: .96rem; }
+.st-msg .st-h3, .st-msg .st-h4 { font-size: .9rem; }
+.st-msg blockquote {
+  margin: .3rem 0; padding: .2rem .6rem; color: var(--text-2);
+  border-left: 3px solid var(--border);
+}
+.st-msg hr { border: 0; border-top: 1px solid var(--border-l); margin: .6rem 0; }
+.st-msg a { color: var(--accent); text-decoration: underline; }
+.st-msg--user a { color: #fff; }
+.st-msg li::marker { color: var(--text-3); }
+.st-msg pre.st-code { white-space: pre-wrap; overflow-wrap: anywhere; }

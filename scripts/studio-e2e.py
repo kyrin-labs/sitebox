@@ -481,6 +481,17 @@ def main():
         check("site lock released after abort", s == 202, s)
         check("abort was fast", time.time() - t0 < 5, time.time() - t0)
 
+        print("── P4: one submission cannot open two turns")
+        s, th7, _ = req(base + "/api/studio/threads", "POST", {"site_id": "legacy"}, token=TOKEN)
+        nonce = "dup-" + str(random.random())
+        s1, b1, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th7["id"], "message": "legacy change", "nonce": nonce}, token=TOKEN)
+        s2, b2, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th7["id"], "message": "legacy change", "nonce": nonce}, token=TOKEN)
+        check("duplicate nonce is accepted and ignored", s1 == 202 and s2 == 202 and b2.get("duplicate") is True, (s1, b1, s2, b2))
+        time.sleep(3)
+        s, box, _ = req(base + f"/api/studio/threads/{th7['id']}/messages", token=TOKEN)
+        users = [m for m in box.get("messages", []) if m.get("role") == "user"]
+        check("only one user message stored", len(users) == 1, len(users))
+
         print("── P4: guards")
         s, body, _ = req(base + "/api/studio/sites/demo/outline?path=../sitebox.toml", token=TOKEN)
         check("traversal refused (400)", s == 400 and "escape" in json.dumps(body), (s, body))

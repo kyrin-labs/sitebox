@@ -48,9 +48,18 @@ pub fn router(state: DashState) -> Router {
         .route("/api/ports/check", get(port_check))
         .route("/api/doctor", get(doctor_route))
         .route("/api/studio/status", get(studio_status))
-        .route("/api/studio/config", get(studio_config_get).put(studio_config_put))
-        .route("/api/studio/threads", get(studio_threads).post(studio_thread_create))
-        .route("/api/studio/threads/{id}/messages", get(studio_thread_messages))
+        .route(
+            "/api/studio/config",
+            get(studio_config_get).put(studio_config_put),
+        )
+        .route(
+            "/api/studio/threads",
+            get(studio_threads).post(studio_thread_create),
+        )
+        .route(
+            "/api/studio/threads/{id}/messages",
+            get(studio_thread_messages),
+        )
         .route("/api/studio/events", get(studio_events))
         .route("/api/studio/chat", post(studio_chat))
         .route("/api/studio/abort", post(studio_abort))
@@ -615,7 +624,12 @@ async fn studio_guard(State(st): State<DashState>, req: Request, next: Next) -> 
         .studio
         .token
         .as_deref()
-        .map(|t| req.headers().get("x-studio-token").and_then(|v| v.to_str().ok()) == Some(t))
+        .map(|t| {
+            req.headers()
+                .get("x-studio-token")
+                .and_then(|v| v.to_str().ok())
+                == Some(t)
+        })
         .unwrap_or(false);
     let want = format!("studio_sid={}", st.studio.sid);
     let cookie_ok = req
@@ -665,7 +679,11 @@ async fn studio_config_put(State(st): State<DashState>, Json(body): Json<Value>)
     cfg.merge(&body);
     match cfg.save(&st.root) {
         Ok(()) => Json(cfg.public_json()).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("{e:#}")}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
     }
 }
 
@@ -680,12 +698,20 @@ async fn studio_threads(
 async fn studio_thread_create(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
     let site_id = body.get("site_id").and_then(|v| v.as_str()).unwrap_or("");
     if let Err(e) = studio::site_ref(&st.root, site_id) {
-        return (StatusCode::NOT_FOUND, Json(json!({"error": format!("{e:#}")}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("{e:#}")})),
+        )
+            .into_response();
     }
     let title = body.get("title").and_then(|v| v.as_str()).unwrap_or("");
     match studio::store::create(&st.studio, site_id, title) {
         Ok(t) => Json(t).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("{e:#}")}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
     }
 }
 
@@ -695,7 +721,11 @@ async fn studio_thread_messages(State(st): State<DashState>, Path(id): Path<Stri
             let msgs = studio::store::messages(&st.studio, &id).unwrap_or_default();
             Json(json!({"thread": t, "messages": msgs})).into_response()
         }
-        Err(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "no such thread"}))).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no such thread"})),
+        )
+            .into_response(),
     }
 }
 
@@ -720,29 +750,76 @@ async fn studio_events(
             }
         }
     };
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
     let thread_id = body.get("thread_id").and_then(|v| v.as_str()).unwrap_or("");
-    let message = body.get("message").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let message = body
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     if message.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "message is empty"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "message is empty"})),
+        )
+            .into_response();
     }
     if message.chars().count() > 8000 {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "message is too long (8000 characters)"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "message is too long (8000 characters)"})),
+        )
+            .into_response();
     }
     let thread = match studio::store::get(&st.studio, thread_id) {
         Ok(t) => t,
-        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"error": "no such thread"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "no such thread"})),
+            )
+                .into_response()
+        }
     };
     if !studio::config::Settings::load(&st.root).configured() {
-        return (StatusCode::CONFLICT, Json(json!({"error": "agent is not configured"}))).into_response();
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "agent is not configured"})),
+        )
+            .into_response();
+    }
+    // A duplicate nonce means the browser sent the same submission twice; the
+    // second one is accepted and ignored rather than opening a second turn.
+    if let Some(n) = body
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.is_empty())
+    {
+        let key = format!("{thread_id}:{n}");
+        let mut seen = st.studio.nonces.lock().await;
+        seen.retain(|_, t| t.elapsed().as_secs() < 120);
+        if seen.contains_key(&key) {
+            return (
+                StatusCode::ACCEPTED,
+                Json(json!({"ok": true, "duplicate": true, "thread_id": thread_id})),
+            )
+                .into_response();
+        }
+        seen.insert(key, std::time::Instant::now());
     }
     {
         let mut busy = st.studio.busy.lock().await;
         if !busy.insert(thread.site_id.clone()) {
-            return (StatusCode::CONFLICT, Json(json!({"error": format!("a turn is already running on {}", thread.site_id)}))).into_response();
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": format!("a turn is already running on {}", thread.site_id)})),
+            )
+                .into_response();
         }
     }
     {
@@ -754,21 +831,37 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
         entry.retain(|t| now.duration_since(*t).as_secs() < 3600);
         if entry.len() >= 60 {
             st.studio.busy.lock().await.remove(&thread.site_id);
-            return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error": "60 turns per hour on this site; wait before sending more"}))).into_response();
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error": "60 turns per hour on this site; wait before sending more"})),
+            )
+                .into_response();
         }
         entry.push(now);
     }
     let stc = st.studio.clone();
     let tid = thread_id.to_string();
     let msg = message.to_string();
-    let handle = tokio::spawn(async move { studio::run_turn(stc, tid, msg).await; });
-    st.studio.turns.lock().await.insert(thread_id.to_string(), handle);
-    (StatusCode::ACCEPTED, Json(json!({"ok": true, "thread_id": thread_id}))).into_response()
+    let handle = tokio::spawn(async move {
+        studio::run_turn(stc, tid, msg).await;
+    });
+    st.studio
+        .turns
+        .lock()
+        .await
+        .insert(thread_id.to_string(), handle);
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({"ok": true, "thread_id": thread_id})),
+    )
+        .into_response()
 }
 
 async fn studio_abort(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
     let thread_id = body.get("thread_id").and_then(|v| v.as_str()).unwrap_or("");
-    let site = studio::store::get(&st.studio, thread_id).map(|t| t.site_id).ok();
+    let site = studio::store::get(&st.studio, thread_id)
+        .map(|t| t.site_id)
+        .ok();
     if let Some(h) = st.studio.turns.lock().await.remove(thread_id) {
         h.abort();
     }
@@ -786,12 +879,22 @@ async fn studio_outline(
 ) -> Response {
     let site = match studio::site_ref(&st.root, &id) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::NOT_FOUND, Json(json!({"error": format!("{e:#}")}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("{e:#}")})),
+            )
+                .into_response()
+        }
     };
     if let Some(path) = q.get("path").filter(|p| !p.is_empty()) {
         return match studio::outline::items(&site.dir, path) {
             Ok(items) => Json(json!({"path": path, "items": items})).into_response(),
-            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": format!("{e:#}")}))).into_response(),
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("{e:#}")})),
+            )
+                .into_response(),
         };
     }
     let files = studio::outline::source_files(&site.dir, 40);
@@ -822,14 +925,22 @@ async fn studio_history(State(st): State<DashState>, Path(id): Path<String>) -> 
 async fn studio_apply(State(st): State<DashState>, Path(id): Path<String>) -> Response {
     match studio::apply::apply(&st.studio, &id).await {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::CONFLICT, Json(json!({"error": format!("{e:#}")}))).into_response(),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
     }
 }
 
 async fn studio_undo(State(st): State<DashState>, Path(id): Path<String>) -> Response {
     match studio::apply::undo(&st.studio, &id).await {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::CONFLICT, Json(json!({"error": format!("{e:#}")}))).into_response(),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
     }
 }
 

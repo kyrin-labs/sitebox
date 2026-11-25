@@ -53,6 +53,8 @@ pub struct StudioState {
     pub turns: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// Turn start times per site, for the hourly rate limit.
     pub turn_log: Arc<Mutex<HashMap<String, Vec<std::time::Instant>>>>,
+    /// Recently seen client nonces, so a double submit cannot open two turns.
+    pub nonces: Arc<Mutex<HashMap<String, std::time::Instant>>>,
     pub events: broadcast::Sender<Value>,
 }
 
@@ -90,6 +92,7 @@ impl StudioState {
             busy: Default::default(),
             turns: Default::default(),
             turn_log: Default::default(),
+            nonces: Default::default(),
             events,
         }
     }
