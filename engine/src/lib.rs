@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod pipeline;
 pub mod registry;
 pub mod serve;
+pub mod studio;
 pub mod supervisor;
 pub mod util;
 

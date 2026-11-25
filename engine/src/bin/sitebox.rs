@@ -319,12 +319,16 @@ async fn run(cli: Cli, root: PathBuf) -> Result<i32> {
         Cmd::Dashboard { port, ui } => {
             let port = port.unwrap_or(4445);
             let ui = ui.unwrap_or_else(|| root.join("dashboard/public"));
+            let sup = Arc::new(Supervisor::new(root.clone()));
+            let client = reqwest::Client::new();
+            let studio = sitebox_rs::studio::StudioState::new(root.clone(), sup.clone(), client.clone());
             let state = DashState {
                 root: root.clone(),
                 ui,
-                sup: Arc::new(Supervisor::new(root.clone())),
-                client: reqwest::Client::new(),
+                sup,
+                client,
                 registry_error: Default::default(),
+                studio,
             };
             dashboard::serve(port, state).await?;
             Ok(0)

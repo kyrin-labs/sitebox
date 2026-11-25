@@ -8,16 +8,19 @@ use anyhow::Result;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use crate::manifest::Manifest;
 use crate::registry::{validate_id, Site, SiteConfig};
+use crate::studio::{self, StudioState};
 use crate::supervisor::Supervisor;
 use crate::util;
 
@@ -28,6 +31,7 @@ pub struct DashState {
     pub sup: Arc<Supervisor>,
     pub client: reqwest::Client,
     pub registry_error: Arc<tokio::sync::Mutex<Option<String>>>,
+    pub studio: StudioState,
 }
 
 pub fn router(state: DashState) -> Router {
@@ -43,9 +47,22 @@ pub fn router(state: DashState) -> Router {
         .route("/api/sites/{id}", delete(remove))
         .route("/api/ports/check", get(port_check))
         .route("/api/doctor", get(doctor_route))
+        .route("/api/studio/status", get(studio_status))
+        .route("/api/studio/config", get(studio_config_get).put(studio_config_put))
+        .route("/api/studio/threads", get(studio_threads).post(studio_thread_create))
+        .route("/api/studio/threads/{id}/messages", get(studio_thread_messages))
+        .route("/api/studio/events", get(studio_events))
+        .route("/api/studio/chat", post(studio_chat))
+        .route("/api/studio/abort", post(studio_abort))
+        .route("/api/studio/sites/{id}/outline", get(studio_outline))
+        .route("/api/studio/sites/{id}/history", get(studio_history))
+        .route("/api/studio/sites/{id}/undo", post(studio_undo))
+        .route("/api/studio/patches/{id}/apply", post(studio_apply))
+        .route("/api/studio/shots/{site}/{file}", get(studio_shot_file))
         .fallback(static_ui)
         .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024))
         .layer(middleware::from_fn(cors))
+        .layer(middleware::from_fn_with_state(state.clone(), studio_guard))
         .with_state(state)
 }
 
@@ -584,6 +601,251 @@ fn attr(tag: &str, name: &str) -> Option<String> {
     v.map(|s| s.trim().to_string())
 }
 
+// ── Studio ──────────────────────────────────────────────────────────────────
+
+/// Studio has its own door: a per-process cookie for the dashboard UI, or an
+/// `x-studio-token` for scripts when `STUDIO_TOKEN` is set. The rest of the
+/// dashboard keeps its existing (unauthenticated) LAN contract, but nothing that
+/// can write a site answers without one of these.
+async fn studio_guard(State(st): State<DashState>, req: Request, next: Next) -> Response {
+    if !req.uri().path().starts_with("/api/studio/") {
+        return next.run(req).await;
+    }
+    let header_ok = st
+        .studio
+        .token
+        .as_deref()
+        .map(|t| req.headers().get("x-studio-token").and_then(|v| v.to_str().ok()) == Some(t))
+        .unwrap_or(false);
+    let want = format!("studio_sid={}", st.studio.sid);
+    let cookie_ok = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|c| c.split(';').any(|p| p.trim() == want))
+        .unwrap_or(false);
+    if header_ok || cookie_ok {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "studio session required"})),
+        )
+            .into_response()
+    }
+}
+
+async fn studio_status(State(st): State<DashState>) -> Response {
+    let cfg = studio::config::Settings::load(&st.root);
+    let sites: Vec<Value> = match SiteConfig::read(&st.root) {
+        Ok(c) => c
+            .sites
+            .iter()
+            .filter(|s| st.root.join(&s.path).is_dir())
+            .map(|s| json!({"id": s.id, "name": s.name, "port": s.port}))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    Json(json!({
+        "settings": cfg.public_json(),
+        "browser": studio::shot::browser().map(|p| p.display().to_string()),
+        "sites": sites,
+        "data_dir": st.studio.data,
+    }))
+    .into_response()
+}
+
+async fn studio_config_get(State(st): State<DashState>) -> Response {
+    let cfg = studio::config::Settings::load(&st.root);
+    Json(cfg.public_json()).into_response()
+}
+
+async fn studio_config_put(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
+    let mut cfg = studio::config::Settings::load(&st.root);
+    cfg.merge(&body);
+    match cfg.save(&st.root) {
+        Ok(()) => Json(cfg.public_json()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("{e:#}")}))).into_response(),
+    }
+}
+
+async fn studio_threads(
+    State(st): State<DashState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let list = studio::store::list(&st.studio, q.get("site").map(|s| s.as_str()));
+    Json(list).into_response()
+}
+
+async fn studio_thread_create(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
+    let site_id = body.get("site_id").and_then(|v| v.as_str()).unwrap_or("");
+    if let Err(e) = studio::site_ref(&st.root, site_id) {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": format!("{e:#}")}))).into_response();
+    }
+    let title = body.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    match studio::store::create(&st.studio, site_id, title) {
+        Ok(t) => Json(t).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("{e:#}")}))).into_response(),
+    }
+}
+
+async fn studio_thread_messages(State(st): State<DashState>, Path(id): Path<String>) -> Response {
+    match studio::store::get(&st.studio, &id) {
+        Ok(t) => {
+            let msgs = studio::store::messages(&st.studio, &id).unwrap_or_default();
+            Json(json!({"thread": t, "messages": msgs})).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, Json(json!({"error": "no such thread"}))).into_response(),
+    }
+}
+
+async fn studio_events(
+    State(st): State<DashState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let want = q.get("thread").cloned().unwrap_or_default();
+    let mut rx = st.studio.events.subscribe();
+    let stream = async_stream::stream! {
+        yield Ok::<Event, Infallible>(Event::default().data(json!({"type":"hello"}).to_string()));
+        loop {
+            match rx.recv().await {
+                Ok(v) => {
+                    let tid = v.get("thread").and_then(|t| t.as_str()).unwrap_or("");
+                    if want.is_empty() || tid == want {
+                        yield Ok(Event::default().data(v.to_string()));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+}
+
+async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
+    let thread_id = body.get("thread_id").and_then(|v| v.as_str()).unwrap_or("");
+    let message = body.get("message").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if message.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "message is empty"}))).into_response();
+    }
+    if message.chars().count() > 8000 {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "message is too long (8000 characters)"}))).into_response();
+    }
+    let thread = match studio::store::get(&st.studio, thread_id) {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"error": "no such thread"}))).into_response(),
+    };
+    if !studio::config::Settings::load(&st.root).configured() {
+        return (StatusCode::CONFLICT, Json(json!({"error": "agent is not configured"}))).into_response();
+    }
+    {
+        let mut busy = st.studio.busy.lock().await;
+        if !busy.insert(thread.site_id.clone()) {
+            return (StatusCode::CONFLICT, Json(json!({"error": format!("a turn is already running on {}", thread.site_id)}))).into_response();
+        }
+    }
+    {
+        // 60 turns per site per hour. A loop that retries on failure is the
+        // normal way to burn a budget; this is the cheap guard, not a quota.
+        let mut log = st.studio.turn_log.lock().await;
+        let now = std::time::Instant::now();
+        let entry = log.entry(thread.site_id.clone()).or_default();
+        entry.retain(|t| now.duration_since(*t).as_secs() < 3600);
+        if entry.len() >= 60 {
+            st.studio.busy.lock().await.remove(&thread.site_id);
+            return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error": "60 turns per hour on this site; wait before sending more"}))).into_response();
+        }
+        entry.push(now);
+    }
+    let stc = st.studio.clone();
+    let tid = thread_id.to_string();
+    let msg = message.to_string();
+    let handle = tokio::spawn(async move { studio::run_turn(stc, tid, msg).await; });
+    st.studio.turns.lock().await.insert(thread_id.to_string(), handle);
+    (StatusCode::ACCEPTED, Json(json!({"ok": true, "thread_id": thread_id}))).into_response()
+}
+
+async fn studio_abort(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
+    let thread_id = body.get("thread_id").and_then(|v| v.as_str()).unwrap_or("");
+    let site = studio::store::get(&st.studio, thread_id).map(|t| t.site_id).ok();
+    if let Some(h) = st.studio.turns.lock().await.remove(thread_id) {
+        h.abort();
+    }
+    if let Some(s) = site {
+        st.studio.busy.lock().await.remove(&s);
+    }
+    studio::emit(&st.studio.events, thread_id, json!({"type":"aborted"}));
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn studio_outline(
+    State(st): State<DashState>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let site = match studio::site_ref(&st.root, &id) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::NOT_FOUND, Json(json!({"error": format!("{e:#}")}))).into_response(),
+    };
+    if let Some(path) = q.get("path").filter(|p| !p.is_empty()) {
+        return match studio::outline::items(&site.dir, path) {
+            Ok(items) => Json(json!({"path": path, "items": items})).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": format!("{e:#}")}))).into_response(),
+        };
+    }
+    let files = studio::outline::source_files(&site.dir, 40);
+    let main = ["public/index.html", "index.html"]
+        .iter()
+        .find(|p| site.dir.join(p).is_file())
+        .map(|p| p.to_string());
+    let items = main
+        .as_ref()
+        .and_then(|p| studio::outline::items(&site.dir, p).ok())
+        .unwrap_or_default();
+    Json(json!({
+        "site": site.id,
+        "kind": site.kind,
+        "files": files,
+        "main": main,
+        "items": items,
+    }))
+    .into_response()
+}
+
+async fn studio_history(State(st): State<DashState>, Path(id): Path<String>) -> Response {
+    let snaps = studio::snapshot::list(&st.studio, &id);
+    let patches = studio::store::list_patches(&st.studio, &id, 30);
+    Json(json!({"snapshots": snaps, "patches": patches})).into_response()
+}
+
+async fn studio_apply(State(st): State<DashState>, Path(id): Path<String>) -> Response {
+    match studio::apply::apply(&st.studio, &id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({"error": format!("{e:#}")}))).into_response(),
+    }
+}
+
+async fn studio_undo(State(st): State<DashState>, Path(id): Path<String>) -> Response {
+    match studio::apply::undo(&st.studio, &id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({"error": format!("{e:#}")}))).into_response(),
+    }
+}
+
+async fn studio_shot_file(
+    State(st): State<DashState>,
+    Path((site, file)): Path<(String, String)>,
+) -> Response {
+    let Some(p) = util::safe_join(&st.studio.data.join("shots").join(&site), &file) else {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    };
+    match tokio::fs::read(&p).await {
+        Ok(b) => ([(header::CONTENT_TYPE, "image/png")], b).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+    }
+}
+
 async fn static_ui(State(st): State<DashState>, req: Request) -> Response {
     static_ui_file(&st, req).await
 }
@@ -613,7 +875,18 @@ async fn static_ui_file(st: &DashState, req: Request) -> Response {
     let mime = mime_guess::from_path(&fp)
         .first_or_octet_stream()
         .to_string();
-    ([(header::CONTENT_TYPE, mime)], body).into_response()
+    // Every UI response carries the Studio session cookie: the fallback serves
+    // index.html for extensionless paths too, and a panel that answers 401
+    // because the user opened /sites instead of / is a bug, not a security win.
+    let cookie = format!(
+        "studio_sid={}; HttpOnly; SameSite=Strict; Path=/",
+        st.studio.sid
+    );
+    (
+        [(header::CONTENT_TYPE, mime), (header::SET_COOKIE, cookie)],
+        body,
+    )
+        .into_response()
 }
 
 /// Run the dashboard listener.
