@@ -108,3 +108,63 @@ pub async fn capture(
     }
     Err(anyhow::anyhow!("screenshot failed: {last_err}")).context("chromium did not produce a file")
 }
+
+/// Render a URL in the same browser used for screenshots and return the DOM
+/// after scripts have run. Static fetching sees an empty shell on JS apps; this
+/// is what lets the agent read a modern site instead of guessing from snippets.
+pub async fn dump_dom(url: &str) -> Result<String> {
+    dump_dom_at(url, 1280, 900).await
+}
+
+/// Same, with the viewport the measurement is about. Mobile overflow is a
+/// different page than desktop, so the width is not optional for a probe.
+pub async fn dump_dom_at(url: &str, width: u32, height: u32) -> Result<String> {
+    let Some(chrome) = browser() else {
+        bail!("no Chromium/Chrome found on this host (set CHROME to enable rendering)");
+    };
+    // Headless Chrome refuses to go narrower than 500 CSS pixels; asking for
+    // 375 silently gives 500. The probe reports the viewport it actually got so
+    // nobody draws conclusions from a width the browser never rendered.
+    let size = format!("--window-size={},{height}", width.max(500));
+    let mut last_err = String::new();
+    for headless in ["--headless=new", "--headless"] {
+        let out = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::process::Command::new(&chrome)
+                .args([
+                    headless,
+                    "--disable-gpu",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--virtual-time-budget=6000",
+                    &size,
+                    "--dump-dom",
+                    url,
+                ])
+                .output(),
+        )
+        .await;
+        match out {
+            Ok(Ok(o)) if o.status.success() => {
+                let dom = String::from_utf8_lossy(&o.stdout).to_string();
+                if dom.len() > 200 {
+                    return Ok(dom);
+                }
+                last_err = format!("{headless} produced {} bytes", dom.len());
+            }
+            Ok(Ok(o)) => {
+                last_err = format!(
+                    "{headless} exit {}: {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr)
+                        .chars()
+                        .take(200)
+                        .collect::<String>()
+                )
+            }
+            Ok(Err(e)) => last_err = format!("spawn {}: {e}", chrome.display()),
+            Err(_) => last_err = format!("{headless} timed out after 30s"),
+        }
+    }
+    bail!("render failed for {url}: {last_err}")
+}

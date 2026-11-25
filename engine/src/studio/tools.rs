@@ -78,9 +78,25 @@ pub fn definitions() -> Value {
                     "type": "object",
                     "properties": {
                         "url": {"type": "string"},
-                        "max_chars": {"type": "integer", "description": "500-20000, default 6000"}
+                        "max_chars": {"type": "integer", "description": "500-20000, default 6000"},
+                        "render": {"type": "boolean", "description": "run the page in headless Chromium first (for JS apps)"}
                     },
                     "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sitebox_probe",
+                "description": "Render a page at a given width and report layout numbers: elements wider than the viewport, clipped scroll containers, and text below 12px. Use it at width 375 before calling a page finished.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "route": {"type": "string", "description": "path on the site, default /"},
+                        "width": {"type": "integer", "description": "default 500 (the headless browser minimum), max 1440"},
+                        "height": {"type": "integer", "description": "default 900"}
+                    }
                 }
             }
         },
@@ -575,6 +591,10 @@ async fn web_fetch(args: &Value) -> Result<Value> {
         .and_then(|v| v.as_u64())
         .unwrap_or(6000)
         .clamp(500, 20000) as usize;
+    let want_render = args
+        .get("render")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent("SiteBox-Sols/1.0")
@@ -615,11 +635,38 @@ async fn web_fetch(args: &Value) -> Result<Value> {
         bail!("{url} is {} bytes; the limit is 2 MB", bytes.len());
     }
     let body = String::from_utf8_lossy(&bytes);
-    let text = if ctype.contains("html") {
+    let is_html = ctype.contains("html");
+    let mut text = if is_html {
         html_to_text(&body)
     } else {
         body.to_string()
     };
+    let mut rendered = false;
+
+    // A JS app ships an empty shell; the static text is a few words of title.
+    // Render it once instead of fetching the same page again and hoping.
+    if is_html && (want_render || text.chars().count() < 400) {
+        match shot::dump_dom(url.as_str()).await {
+            Ok(dom) => {
+                let page = html_to_text(&dom);
+                if page.chars().count() > text.chars().count() {
+                    text = page;
+                    rendered = true;
+                }
+            }
+            Err(e) if want_render => {
+                return Ok(json!({
+                    "ok": false,
+                    "url": url.as_str(),
+                    "error": format!("{e:#}"),
+                    "note": "The static text is below; rendering needs Chromium on the host.",
+                    "text": text.chars().take(max).collect::<String>(),
+                }));
+            }
+            Err(_) => {}
+        }
+    }
+
     let total = text.chars().count();
     let clipped: String = text.chars().take(max).collect();
     Ok(json!({
@@ -627,6 +674,7 @@ async fn web_fetch(args: &Value) -> Result<Value> {
         "url": url.as_str(),
         "chars": total,
         "truncated": total > max,
+        "rendered": rendered,
         "text": clipped,
     }))
 }
@@ -717,6 +765,22 @@ fn html_to_text(html: &str) -> String {
         compact.push('\n');
     }
     compact.trim().to_string()
+}
+
+/// Pull the probe's JSON out of the rendered DOM and undo the HTML escaping
+/// the serializer applied to its text node.
+fn extract_probe(dom: &str) -> Option<Value> {
+    let start = dom.find("id=\"__sols_probe\"")?;
+    let open = dom[start..].find('>')? + start + 1;
+    let close = dom[open..].find("</pre>")? + open;
+    let raw = &dom[open..close];
+    let decoded = raw
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    serde_json::from_str(&decoded).ok()
 }
 
 pub async fn execute(
@@ -938,6 +1002,49 @@ pub async fn execute(
             let report = checks::run_http(&base, &st.check_client).await;
             Ok(json!({"ok": report.ok(), "base": base, "findings": report.findings}))
         }
+        "sitebox_probe" => {
+            if !st.sup.is_running(&site.id).await {
+                bail!(
+                    "site {} is not running; start it before probing layout",
+                    site.id
+                );
+            }
+            let route = args.get("route").and_then(|v| v.as_str()).unwrap_or("/");
+            let route = if route.starts_with('/') {
+                route.to_string()
+            } else {
+                format!("/{route}")
+            };
+            let width = args
+                .get("width")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(375)
+                .clamp(320, 1440) as u32;
+            let height = args
+                .get("height")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(900)
+                .clamp(480, 2000) as u32;
+            let join = if route.contains('?') { '&' } else { '?' };
+            let url = format!(
+                "http://127.0.0.1:{}{route}{join}sols_probe=1",
+                site.manifest.site.port
+            );
+            let dom = shot::dump_dom_at(&url, width, height).await?;
+            let found = extract_probe(&dom).ok_or_else(|| {
+                anyhow::anyhow!("the probe script did not run; is this page served by SiteBox?")
+            })?;
+            Ok(json!({
+                "ok": true,
+                "url": url,
+                "viewport": found.get("viewport"),
+                "doc_width": found.get("doc_width"),
+                "overflow": found.get("overflow").cloned().unwrap_or(json!([])),
+                "clipped": found.get("clipped").cloned().unwrap_or(json!([])),
+                "small_text": found.get("small_text").cloned().unwrap_or(json!([])),
+                "note": "Anything in `overflow` or `clipped` is a visible bug at this width; `small_text` lists text under 12px.",
+            }))
+        }
         "sitebox_shot" => {
             let width = args.get("width").and_then(|v| v.as_u64()).unwrap_or(1440) as u32;
             let height = args.get("height").and_then(|v| v.as_u64()).unwrap_or(900) as u32;
@@ -1104,9 +1211,9 @@ Work the way SiteBox's own agent does: read the skill that owns the task, plan i
 
 ## How you work
 1. Say what the site is in one sentence.
-2. Read `sitebox-design` before you choose anything visual, and `sitebox-create` when the site is more than one page.
+2. Read `sitebox-design` before you choose anything visual, and `sitebox-create` when the site is more than one page. Two skills at most; never read the same one twice.
 3. Call `sols_plan` with 3-5 steps before the first action, then update it as steps move between pending, doing and done.
-4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Choose `id` and `name` yourself and say what you chose.
+4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Do not interview the operator when the request is already clear: make the reasonable choice, say it in one line, and build. Choose `id` and `name` yourself and say what you chose.
 5. `sols_create_site` writes the folder, manifest, starter page and registry entry, picks a free port, starts the site and binds this conversation to it. It already starts the site: do not call `sitebox_site_start` afterwards. A static site serves files from disk, so a patch needs no restart either.
 6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
 
@@ -1123,6 +1230,10 @@ You cannot write files except through `sols_create_site` (once, before a site ex
 - Cite the result URL you used. Snippets are search results, not verified facts; if the search returns nothing, say so in one line instead of guessing.
 - `sols_fetch` opens one result when its snippet is not enough. Only fetch a URL the request is about or a search returned.
 - You do have search. Never tell the operator you have no search tool.
+- Before you call a page finished, run `sitebox_probe` at width 500 (the browser minimum). Anything it reports as wider than the viewport, clipped, or under 12px is a bug: fix it and probe again.
+- Research budget: at most 3 searches and 4 fetches before you act. A JS app returns a shell; fetch it once with \`render\`: true instead of touring ten URLs.
+- When the operator asks for a site that emulates a product, build the product's own surface (the chat panel, the character grid, the flow a user would touch), never an article about it. Use a new brand name and your own copy; never reuse the reference's name, logo or screenshots.
+
 
 ## Language
 Answer in the language the operator used, and only that language. Never mix scripts: a Chinese or Japanese character inside a Thai or English sentence is a bug, not a style.
@@ -1280,4 +1391,22 @@ fn glob_match(pat: &str, s: &str) -> bool {
         }
     }
     dp[n][m]
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::extract_probe;
+
+    #[test]
+    fn reads_the_probe_payload_out_of_a_dom() {
+        let dom = r#"<html><body><p>x</p><pre id="__sols_probe">{"viewport":500,"clipped":[],"small_text":[{"el":"p","px":11.5}]}</pre></body></html>"#;
+        let v = extract_probe(dom).expect("payload");
+        assert_eq!(v["viewport"], 500);
+        assert_eq!(v["small_text"][0]["px"], 11.5);
+
+        // The serializer escapes quotes inside the text node.
+        let escaped = r#"<pre id="__sols_probe">{&quot;viewport&quot;:375}</pre>"#;
+        assert_eq!(extract_probe(escaped).unwrap()["viewport"], 375);
+        assert!(extract_probe("<html></html>").is_none());
+    }
 }

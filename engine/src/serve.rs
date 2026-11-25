@@ -124,7 +124,12 @@ async fn handle(State(st): State<Arc<ServeState>>, req: Request) -> Response {
         }
         return not_found(&path);
     }
-    serve_static(&st, &path, req.method(), req.headers()).await
+    let probe = req
+        .uri()
+        .query()
+        .map(|q| q.split('&').any(|p| p == "sols_probe=1"))
+        .unwrap_or(false);
+    serve_static(&st, &path, req.method(), req.headers(), probe).await
 }
 
 async fn serve_static(
@@ -132,6 +137,7 @@ async fn serve_static(
     path: &str,
     method: &Method,
     headers: &HeaderMap,
+    probe: bool,
 ) -> Response {
     let head_only = method == Method::HEAD;
     if method != Method::GET && !head_only {
@@ -159,14 +165,14 @@ async fn serve_static(
             let idx = st.root.join("index.html");
             if let Ok(m) = tokio::fs::metadata(&idx).await {
                 if m.is_file() {
-                    return file_response(st, &idx, &m, headers, head_only).await;
+                    return file_response(st, &idx, &m, headers, head_only, probe).await;
                 }
             }
         }
         return not_found(path);
     };
 
-    file_response(st, &fp, &md, headers, head_only).await
+    file_response(st, &fp, &md, headers, head_only, probe).await
 }
 
 async fn file_response(
@@ -175,6 +181,7 @@ async fn file_response(
     md: &std::fs::Metadata,
     headers: &HeaderMap,
     head_only: bool,
+    probe: bool,
 ) -> Response {
     let size = md.len();
     let mtime = md
@@ -203,7 +210,7 @@ async fn file_response(
     if mime_raw.eq_ignore_ascii_case("text/html") {
         if let Some(cfg) = &st.sols {
             if let Ok(raw) = tokio::fs::read(fp).await {
-                return sols_html(st, &raw, md, headers, head_only, cfg);
+                return sols_html(st, &raw, md, headers, head_only, cfg, probe);
             }
         }
     }
@@ -308,6 +315,48 @@ async fn file_response(
 ///
 /// Inline script + a tiny external file keeps the site's own markup untouched:
 /// the file on disk stays byte-identical, and only this response is different.
+/// Measures the served page in the browser that fetched it. The agent cannot
+/// see a screenshot, so it gets numbers instead: overflow, clipped scroll
+/// containers and text below the readable floor.
+const PROBE_JS: &str = r#"
+(function(){
+  function path(el){
+    var s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    var c = (el.className || '').toString().trim().split(/\s+/).filter(Boolean).slice(0,2);
+    if (c.length) s += '.' + c.join('.');
+    return s;
+  }
+  var vw = window.innerWidth;
+  var out = {viewport: vw, height: window.innerHeight,
+             doc_width: document.documentElement.scrollWidth,
+             overflow: [], clipped: [], small_text: []};
+  var all = document.querySelectorAll('body *');
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i], r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (r.width === 0 || r.height === 0 || cs.visibility === 'hidden' || cs.display === 'none') continue;
+    // Screen-reader-only helpers are clipped on purpose; reporting them as
+    // bugs teaches the agent to break accessibility.
+    var cls = (el.className || '').toString();
+    if (/(^|\s)(sr-only|visually-hidden|screen-reader-text)(\s|$)/.test(cls)) continue;
+    if ((r.right > vw + 1 || r.left < -1) && out.overflow.length < 12) {
+      out.overflow.push({el: path(el), left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width)});
+    }
+    if (el.clientWidth > 8 && el.scrollWidth > el.clientWidth + 1 && (cs.overflowX === 'hidden' || cs.overflowX === 'clip') && out.clipped.length < 8) {
+      out.clipped.push({el: path(el), scroll: el.scrollWidth, client: el.clientWidth});
+    }
+    var fs = parseFloat(cs.fontSize);
+    if (fs && fs < 12 && (el.textContent || '').trim().length && out.small_text.length < 8) {
+      out.small_text.push({el: path(el), px: Math.round(fs * 10) / 10});
+    }
+  }
+  var pre = document.createElement('pre');
+  pre.id = '__sols_probe';
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+})();
+"#;
+
 fn sols_html(
     st: &ServeState,
     raw: &[u8],
@@ -315,14 +364,22 @@ fn sols_html(
     headers: &HeaderMap,
     head_only: bool,
     cfg: &SolsCfg,
+    probe: bool,
 ) -> Response {
     let html = String::from_utf8_lossy(raw);
     let site = serde_json::to_string(&st.site_id).unwrap_or_else(|_| "\"\"".to_string());
-    let snippet = format!(
+    let mut snippet = format!(
         "<script>window.__SOLS={{\"site\":{site},\"port\":{},\"v\":1}};</script>\
          <script src=\"/__sols/widget.js\" defer></script>",
         cfg.dashboard_port
     );
+    if probe {
+        // Inline on purpose: the probe is a one-off measurement, not an asset
+        // worth a route, and it must not be cached with the normal document.
+        snippet.push_str("<script>");
+        snippet.push_str(PROBE_JS);
+        snippet.push_str("</script>");
+    }
     // `to_ascii_lowercase` preserves byte offsets for ASCII, so the index is
     // valid in the original UTF-8 string.
     let out = match html.to_ascii_lowercase().rfind("</body>") {
@@ -338,7 +395,10 @@ fn sols_html(
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let etag = format!("\"{size:x}-{mtime:x}-sols1\"");
+    let etag = format!(
+        "\"{size:x}-{mtime:x}-sols1{}\"",
+        if probe { "p" } else { "" }
+    );
 
     let mut h = HeaderMap::new();
     h.insert(
