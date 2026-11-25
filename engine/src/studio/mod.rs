@@ -234,8 +234,8 @@ pub fn site_path(site_dir: &Path, rel: &str) -> Result<PathBuf> {
 
 /// Run one assistant turn: model → tools → model, until it stops calling tools.
 pub async fn run_turn(st: StudioState, thread_id: String, user_msg: String) {
-    let site_id = match store::get(&st, &thread_id) {
-        Ok(t) => t.site_id,
+    let thread = match store::get(&st, &thread_id) {
+        Ok(t) => t,
         Err(e) => {
             emit(
                 &st.events,
@@ -245,24 +245,44 @@ pub async fn run_turn(st: StudioState, thread_id: String, user_msg: String) {
             return;
         }
     };
-    if let Err(e) = run_turn_inner(&st, &thread_id, &site_id, &user_msg).await {
+    let key = lock_key(&thread);
+    if let Err(e) = run_turn_inner(&st, &thread_id, &user_msg).await {
         emit(
             &st.events,
             &thread_id,
             json!({"type":"error","message":format!("{e:#}")}),
         );
     }
-    st.busy.lock().await.remove(&site_id);
+    st.busy.lock().await.remove(&key);
     st.turns.lock().await.remove(&thread_id);
 }
 
-async fn run_turn_inner(
-    st: &StudioState,
-    thread_id: &str,
-    site_id: &str,
-    user_msg: &str,
-) -> Result<()> {
-    let site = site_ref(&st.root, site_id)?;
+/// One turn per site. A conversation without a site (it is creating one) locks
+/// on its own thread id, so it cannot block a site conversation and vice versa.
+pub fn lock_key(thread: &store::Thread) -> String {
+    if thread.site_id.trim().is_empty() {
+        format!("thread:{}", thread.id)
+    } else {
+        thread.site_id.clone()
+    }
+}
+
+/// The site a conversation is bound to right now. It can change mid-turn:
+/// `sols_create_site` rebinds the thread, and the tools after it must see the
+/// new site rather than the one that existed when the turn started.
+fn current_site(st: &StudioState, thread_id: &str) -> Result<Option<SiteRef>> {
+    let t = store::get(st, thread_id)?;
+    if t.site_id.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(site_ref(&st.root, &t.site_id)?))
+}
+
+async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Result<()> {
+    // A turn that starts with no site is the one that creates it; its patches
+    // are applied as they pass the checks. Later turns go through review. The
+    // flag is per turn, so a request that arrives mid-cleanup cannot inherit it.
+    let auto_apply = store::get(st, thread_id)?.site_id.trim().is_empty();
     store::append_msg(st, thread_id, &store::Message::new("user", user_msg))?;
     if store::get(st, thread_id)?.title.is_empty() {
         store::set_title(st, thread_id, user_msg)?;
@@ -273,14 +293,18 @@ async fn run_turn_inner(
     if !settings.configured() {
         bail!("agent is not configured: set base URL and model in Studio settings");
     }
-    let max_rounds = settings.max_rounds.unwrap_or(12).clamp(1, 20);
+    // Creating a site is a bigger piece of work than one edit (scaffold, read,
+    // several patches, checks, screenshot), so that turn gets a higher ceiling.
+    let base = settings.max_rounds.unwrap_or(12);
+    let max_rounds = if auto_apply { base.max(18) } else { base }.clamp(1, 24);
     let tools = tools::definitions();
     let mut tokens_in: u64 = 0;
     let mut tokens_out: u64 = 0;
     let mut patches_proposed = 0usize;
 
     for round in 0..max_rounds {
-        let messages = build_messages(st, thread_id, &site)?;
+        let site = current_site(st, thread_id)?;
+        let messages = build_messages(st, thread_id, site.as_ref())?;
         let out = llm::stream_chat(st, &settings, messages, tools.clone(), thread_id).await?;
         tokens_in += out.tokens_in;
         tokens_out += out.tokens_out;
@@ -330,7 +354,11 @@ async fn run_turn_inner(
                 thread_id,
                 json!({"type":"tool_start","name":name,"args":args,"call_id":call_id}),
             );
-            let result = match tools::execute(st, &site, thread_id, name, &args).await {
+            let result = match site.as_ref() {
+                Some(s) => tools::execute(st, s, thread_id, name, &args, auto_apply).await,
+                None => tools::execute_unbound(st, thread_id, name, &args).await,
+            };
+            let result = match result {
                 Ok(v) => v,
                 Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
             };
@@ -365,7 +393,12 @@ async fn run_turn_inner(
     // Running out of rounds is a failure the operator has to be able to read.
     // Ending the turn with a stack of tool cards and no sentence looks like a
     // broken panel, not like "I could not decide".
-    let note = if patches_proposed > 0 {
+    let note = if auto_apply {
+        format!(
+            "สร้าง site แล้วและลง patch ไป {patches_proposed} จุด แต่ตรวจไม่ครบใน {max_rounds} รอบ — \
+             เปิดหน้าเว็บดูได้เลย ถ้าอยากให้เก็บรายละเอียดต่อ บอกได้"
+        )
+    } else if patches_proposed > 0 {
         format!(
             "เสนอไปแล้ว {patches_proposed} patch ใน {max_rounds} รอบ — กด Apply ได้เลย \
              แล้วบอก \"ต่อ\" เพื่อทำไฟล์ที่เหลือ (ถ้ามี)"
@@ -410,7 +443,7 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
-fn build_messages(st: &StudioState, thread_id: &str, site: &SiteRef) -> Result<Vec<Value>> {
+fn build_messages(st: &StudioState, thread_id: &str, site: Option<&SiteRef>) -> Result<Vec<Value>> {
     let page = store::get(st, thread_id).ok().and_then(|t| t.page);
     let mut out = vec![json!({
         "role": "system",

@@ -156,6 +156,31 @@ class MockLLM(BaseHTTPRequestHandler):
             self._stream("slow answer", None)
             return
 
+        if "create a site" in user_text:
+            if n == 0:
+                self._stream("Reading the creation skill.", {"name": "sols_skill", "arguments": json.dumps({"name": "sitebox-design"})})
+            elif n == 1:
+                args = {"id": "fresh", "name": "Fresh Site", "description": "A test site"}
+                self._stream("Creating it.", {"name": "sols_create_site", "arguments": json.dumps(args)})
+            elif n == 2:
+                args = {"path": "public/index.html", "old": "<p>A test site</p>",
+                        "new": "<p>A test site, built.</p>", "count": 1,
+                        "reason": "build the starter page"}
+                self._stream("Building the page.", {"name": "sitebox_propose_patch", "arguments": json.dumps(args)})
+            else:
+                self._stream("Created it; the conversation is bound to fresh now.", None)
+            return
+
+        if "rename fresh" in user_text:
+            if n == 0:
+                args = {"path": "public/index.html", "old": "<h1>Fresh Site</h1>",
+                        "new": "<h1>Fresh Renamed</h1>", "count": 1,
+                        "reason": "rename the heading"}
+                self._stream("Proposing the rename.", {"name": "sitebox_propose_patch", "arguments": json.dumps(args)})
+            else:
+                self._stream("Proposed the rename.", None)
+            return
+
         if "rollback" in user_text:
             if n == 0:
                 self._stream("Reading the page.", {"name": "sitebox_outline", "arguments": "{}"})
@@ -332,7 +357,7 @@ def wait_patch(thread_id, timeout=30):
                 rec = json.loads(p.read_text())
             except Exception:
                 continue
-            if rec.get("thread_id") == thread_id:
+            if rec.get("thread_id") == thread_id and rec.get("status") == "pending":
                 found.append(rec)
         if found:
             found.sort(key=lambda r: r.get("created", ""))
@@ -468,6 +493,55 @@ def main():
         check("grep finds text in one call", '"path":"public/index.html"' in tool_blob.replace(" ", "") and '"files":1' in tool_blob.replace(" ", ""), len(tool_blob))
         check("plan stored on the thread", len((req(base + f"/api/studio/threads/{thk['id']}/messages", token=TOKEN)[1].get("thread", {}) or {}).get("plan", [])) == 3, "no plan")
         time.sleep(1.2)  # let the skill turn release the site lock
+
+        print("── P2c: create a site from nothing")
+        s, th4, _ = req(base + "/api/studio/threads", "POST", {"site_id": ""}, token=TOKEN)
+        check("unbound conversation allowed", s == 200 and th4.get("site_id") == "", th4)
+        req(base + "/api/studio/chat", "POST", {"thread_id": th4["id"], "message": "create a site"}, token=TOKEN)
+        msgs4 = {}
+        for _ in range(100):
+            time.sleep(0.3)
+            msgs4 = req(base + f"/api/studio/threads/{th4['id']}/messages", token=TOKEN)[1]
+            txt = "\n".join(m.get("content") or "" for m in msgs4["messages"] if m.get("role") == "assistant")
+            if "Created it" in txt:
+                break
+        check("conversation bound to the new site", (msgs4.get("thread") or {}).get("site_id") == "fresh", (msgs4.get("thread") or {}).get("site_id"))
+        fresh = SCRATCH / "sites/fresh"
+        check("folder and manifest scaffolded", (fresh / "sitebox.toml").exists() and (fresh / "public/index.html").exists(), str(fresh))
+        check("starter page carries the name", "<h1>Fresh Site</h1>" in (fresh / "public/index.html").read_text(), "missing h1")
+        check("creation turn applies its own patch", "built." in (fresh / "public/index.html").read_text(), "patch not applied")
+        recs = []
+        for f in (SCRATCH / "dashboard/data/studio/patches").glob("*.json"):
+            try:
+                recs.append(json.loads(f.read_text()))
+            except Exception:
+                pass
+        check("creation patch is applied, not pending", any(r.get("thread_id") == th4["id"] and r.get("status") == "applied" for r in recs), [(r.get("status"), r.get("path")) for r in recs])
+        s, sites4, _ = req(base + "/api/sites", token=TOKEN)
+        row = next((x for x in sites4 if x.get("id") == "fresh"), {})
+        check("registered with a free port", 4500 <= (row.get("port") or 0) < 4900, row)
+        check("site is running", row.get("_running") is True, row)
+
+        print("── P2d: edit the site that was just created")
+        before4 = (fresh / "public/index.html").read_bytes()
+        time.sleep(1.0)  # let the creation turn release its lock
+        for _ in range(30):
+            sc, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th4["id"], "message": "rename fresh heading"}, token=TOKEN)
+            if sc != 409:
+                break
+            time.sleep(0.4)
+        p4 = wait_patch(th4["id"])
+        check("patch queued on the new site", bool(p4) and p4.get("path") == "public/index.html", p4)
+        for _ in range(60):
+            time.sleep(0.3)
+            m4 = req(base + f"/api/studio/threads/{th4['id']}/messages", token=TOKEN)[1]
+            if any("Proposed the rename" in (m.get("content") or "") for m in m4["messages"]):
+                break
+        s, rep4, _ = req(base + f"/api/studio/patches/{p4['id']}/apply", "POST", {}, token=TOKEN) if p4 else (0, {}, {})
+        check("apply on the new site", s == 200 and rep4.get("ok") is True, (s, rep4))
+        check("new site file changed", b"Fresh Renamed" in (fresh / "public/index.html").read_bytes(), "unchanged")
+        s, _, _ = req(base + "/api/studio/sites/fresh/undo", "POST", {}, token=TOKEN)
+        check("undo on the new site", s == 200 and (fresh / "public/index.html").read_bytes() == before4, s)
 
         print("── P2/P3: a patch that breaks a check rolls back")
         s, th2, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
@@ -614,7 +688,8 @@ def main():
         audit = [json.loads(l) for l in (SCRATCH / "dashboard/data/studio/audit.jsonl").read_text().splitlines() if l.strip()]
         check("audit has apply+undo", sum(1 for a in audit if a.get("action") == "apply") >= 2 and any(a.get("action") == "undo" for a in audit), len(audit))
         s, sites, _ = req(base + "/api/sites")
-        check("original /api/sites still answers", s == 200 and len(sites) == 3, (s, sites))
+        ids = {x.get("id") for x in sites}
+        check("original /api/sites still answers", s == 200 and {"demo", "gen", "legacy"} <= ids, (s, sorted(ids)))
         s, _, _ = req(base + "/js/studio.js")
         check("studio.js served", s == 200, s)
         print("INFO audit lines:", len(audit))

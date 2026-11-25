@@ -25,18 +25,15 @@ struct Written {
     restored: bool,
 }
 
-pub async fn apply(st: &StudioState, patch_id: &str) -> Result<Value> {
+/// Apply outside the per-site lock. Only the agent's own creation turn uses
+/// this: it already holds the lock, and refusing its own patches would leave a
+/// brand-new site as an empty scaffold waiting for clicks.
+pub async fn apply_locked(st: &StudioState, patch_id: &str) -> Result<Value> {
     let rec = store::get_patch(st, patch_id)?;
     if rec.status != "pending" {
         bail!("patch {} is {}, not pending", rec.id, rec.status);
     }
     let site_id = rec.site_id.clone();
-    {
-        let mut b = st.busy.lock().await;
-        if !b.insert(site_id.clone()) {
-            bail!("another edit is running on site {site_id}");
-        }
-    }
 
     let st2 = st.clone();
     let rec2 = rec.clone();
@@ -145,8 +142,21 @@ pub async fn apply(st: &StudioState, patch_id: &str) -> Result<Value> {
         Err(e) => Err(anyhow::anyhow!("apply worker failed: {e}")),
     };
 
-    st.busy.lock().await.remove(&site_id);
     outcome
+}
+
+/// The operator path: one apply at a time per site.
+pub async fn apply(st: &StudioState, patch_id: &str) -> Result<Value> {
+    let site_id = store::get_patch(st, patch_id)?.site_id;
+    {
+        let mut b = st.busy.lock().await;
+        if !b.insert(site_id.clone()) {
+            bail!("another edit is running on site {site_id}");
+        }
+    }
+    let out = apply_locked(st, patch_id).await;
+    st.busy.lock().await.remove(&site_id);
+    out
 }
 
 fn load_port(st: &StudioState, site: &str) -> u16 {

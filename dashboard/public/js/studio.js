@@ -149,6 +149,7 @@
       <div class="st-bar">
         <select id="st-site" class="st-select"></select>
         <select id="st-thread" class="st-select st-select--thread"></select>
+        <button class="st-btn st-btn--ghost" id="st-newsite" title="Start a new site in a conversation">+ Site</button>
         <button class="st-btn st-btn--ghost" id="st-undo" title="Restore the last snapshot">Undo</button>
       </div>
       <div class="st-plan" id="st-plan" hidden></div>
@@ -188,6 +189,7 @@
     });
     $('#st-thread').addEventListener('change', (e) => selectThread(e.target.value));
     $('#st-new').addEventListener('click', () => newThread());
+    $('#st-newsite').addEventListener('click', () => newSiteThread());
     $('#st-settings').addEventListener('click', () => {
       const p = $('#st-settings-panel');
       p.hidden = !p.hidden;
@@ -249,12 +251,15 @@
 
   function fillSites() {
     const sel = $('#st-site');
-    if (sel.options.length === state.sites.length && sel.options.length > 0) return;
-    sel.innerHTML = state.sites.map((s) => `<option value="${esc(s.id)}">${esc(s.name || s.id)}</option>`).join('');
+    const opts = state.sites.map((s) => `<option value="${esc(s.id)}">${esc(s.name || s.id)}</option>`);
+    // A conversation that is creating a site has no site yet; keep the empty
+    // value selectable so the bar does not lie about what it is attached to.
+    opts.unshift('<option value="">New site…</option>');
+    sel.innerHTML = opts.join('');
     const saved = localStorage.getItem('studio.site');
-    if (saved && state.sites.some((s) => s.id === saved)) state.site = saved;
-    else if (state.sites[0]) state.site = state.sites[0].id;
-    if (state.site) sel.value = state.site;
+    if (!state.site && saved && state.sites.some((s) => s.id === saved)) state.site = saved;
+    else if (!state.site && state.sites[0]) state.site = state.sites[0].id;
+    sel.value = state.site || '';
   }
 
   function fillSettings() {
@@ -297,6 +302,25 @@
     const sel = $('#st-thread');
     sel.innerHTML = threads.map((t) => `<option value="${esc(t.id)}">${esc(t.title || '(new conversation)')}</option>`).join('');
     selectThread(threads[0].id);
+  }
+
+  async function newSiteThread() {
+    try {
+      const t = await api('/api/studio/threads', { method: 'POST', body: JSON.stringify({ site_id: '' }) });
+      state.site = '';
+      state.thread = t.id;
+      state.patchEls.clear();
+      $('#st-site').value = '';
+      $('#st-thread').innerHTML = `<option value="${esc(t.id)}">New site</option>`;
+      $('#st-log').innerHTML = '';
+      renderPlan([]);
+      addMsg('system', 'จะสร้างเว็บอะไร บอกได้เลย — ประเภทของเว็บ ใครอ่าน และมีเนื้อหาจริงอะไรบ้าง');
+      $('#st-input').placeholder = 'เช่น เว็บ portfolio สำหรับช่างภาพ พร้อมผลงาน 6 ชิ้น…';
+      subscribe(t.id);
+      $('#st-input').focus();
+    } catch (e) {
+      toast(e.message);
+    }
   }
 
   async function newThread() {
@@ -386,6 +410,19 @@
       case 'plan':
         renderPlan(ev.steps);
         break;
+      case 'site_created': {
+        // The thread was just bound to the site it created: move the bar with
+        // it without re-subscribing (the turn is still streaming).
+        state.site = ev.site;
+        localStorage.setItem('studio.site', state.site);
+        refreshStatus().then(() => {
+          $('#st-site').value = ev.site;
+          $('#st-thread').innerHTML = `<option value="${esc(state.thread)}">${esc(ev.name || ev.site)}</option>`;
+          $('#st-input').placeholder = 'บอกว่าจะแก้ตรงไหน…';
+        });
+        toast(`สร้าง ${ev.name || ev.site} ที่พอร์ต ${ev.port} แล้ว`);
+        break;
+      }
       case 'text_delta': {
         if (!state.streamEl) {
           state.streamEl = addMsg('assistant', '');
@@ -435,6 +472,21 @@
         state.streamText = '';
         renderPatch(ev.patch);
         break;
+      case 'patch_applied': {
+        // Creation turns apply their own patches. Without this the card keeps
+        // offering Apply for a patch that is already in the file.
+        const card = state.patchEls.get(ev.patch_id);
+        if (card) {
+          const btn = card.querySelector('.st-apply');
+          btn.disabled = true;
+          btn.hidden = true;
+          card.querySelector('.st-patch__result').textContent = ev.ok
+            ? 'applied while creating (Undo restores)'
+            : 'rolled back: the checks failed';
+          card.classList.toggle('is-red', !ev.ok);
+        }
+        break;
+      }
       case 'done':
         state.busy = false;
         state.streamEl = null;

@@ -183,3 +183,37 @@ mod tests {
         assert_eq!((stat.added, stat.removed), (1, 1));
     }
 }
+
+/// A patch that duplicates document-level closing tags produces a page that
+/// still renders, so nothing complains — but the next edit anchors on the first
+/// `</body>` and the file keeps growing. Refuse it at propose time instead.
+pub fn html_sanity(path: &str, text: &str) -> Result<()> {
+    if !(path.ends_with(".html") || path.ends_with(".htm")) {
+        return Ok(());
+    }
+    for (open, close) in [("<html", "</html>"), ("<body", "</body>")] {
+        for tag in [open, close] {
+            let n = text.matches(tag).count();
+            if n > 1 {
+                bail!(
+                    "the patch would leave {n} `{tag}` tags in {path}; \
+                     anchor `old` on the whole document or on a block inside it, \
+                     so the closing tags are not duplicated"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod sanity_tests {
+    use super::html_sanity;
+
+    #[test]
+    fn refuses_duplicate_closers() {
+        assert!(html_sanity("a.html", "<html><body>x</body></html>").is_ok());
+        assert!(html_sanity("a.html", "<html><body>x</body></html></body></html>").is_err());
+        assert!(html_sanity("a.css", "</html></html>").is_ok());
+    }
+}

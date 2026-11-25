@@ -726,13 +726,21 @@ async fn studio_threads(
 }
 
 async fn studio_thread_create(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
-    let site_id = body.get("site_id").and_then(|v| v.as_str()).unwrap_or("");
-    if let Err(e) = studio::site_ref(&st.root, site_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("{e:#}")})),
-        )
-            .into_response();
+    let site_id = body
+        .get("site_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    // Empty site id = a "new site" conversation. Everything except the skill,
+    // plan and create tools is refused until sols_create_site binds it.
+    if !site_id.is_empty() {
+        if let Err(e) = studio::site_ref(&st.root, site_id) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("{e:#}")})),
+            )
+                .into_response();
+        }
     }
     let title = body.get("title").and_then(|v| v.as_str()).unwrap_or("");
     match studio::store::create(&st.studio, site_id, title) {
@@ -818,8 +826,10 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
     };
     // Which page the operator is looking at. The launcher sends it; the agent
     // uses it to read the right file instead of touring the whole site.
-    if let Some(page) = body.get("page").and_then(|v| v.as_str()) {
-        let _ = studio::store::set_page(&st.studio, thread_id, page);
+    if !thread.site_id.trim().is_empty() {
+        if let Some(page) = body.get("page").and_then(|v| v.as_str()) {
+            let _ = studio::store::set_page(&st.studio, thread_id, page);
+        }
     }
     if !studio::config::Settings::load(&st.root).configured() {
         return (
@@ -848,11 +858,17 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
         seen.insert(key, std::time::Instant::now());
     }
     {
+        let key = studio::lock_key(&thread);
         let mut busy = st.studio.busy.lock().await;
-        if !busy.insert(thread.site_id.clone()) {
+        if !busy.insert(key.clone()) {
+            let target = if thread.site_id.is_empty() {
+                "this conversation".to_string()
+            } else {
+                thread.site_id.clone()
+            };
             return (
                 StatusCode::CONFLICT,
-                Json(json!({"error": format!("a turn is already running on {}", thread.site_id)})),
+                Json(json!({"error": format!("a turn is already running on {target}")})),
             )
                 .into_response();
         }
@@ -860,12 +876,13 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
     {
         // 60 turns per site per hour. A loop that retries on failure is the
         // normal way to burn a budget; this is the cheap guard, not a quota.
+        let key = studio::lock_key(&thread);
         let mut log = st.studio.turn_log.lock().await;
         let now = std::time::Instant::now();
-        let entry = log.entry(thread.site_id.clone()).or_default();
+        let entry = log.entry(key.clone()).or_default();
         entry.retain(|t| now.duration_since(*t).as_secs() < 3600);
         if entry.len() >= 60 {
-            st.studio.busy.lock().await.remove(&thread.site_id);
+            st.studio.busy.lock().await.remove(&key);
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({"error": "60 turns per hour on this site; wait before sending more"})),
@@ -894,14 +911,14 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
 
 async fn studio_abort(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
     let thread_id = body.get("thread_id").and_then(|v| v.as_str()).unwrap_or("");
-    let site = studio::store::get(&st.studio, thread_id)
-        .map(|t| t.site_id)
-        .ok();
+    let key = studio::store::get(&st.studio, thread_id)
+        .ok()
+        .map(|t| studio::lock_key(&t));
     if let Some(h) = st.studio.turns.lock().await.remove(thread_id) {
         h.abort();
     }
-    if let Some(s) = site {
-        st.studio.busy.lock().await.remove(&s);
+    if let Some(k) = key {
+        st.studio.busy.lock().await.remove(&k);
     }
     studio::emit(&st.studio.events, thread_id, json!({"type":"aborted"}));
     Json(json!({"ok": true})).into_response()

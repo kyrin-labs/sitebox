@@ -4,7 +4,7 @@
 //! line. A half-written line can only ever be the last one, and tail-reading a
 //! transcript for debugging is `cat`, not a query tool.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -108,9 +108,8 @@ fn thread_dir(st: &StudioState, id: &str) -> PathBuf {
 }
 
 pub fn create(st: &StudioState, site_id: &str, title: &str) -> Result<Thread> {
-    if site_id.trim().is_empty() {
-        bail!("site id is required");
-    }
+    // An empty site id is a conversation that will create its site; the model
+    // binds it with sols_create_site before any site tool works.
     let now = util::now_iso();
     let t = Thread {
         id: new_id("th"),
@@ -154,6 +153,15 @@ pub fn set_page(st: &StudioState, id: &str, page: &str) -> Result<()> {
         return Ok(());
     }
     t.page = Some(page.chars().take(300).collect());
+    t.updated = util::now_iso();
+    let p = thread_dir(st, id).join("meta.json");
+    super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())
+}
+
+/// Rebind a conversation to the site it just created.
+pub fn set_site(st: &StudioState, id: &str, site_id: &str) -> Result<()> {
+    let mut t = get(st, id)?;
+    t.site_id = site_id.to_string();
     t.updated = util::now_iso();
     let p = thread_dir(st, id).join("meta.json");
     super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())

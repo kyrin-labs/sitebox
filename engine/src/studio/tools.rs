@@ -5,6 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::path::Path;
 
 use super::patch::PatchSpec;
 use super::{outline, shot, site_path, skills, stage, store, SiteRef, StudioState};
@@ -29,6 +30,23 @@ pub fn definitions() -> Value {
                         "max": {"type": "integer", "description": "max matches, default 40"}
                     },
                     "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_create_site",
+                "description": "Create a new SiteBox site (folder, manifest, starter page, registry entry, a free port), start it, and bind this conversation to it. Only available before a site is bound. After it returns, improve the starter with patches.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "slug: lowercase letters, digits and dashes"},
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "port": {"type": "integer", "description": "optional; a free port in 4500-4899 is chosen otherwise"}
+                    },
+                    "required": ["id", "name"]
                 }
             }
         },
@@ -190,12 +208,177 @@ pub fn definitions() -> Value {
     ])
 }
 
+async fn create_site(st: &StudioState, thread_id: &str, args: &Value) -> Result<Value> {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let description = args
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if id.is_empty() || name.is_empty() {
+        bail!("`id` and `name` are required");
+    }
+    let thread = store::get(st, thread_id)?;
+    if !thread.site_id.trim().is_empty() {
+        bail!(
+            "this conversation is already bound to `{}`; new sites need a new conversation",
+            thread.site_id
+        );
+    }
+
+    let port = match args.get("port").and_then(|v| v.as_u64()) {
+        Some(p) => {
+            let p = p as u16;
+            if !(1024..=65535).contains(&p) {
+                bail!("port must be between 1024 and 65535");
+            }
+            if util::port_bound(p) {
+                bail!("port {p} is already in use");
+            }
+            p
+        }
+        None => free_port(&st.root).ok_or_else(|| anyhow::anyhow!("no free port in 4500-4899"))?,
+    };
+
+    let dir = crate::pipeline::scaffold(&st.root, &id, &name, port, &description)?;
+    let manifest = crate::manifest::Manifest::load(&dir)?;
+    let report = checks::run_static(&st.root, &manifest)?;
+    if !report.ok() {
+        // A scaffold that cannot pass its own starter checks is a bug; do not
+        // leave a broken site behind for the operator to find.
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Ok(mut cfg) = crate::registry::SiteConfig::read(&st.root) {
+            cfg.sites.retain(|s| s.id != id);
+            let p = st.root.join(crate::registry::REGISTRY_REL);
+            let _ = super::atomic_write(&p, serde_json::to_string_pretty(&cfg)?.as_bytes());
+        }
+        bail!("the scaffolded site failed its own checks; nothing was kept");
+    }
+
+    // Bind the conversation to the new site so the rest of the turn (and every
+    // later turn) can read, patch and run it.
+    store::set_site(st, thread_id, &id)?;
+    let start = st.sup.start(&manifest).await;
+    super::emit(
+        &st.events,
+        thread_id,
+        json!({"type":"site_created","site":id,"name":name,"port":port,
+               "running":start.as_ref().map(|r| r.ok).unwrap_or(false)}),
+    );
+
+    Ok(json!({
+        "ok": true,
+        "site": id,
+        "name": name,
+        "port": port,
+        "dir": dir.display().to_string(),
+        "running": start.as_ref().map(|r| r.ok).unwrap_or(false),
+        "verified": start.as_ref().map(|r| r.verified).unwrap_or(false),
+        "start_error": start.err().map(|e| format!("{e:#}")),
+        "files": ["sitebox.toml", "public/index.html", "public/favicon.svg"],
+        "checks": { "ok": report.ok(), "findings": report.findings },
+        "next": "The conversation is now bound to this site. Read sitebox-design, then improve the starter page with patches.",
+    }))
+}
+
+fn free_port(root: &Path) -> Option<u16> {
+    let used: std::collections::HashSet<u16> = crate::registry::SiteConfig::read(root)
+        .map(|c| c.sites.iter().map(|s| s.port).collect())
+        .unwrap_or_default();
+    (4500..4900).find(|p| !used.contains(p) && !util::port_bound(*p))
+}
+
+fn tool_skills() -> Result<Value> {
+    Ok(json!({"ok": true, "skills": skills::list()}))
+}
+
+fn tool_skill(args: &Value) -> Result<Value> {
+    let skill = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let file = args.get("file").and_then(|v| v.as_str());
+    let (path, text) = skills::read(skill, file)?;
+    let total = text.chars().count();
+    let clipped: String = text.chars().take(80_000).collect();
+    Ok(json!({
+        "ok": true,
+        "name": skill,
+        "file": path,
+        "chars": total,
+        "text": clipped,
+        "note": "Follow this skill; do not restate it to the operator."
+    }))
+}
+
+fn tool_plan(st: &StudioState, thread_id: &str, args: &Value) -> Result<Value> {
+    let raw = args
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut steps: Vec<store::PlanStep> = raw
+        .iter()
+        .filter_map(|s| {
+            let text = s.get("text").and_then(|v| v.as_str())?.trim().to_string();
+            if text.is_empty() {
+                return None;
+            }
+            let status = match s.get("status").and_then(|v| v.as_str()) {
+                Some("doing") => "doing",
+                Some("done") => "done",
+                _ => "pending",
+            };
+            Some(store::PlanStep {
+                text,
+                status: status.to_string(),
+            })
+        })
+        .collect();
+    if steps.is_empty() {
+        bail!("plan needs at least one step");
+    }
+    steps.truncate(8);
+    store::set_plan(st, thread_id, steps.clone())?;
+    super::emit(&st.events, thread_id, json!({"type":"plan","steps":steps}));
+    Ok(json!({"ok": true, "steps": steps}))
+}
+
+/// Tools that work before a site exists.
+pub async fn execute_unbound(
+    st: &StudioState,
+    thread_id: &str,
+    name: &str,
+    args: &Value,
+) -> Result<Value> {
+    match name {
+        "sols_skills" => tool_skills(),
+        "sols_skill" => tool_skill(args),
+        "sols_plan" => tool_plan(st, thread_id, args),
+        "sols_create_site" => create_site(st, thread_id, args).await,
+        other => bail!(
+            "`{other}` needs a site, and this conversation has none yet. \
+             Call sols_create_site first."
+        ),
+    }
+}
+
 pub async fn execute(
     st: &StudioState,
     site: &SiteRef,
     thread_id: &str,
     name: &str,
     args: &Value,
+    auto_apply: bool,
 ) -> Result<Value> {
     match name {
         "sitebox_grep" => {
@@ -267,54 +450,9 @@ pub async fn execute(
                 "truncated": truncated,
             }))
         }
-        "sols_skills" => Ok(json!({"ok": true, "skills": skills::list()})),
-        "sols_skill" => {
-            let skill = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let file = args.get("file").and_then(|v| v.as_str());
-            let (path, text) = skills::read(skill, file)?;
-            let total = text.chars().count();
-            let clipped: String = text.chars().take(80_000).collect();
-            Ok(json!({
-                "ok": true,
-                "name": skill,
-                "file": path,
-                "chars": total,
-                "text": clipped,
-                "note": "Follow this skill; do not restate it to the operator."
-            }))
-        }
-        "sols_plan" => {
-            let raw = args
-                .get("steps")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let mut steps: Vec<store::PlanStep> = raw
-                .iter()
-                .filter_map(|s| {
-                    let text = s.get("text").and_then(|v| v.as_str())?.trim().to_string();
-                    if text.is_empty() {
-                        return None;
-                    }
-                    let status = match s.get("status").and_then(|v| v.as_str()) {
-                        Some("doing") => "doing",
-                        Some("done") => "done",
-                        _ => "pending",
-                    };
-                    Some(store::PlanStep {
-                        text,
-                        status: status.to_string(),
-                    })
-                })
-                .collect();
-            if steps.is_empty() {
-                bail!("plan needs at least one step");
-            }
-            steps.truncate(8);
-            store::set_plan(st, thread_id, steps.clone())?;
-            super::emit(&st.events, thread_id, json!({"type":"plan","steps":steps}));
-            Ok(json!({"ok": true, "steps": steps}))
-        }
+        "sols_skills" => tool_skills(),
+        "sols_skill" => tool_skill(args),
+        "sols_plan" => tool_plan(st, thread_id, args),
         "sitebox_site_kind" => Ok(json!({
             "ok": true,
             "site": site.id,
@@ -446,7 +584,9 @@ pub async fn execute(
                 );
             }
             let base = format!("http://127.0.0.1:{}", site.manifest.site.port);
-            let report = checks::run_http(&base, &st.client).await;
+            // The no-gzip client is deliberate: reqwest strips Content-Encoding
+            // after auto-decompressing, so SB104 would fail on a correct server.
+            let report = checks::run_http(&base, &st.check_client).await;
             Ok(json!({"ok": report.ok(), "base": base, "findings": report.findings}))
         }
         "sitebox_shot" => {
@@ -461,12 +601,18 @@ pub async fn execute(
             }
             shot::capture(st, &site.id, site.manifest.site.port, width, height, route).await
         }
-        "sitebox_propose_patch" => propose(st, site, thread_id, args).await,
+        "sitebox_propose_patch" => propose(st, site, thread_id, args, auto_apply).await,
         other => bail!("unknown tool `{other}`"),
     }
 }
 
-async fn propose(st: &StudioState, site: &SiteRef, thread_id: &str, args: &Value) -> Result<Value> {
+async fn propose(
+    st: &StudioState,
+    site: &SiteRef,
+    thread_id: &str,
+    args: &Value,
+    auto_apply: bool,
+) -> Result<Value> {
     let spec = PatchSpec {
         path: args
             .get("path")
@@ -506,6 +652,7 @@ async fn propose(st: &StudioState, site: &SiteRef, thread_id: &str, args: &Value
     let before = std::fs::read_to_string(&target)
         .map_err(|_| anyhow::anyhow!("{} is not UTF-8 text", spec.path))?;
     let after = super::patch::apply_text(&before, &spec.old, &spec.new, spec.count)?;
+    super::patch::html_sanity(&spec.path, &after)?;
     let (diff, stat) = super::patch::diff_hunk(&before, &after);
 
     let (report, _stage_id) = stage::verify(st, site, &spec)?;
@@ -538,20 +685,95 @@ async fn propose(st: &StudioState, site: &SiteRef, thread_id: &str, args: &Value
     );
 
     let checks_ok = verify.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    Ok(json!({
-        "ok": true,
-        "queued": true,
-        "patch_id": rec.id,
-        "path": rec.path,
-        "added": stat.added,
-        "removed": stat.removed,
-        "staged_checks_ok": checks_ok,
-        "verify": verify,
-        "next": "The operator sees this patch in the panel and clicks Apply. Do not claim the site is changed yet.",
-    }))
+
+    // A conversation that is still creating its site applies as it goes: the
+    // operator asked for a site, not for a pile of pending cards. Snapshot,
+    // build and checks are the same as a manual Apply, and Undo still works.
+    if auto_apply {
+        let applied = super::apply::apply_locked(st, &rec.id).await;
+        let ok = applied
+            .as_ref()
+            .map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+            .unwrap_or(false);
+        let status = if ok { "applied" } else { "rolled-back" };
+        super::emit(
+            &st.events,
+            thread_id,
+            json!({"type":"patch_applied","patch_id":rec.id,"ok":ok,"status":status}),
+        );
+        match applied {
+            Ok(res) => Ok(json!({
+                "ok": res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+                "queued": false,
+                "applied": true,
+                "patch_id": rec.id,
+                "path": rec.path,
+                "added": stat.added,
+                "removed": stat.removed,
+                "apply": res,
+                "next": "Applied to the new site. If the checks are red it was rolled back; read `apply.introduced`.",
+            })),
+            Err(e) => Ok(json!({
+                "ok": false,
+                "queued": true,
+                "patch_id": rec.id,
+                "path": rec.path,
+                "error": format!("{e:#}"),
+                "next": "Applying failed. Read the error; if the patch is stale, propose it again.",
+            })),
+        }
+    } else {
+        Ok(json!({
+            "ok": true,
+            "queued": true,
+            "patch_id": rec.id,
+            "path": rec.path,
+            "added": stat.added,
+            "removed": stat.removed,
+            "staged_checks_ok": checks_ok,
+            "verify": verify,
+            "next": "The operator sees this patch in the panel and clicks Apply. Do not claim the site is changed yet.",
+        }))
+    }
 }
 
-pub fn system_prompt(site: &SiteRef, page: Option<&str>) -> String {
+pub fn system_prompt(site: Option<&SiteRef>, page: Option<&str>) -> String {
+    let skill_index = skills::list()
+        .iter()
+        .map(|s| {
+            let d: String = s.description.chars().take(150).collect();
+            format!("- {}: {}", s.name, d)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let Some(site) = site else {
+        return format!(
+            r#"You are Sols, the editing agent inside SiteBox. This conversation is not attached to a site yet — your job is to create one with `sols_create_site` and then build it.
+
+Work the way SiteBox's own agent does: read the skill that owns the task, plan in visible steps, execute with tools, verify with checks, report in a few lines.
+
+## How you work
+1. Say what the site is in one sentence.
+2. Read `sitebox-design` before you choose anything visual, and `sitebox-create` when the site is more than one page.
+3. Call `sols_plan` with 3-5 steps before the first action, then update it as steps move between pending, doing and done.
+4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Choose `id` and `name` yourself and say what you chose.
+5. `sols_create_site` writes the folder, manifest, starter page and registry entry, picks a free port, starts the site and binds this conversation to it. It already starts the site: do not call `sitebox_site_start` afterwards. A static site serves files from disk, so a patch needs no restart either.
+6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
+
+## Skills (bundled, read on demand)
+{skill_index}
+
+Routing: look, layout, copy, tokens -> sitebox-design; real content, numbers, sources -> sitebox-data; build or change a page -> sitebox-create; prove it -> sitebox-verify; register, port, start/stop, logs -> sitebox-config; manifest, pipeline, engine commands -> sitebox-engine. `sols_skill` reads a file; `sols_skills` lists every file.
+
+## Rules that do not change
+You cannot write files except through `sols_create_site` (once, before a site exists) and `sitebox_propose_patch`. During creation a patch is applied as soon as the checks pass, so you may say it is live — only after the tool says `applied`. After the creation turn, patches are queued and you must not call them live. Verify with `sitebox_check` and `sitebox_verify` before you claim anything.
+
+## How to answer
+Three to six short lines, at most three bullets, plain words for checks, `path:line` only for the line you change, one next step. Thai when the operator writes Thai."#
+        );
+    };
+
     let files = outline::source_files(&site.dir, 20)
         .into_iter()
         .map(|(p, s)| format!("  - {p} ({} KB)", s / 1024))
@@ -564,15 +786,6 @@ pub fn system_prompt(site: &SiteRef, page: Option<&str>) -> String {
         ),
         None => "The operator's current page is unknown. Ask if the page matters.".to_string(),
     };
-    let skill_index = skills::list()
-        .iter()
-        .map(|s| {
-            let d: String = s.description.chars().take(150).collect();
-            format!("- {}: {}", s.name, d)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
     format!(
         r#"You are Sols, the editing agent inside SiteBox. You work on exactly one site: `{id}` ({name}).
 
