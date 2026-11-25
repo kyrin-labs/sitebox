@@ -128,6 +128,7 @@ def check(name, cond, detail=""):
 
 class MockLLM(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    last_system = ""
 
     def log_message(self, *a):
         pass
@@ -142,8 +143,13 @@ class MockLLM(BaseHTTPRequestHandler):
             if m.get("role") == "user":
                 last_user = i
         user_text = str(msgs[last_user].get("content") if msgs else "")
+        MockLLM.last_system = str(msgs[0].get("content") if msgs else "")
         since = [m for m in msgs[last_user:] if m.get("role") == "tool"]
         n = len(since)
+
+        if model == "mock-loop":
+            self._stream("Reading again.", {"name": "sitebox_outline", "arguments": "{}"})
+            return
 
         if model == "mock-slow":
             time.sleep(4)
@@ -402,7 +408,7 @@ def main():
         before = (SCRATCH / "sites/demo/public/index.html").read_bytes()
         sse = SSE(tid, TOKEN)
         sse.start()
-        s, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": tid, "message": "rename the heading"}, token=TOKEN)
+        s, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": tid, "message": "rename the heading", "page": "/books"}, token=TOKEN)
         check("chat accepted (202)", s == 202, s)
         patch = wait_patch(tid)
         time.sleep(0.4)
@@ -412,6 +418,7 @@ def main():
         check("SSE delivered text_delta", "text_delta" in types, types)
         check("SSE delivered tool events", "tool_start" in types and "tool_end" in types, types)
         check("SSE delivered patch + done", "patch" in types and "done" in types, types)
+        check("page context reaches the prompt", "/books" in MockLLM.last_system, MockLLM.last_system[:60])
         if patch:
             check("patch pending", patch.get("status") == "pending", patch.get("status"))
             check("diff shows the change", "+  <h1>Demo Site</h1>" in patch.get("diff", ""), patch.get("diff"))
@@ -512,6 +519,21 @@ def main():
         s, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th4["id"], "message": "rename the heading"}, token=TOKEN)
         check("site lock released after abort", s == 202, s)
         check("abort was fast", time.time() - t0 < 5, time.time() - t0)
+
+        print("── P4: running out of rounds still says something")
+        req(base + "/api/studio/config", "PUT", {"base_url": f"http://127.0.0.1:{MOCK}/v1", "model": "mock-loop", "max_rounds": 2}, token=TOKEN)
+        s, th9, _ = req(base + "/api/studio/threads", "POST", {"site_id": "legacy"}, token=TOKEN)
+        req(base + "/api/studio/chat", "POST", {"thread_id": th9["id"], "message": "legacy change"}, token=TOKEN)
+        final = ""
+        for _ in range(40):
+            time.sleep(0.4)
+            box = req(base + f"/api/studio/threads/{th9['id']}/messages", token=TOKEN)[1]
+            texts = [m.get("content") or "" for m in box.get("messages", []) if m.get("role") == "assistant"]
+            if texts and "ยังไม่ได้ข้อสรุป" in texts[-1]:
+                final = texts[-1]
+                break
+        check("limit produces a readable message", "ยังไม่ได้ข้อสรุป" in final, final[:80])
+        req(base + "/api/studio/config", "PUT", {"base_url": f"http://127.0.0.1:{MOCK}/v1", "model": "mock-1", "max_rounds": 6}, token=TOKEN)
 
         print("── P4: one submission cannot open two turns")
         s, th7, _ = req(base + "/api/studio/threads", "POST", {"site_id": "legacy"}, token=TOKEN)

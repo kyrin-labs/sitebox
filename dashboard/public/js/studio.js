@@ -567,6 +567,7 @@
           nonce: (window.crypto && crypto.randomUUID)
             ? crypto.randomUUID()
             : String(Date.now()) + Math.random(),
+          page: state.page || undefined,
         }),
       });
     } catch (e) {
@@ -605,6 +606,7 @@
     if (p.get('embed') !== '1') return;
     document.body.classList.add('sols-embed');
     const site = p.get('sols');
+    state.page = p.get('route') || '';
     await refreshStatus();
     if (site) {
       state.site = site;

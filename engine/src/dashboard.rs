@@ -816,6 +816,11 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
                 .into_response()
         }
     };
+    // Which page the operator is looking at. The launcher sends it; the agent
+    // uses it to read the right file instead of touring the whole site.
+    if let Some(page) = body.get("page").and_then(|v| v.as_str()) {
+        let _ = studio::store::set_page(&st.studio, thread_id, page);
+    }
     if !studio::config::Settings::load(&st.root).configured() {
         return (
             StatusCode::CONFLICT,

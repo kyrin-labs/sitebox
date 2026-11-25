@@ -272,10 +272,11 @@ async fn run_turn_inner(
     if !settings.configured() {
         bail!("agent is not configured: set base URL and model in Studio settings");
     }
-    let max_rounds = settings.max_rounds.unwrap_or(6).clamp(1, 12);
+    let max_rounds = settings.max_rounds.unwrap_or(8).clamp(1, 12);
     let tools = tools::definitions();
     let mut tokens_in: u64 = 0;
     let mut tokens_out: u64 = 0;
+    let mut patches_proposed = 0usize;
 
     for round in 0..max_rounds {
         let messages = build_messages(st, thread_id, &site)?;
@@ -332,6 +333,14 @@ async fn run_turn_inner(
                 Ok(v) => v,
                 Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
             };
+            if name == "sitebox_propose_patch"
+                && result
+                    .get("queued")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                patches_proposed += 1;
+            }
             emit(
                 &st.events,
                 thread_id,
@@ -352,10 +361,30 @@ async fn run_turn_inner(
         }
     }
 
+    // Running out of rounds is a failure the operator has to be able to read.
+    // Ending the turn with a stack of tool cards and no sentence looks like a
+    // broken panel, not like "I could not decide".
+    let note = if patches_proposed > 0 {
+        format!(
+            "เสนอไปแล้ว {patches_proposed} patch ใน {max_rounds} รอบ — กด Apply ได้เลย \
+             แล้วบอก \"ต่อ\" เพื่อทำไฟล์ที่เหลือ (ถ้ามี)"
+        )
+    } else {
+        format!(
+            "ยังไม่ได้ข้อสรุปใน {max_rounds} รอบ — อ่านหลายไฟล์แล้วแต่ยังไม่ได้เสนอ patch \
+             บอกได้ไหมว่าอยู่หน้าไหน หรืออยากให้แก้ทุกหน้าที่มีข้อความนี้?"
+        )
+    };
+    store::append_msg(st, thread_id, &store::Message::new("assistant", &note))?;
     emit(
         &st.events,
         thread_id,
-        json!({"type":"done","rounds":max_rounds,"tokens_in":tokens_in,"tokens_out":tokens_out,"note":"tool round limit reached"}),
+        json!({"type":"text_delta","text":note}),
+    );
+    emit(
+        &st.events,
+        thread_id,
+        json!({"type":"done","rounds":max_rounds,"tokens_in":tokens_in,"tokens_out":tokens_out,"note":"tool round limit reached","message":note}),
     );
     Ok(())
 }
@@ -381,7 +410,11 @@ fn clip(s: &str, max: usize) -> String {
 }
 
 fn build_messages(st: &StudioState, thread_id: &str, site: &SiteRef) -> Result<Vec<Value>> {
-    let mut out = vec![json!({"role":"system","content": tools::system_prompt(site)})];
+    let page = store::get(st, thread_id).ok().and_then(|t| t.page);
+    let mut out = vec![json!({
+        "role": "system",
+        "content": tools::system_prompt(site, page.as_deref())
+    })];
     let hist = store::messages(st, thread_id)?;
     let start = hist.len().saturating_sub(24);
     for m in &hist[start..] {

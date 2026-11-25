@@ -370,15 +370,25 @@ async fn propose(st: &StudioState, site: &SiteRef, thread_id: &str, args: &Value
     }))
 }
 
-pub fn system_prompt(site: &SiteRef) -> String {
+pub fn system_prompt(site: &SiteRef, page: Option<&str>) -> String {
     let files = outline::source_files(&site.dir, 20)
         .into_iter()
         .map(|(p, s)| format!("  - {p} ({} KB)", s / 1024))
         .collect::<Vec<_>>()
         .join("\n");
+    let where_ = match page {
+        Some(p) => format!(
+            "The operator opened this conversation while viewing `{p}`. Start there. \
+             If the text is not on that page, say so before reading other pages."
+        ),
+        None => "The operator's current page is unknown. Ask if the page matters.".to_string(),
+    };
 
     format!(
         r#"You are Sols, the editing agent inside SiteBox. You work on exactly one site: `{id}` ({name}).
+
+## Where the operator is
+{where_}
 
 ## How this site is produced
 kind: {kind} — {why}
@@ -391,6 +401,11 @@ pipeline steps: {steps}
 
 ## The one rule that matters
 You cannot write files. You have `sitebox_propose_patch`, which stages an exact-substring edit in a copy, runs the static checks, and queues it for the operator. The operator clicks Apply; the server snapshots first and rolls back automatically if a check fails. Never say a change is live, applied, or done — say it is proposed or queued.
+
+## Finding what they mean
+- If the text they quote appears in several files (a footer, a tagline, a nav), say that plainly and offer to change every page in one pass: one patch per file. Never silently change one page of ten.
+- A phrase repeated across pages is a multi-file edit. Propose at most three patches in one turn, then stop and tell the operator to apply them and say "continue". Do not try to finish ten files in one turn.
+- Read at most three regions before you either propose a patch or ask one question. If which page or which wording is unclear, ask — do not tour the site.
 
 ## How to edit
 1. `sitebox_outline` (no path) to see the shape, then `sitebox_read` the exact region.

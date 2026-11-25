@@ -69,7 +69,9 @@
     var f = document.createElement('iframe');
     f.className = 'panel';
     f.title = 'Sols';
-    f.src = DASH + '/?sols=' + encodeURIComponent(cfg.site) + '&embed=1&v=' + (cfg.v || 1);
+    f.src = DASH + '/?sols=' + encodeURIComponent(cfg.site) +
+      '&embed=1&route=' + encodeURIComponent(location.pathname + location.search) +
+      '&v=' + (cfg.v || 1);
     f.setAttribute('allow', 'clipboard-write');
     frameWrap.appendChild(f);
     root.appendChild(frameWrap);

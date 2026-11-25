@@ -19,6 +19,9 @@ pub struct Thread {
     pub site_id: String,
     #[serde(default)]
     pub title: String,
+    /// Last page the operator was looking at when talking to this thread.
+    #[serde(default)]
+    pub page: Option<String>,
     #[serde(default)]
     pub created: String,
     #[serde(default)]
@@ -99,6 +102,7 @@ pub fn create(st: &StudioState, site_id: &str, title: &str) -> Result<Thread> {
         id: new_id("th"),
         site_id: site_id.to_string(),
         title: title.trim().to_string(),
+        page: None,
         created: now.clone(),
         updated: now,
     };
@@ -121,6 +125,20 @@ pub fn get(st: &StudioState, id: &str) -> Result<Thread> {
 pub fn set_title(st: &StudioState, id: &str, title: &str) -> Result<()> {
     let mut t = get(st, id)?;
     t.title = title.chars().take(80).collect();
+    t.updated = util::now_iso();
+    let p = thread_dir(st, id).join("meta.json");
+    super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())
+}
+
+/// Remember which page the operator is on. The agent reads this before it
+/// starts guessing which of a site's pages contains the text they quoted.
+pub fn set_page(st: &StudioState, id: &str, page: &str) -> Result<()> {
+    let mut t = get(st, id)?;
+    let page = page.trim();
+    if page.is_empty() {
+        return Ok(());
+    }
+    t.page = Some(page.chars().take(300).collect());
     t.updated = util::now_iso();
     let p = thread_dir(st, id).join("meta.json");
     super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())
