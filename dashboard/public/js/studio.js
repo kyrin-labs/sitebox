@@ -88,6 +88,29 @@
     return out.join('');
   }
 
+  /* Sols mark: a blue spirit. Gradient ids are per-instance so two copies on
+     one page cannot share/clobber each other. */
+  let markSeq = 0;
+  function solsMark(size) {
+    const id = 'sols' + (++markSeq);
+    return `<svg viewBox="0 0 32 32" width="${size}" height="${size}" aria-hidden="true">
+      <defs>
+        <linearGradient id="${id}b" x1="9" y1="4" x2="23" y2="29" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#b9f3ff"/><stop offset=".45" stop-color="#59c2ff"/><stop offset="1" stop-color="#3b5bff"/>
+        </linearGradient>
+        <radialGradient id="${id}g" cx="0" cy="0" r="1" gradientTransform="translate(16 15) scale(14)">
+          <stop stop-color="#7fe6ff" stop-opacity=".45"/><stop offset="1" stop-color="#7fe6ff" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <circle cx="16" cy="16" r="14.5" fill="url(#${id}g)"/>
+      <path fill="url(#${id}b)" fill-rule="evenodd" d="M16 3.4c5.6 0 9.6 4 9.6 9.4 0 3.5-.9 6.2-2.3 9-.7 1.4-.6 2.7.2 4l1 1.8c.5.9-.2 1.9-1.2 1.9-.6 0-1.2-.3-1.6-.8l-1.5-1.9c-.7-.9-2-1-2.8-.2l-.8.8c-.6.6-1.6.6-2.2 0l-.8-.8c-.8-.8-2.1-.7-2.8.2l-1.5 1.9c-.4.5-1 .8-1.6.8-1 0-1.7-1-1.2-1.9l1-1.8c.8-1.3.9-2.6.2-4-1.4-2.8-2.3-5.5-2.3-9 0-5.4 4-9.4 9.6-9.4Zm-3.6 7.4c-.9 0-1.6.8-1.6 1.7s.7 1.7 1.6 1.7 1.6-.8 1.6-1.7-.7-1.7-1.6-1.7Zm7.2 0c-.9 0-1.6.8-1.6 1.7s.7 1.7 1.6 1.7 1.6-.8 1.6-1.7-.7-1.7-1.6-1.7Z"/>
+      <path d="M11 7.8c1.4-1.2 3.1-1.9 4.9-2" stroke="#fff" stroke-opacity=".6" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+      <path d="M26.4 4.9l.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7z" fill="#a9ecff" opacity=".9"/>
+      <path d="M5.2 8.6l.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2L3.5 10.3l1.2-.5z" fill="#a9ecff" opacity=".7"/>
+    </svg>`;
+  }
+  window.solsMark = solsMark;
+
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ headers: { 'content-type': 'application/json' } }, opts || {}));
     const text = await res.text();
@@ -104,8 +127,8 @@
 
     const btn = el('button', 'studio-launcher');
     btn.id = 'studio-launcher';
-    btn.title = 'SiteBox Studio';
-    btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Studio</span>';
+    btn.title = 'Sols';
+    btn.innerHTML = `${solsMark(20)}<span>Sols</span>`;
     btn.addEventListener('click', () => toggle(true));
     document.body.appendChild(btn);
 
@@ -114,7 +137,7 @@
     panel.innerHTML = `
       <header class="st-head">
         <div class="st-head__title">
-          <strong>Studio</strong>
+          <strong class="st-brand">${solsMark(22)}<span>Sols</span></strong>
           <span class="st-status" id="st-status">…</span>
         </div>
         <div class="st-head__actions">
@@ -148,7 +171,15 @@
       </div>`;
     document.body.appendChild(panel);
 
-    $('#st-close').addEventListener('click', () => toggle(false));
+    $('#st-close').addEventListener('click', () => {
+      if (document.body.classList.contains('sols-embed')) {
+        // The panel is an iframe on the dashboard origin; the page that hosts
+        // it owns the overlay and closes it.
+        window.parent.postMessage({ type: 'sols-close' }, '*');
+      } else {
+        toggle(false);
+      }
+    });
     $('#st-site').addEventListener('change', (e) => {
       state.site = e.target.value;
       localStorage.setItem('studio.site', state.site);
@@ -567,9 +598,31 @@
     toggle(true);
   };
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', mount);
-  } else {
+  /* Opened inside a site's page (?sols=<site>&embed=1): show only the panel,
+     bound to that site, and give the close button back to the parent. */
+  async function startEmbedded() {
+    const p = new URLSearchParams(location.search);
+    if (p.get('embed') !== '1') return;
+    document.body.classList.add('sols-embed');
+    const site = p.get('sols');
+    await refreshStatus();
+    if (site) {
+      state.site = site;
+      const sel = $('#st-site');
+      if (sel) sel.value = site;
+      await loadThreads(true);
+    }
+    toggle(true);
+  }
+
+  function boot() {
     mount();
+    startEmbedded();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
   }
 })();

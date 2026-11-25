@@ -77,20 +77,50 @@ pub fn router(state: DashState) -> Router {
 
 async fn cors(req: Request, next: Next) -> Response {
     let is_api = req.uri().path().starts_with("/api/");
+    let is_studio = req.uri().path().starts_with("/api/studio/");
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let mut res = next.run(req).await;
     if is_api {
         let h = res.headers_mut();
-        h.insert(
-            header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            HeaderValue::from_static("*"),
-        );
+        if is_studio {
+            // The Sols launcher injected into a site asks for
+            // /api/studio/status with credentials. `*` is illegal with
+            // credentials, so reflect the caller's origin, and vary on it.
+            match &origin {
+                Some(o) => {
+                    if let Ok(v) = HeaderValue::from_str(o) {
+                        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+                    }
+                    h.insert(
+                        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                        HeaderValue::from_static("true"),
+                    );
+                    h.insert(header::VARY, HeaderValue::from_static("Origin"));
+                }
+                None => {
+                    h.insert(
+                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        HeaderValue::from_static("*"),
+                    );
+                }
+            }
+        } else {
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+        }
         h.insert(
             header::ACCESS_CONTROL_ALLOW_METHODS,
             HeaderValue::from_static("GET,POST,PUT,DELETE,OPTIONS"),
         );
         h.insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("Content-Type"),
+            HeaderValue::from_static("Content-Type, X-Studio-Token"),
         );
     }
     res
@@ -1002,6 +1032,8 @@ async fn static_ui_file(st: &DashState, req: Request) -> Response {
 
 /// Run the dashboard listener.
 pub async fn serve(port: u16, state: DashState) -> Result<()> {
+    // The site listeners use this to point the injected launcher at us.
+    crate::serve::set_dashboard_port(port);
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("\n  SiteBox Dashboard (rust)  →  http://localhost:{port}\n");

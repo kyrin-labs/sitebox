@@ -237,6 +237,9 @@ async fn run(cli: Cli, root: PathBuf) -> Result<i32> {
                 site_id: m.site.id.clone(),
                 api_upstream: m.site.api_upstream.clone(),
                 client: reqwest::Client::new(),
+                // `sitebox serve` is a standalone site process with no
+                // dashboard to call home, so no launcher is injected.
+                sols: None,
             };
             let port = port.unwrap_or(m.site.port);
             serve::serve(port, state).await?;

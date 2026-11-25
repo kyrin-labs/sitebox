@@ -516,3 +516,29 @@ a:hover { text-decoration: underline; }
 .st-msg p:last-child { margin-bottom: 0; }
 .st-msg li { margin: 0.2rem 0; }
 .st-msg code { font-size: 0.82em; overflow-wrap: anywhere; }
+
+/* Sols branding */
+.studio-launcher {
+  background: linear-gradient(180deg, #101a2c, #0a1220);
+  border-color: rgba(89,194,255,.55);
+  color: #eaf7ff;
+  box-shadow: 0 8px 28px rgba(20,90,180,.35), inset 0 1px 0 rgba(255,255,255,.08);
+}
+.studio-launcher:hover { filter: none; transform: translateY(-1px); }
+.studio-launcher svg { flex-shrink: 0; display: block; }
+.st-brand { display: flex; align-items: center; gap: .45rem; }
+.st-brand svg { display: block; }
+
+/* Embedded panel: the dashboard chrome makes no sense inside a site. */
+body.sols-embed .header,
+body.sols-embed .toolbar,
+body.sols-embed .main,
+body.sols-embed .studio-launcher { display: none !important; }
+body.sols-embed { overflow: hidden; }
+body.sols-embed .studio-panel {
+  width: 100%;
+  border-left: 0;
+  box-shadow: none;
+}
+body.sols-embed .st-log,
+body.sols-embed .st-compose { width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; }

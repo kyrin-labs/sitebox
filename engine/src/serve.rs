@@ -18,8 +18,43 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+
+/// Port the dashboard listens on, published by `dashboard::serve`. The Sols
+/// widget injected into every page needs it to call home.
+pub static DASHBOARD_PORT: AtomicU16 = AtomicU16::new(0);
+
+pub fn set_dashboard_port(port: u16) {
+    DASHBOARD_PORT.store(port, Ordering::Relaxed);
+}
+
+fn sols_enabled() -> bool {
+    if std::env::var("SOLS_WIDGET")
+        .map(|v| v == "0")
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    true
+}
+
+#[derive(Clone, Debug)]
+pub struct SolsCfg {
+    pub dashboard_port: u16,
+}
+
+pub fn sols_config() -> Option<SolsCfg> {
+    let port = DASHBOARD_PORT.load(Ordering::Relaxed);
+    if !sols_enabled() || port == 0 {
+        None
+    } else {
+        Some(SolsCfg {
+            dashboard_port: port,
+        })
+    }
+}
 
 #[derive(Clone)]
 pub struct ServeState {
@@ -27,7 +62,11 @@ pub struct ServeState {
     pub site_id: String,
     pub api_upstream: Option<String>,
     pub client: reqwest::Client,
+    /// When set, HTML documents get the Sols launcher injected on the way out.
+    pub sols: Option<SolsCfg>,
 }
+
+const SOLS_WIDGET: &str = include_str!("../assets/sols-widget.js");
 
 const COMPRESSIBLE: &[&str] = &[
     "text/html",
@@ -62,6 +101,23 @@ pub async fn serve(port: u16, state: ServeState) -> Result<()> {
 
 async fn handle(State(st): State<Arc<ServeState>>, req: Request) -> Response {
     let path = req.uri().path().to_string();
+    if path == "/__sols/widget.js" {
+        return (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/javascript; charset=utf-8"),
+                ),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+                (
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                ),
+            ],
+            SOLS_WIDGET,
+        )
+            .into_response();
+    }
     if path.starts_with("/api/") {
         if let Some(up) = &st.api_upstream {
             return proxy(st.clone(), req, up.clone()).await;
@@ -114,7 +170,7 @@ async fn serve_static(
 }
 
 async fn file_response(
-    _st: &ServeState,
+    st: &ServeState,
     fp: &Path,
     md: &std::fs::Metadata,
     headers: &HeaderMap,
@@ -141,6 +197,16 @@ async fn file_response(
         mime_raw.clone()
     };
     let is_compressible = COMPRESSIBLE.iter().any(|c| mime_raw.starts_with(c));
+
+    // Documents carry the Sols launcher. The injected bytes change the body,
+    // so the ETag gets a suffix and Range is not offered for this response.
+    if mime_raw.eq_ignore_ascii_case("text/html") {
+        if let Some(cfg) = &st.sols {
+            if let Ok(raw) = tokio::fs::read(fp).await {
+                return sols_html(st, &raw, md, headers, head_only, cfg);
+            }
+        }
+    }
 
     let mut base = HeaderMap::new();
     base.insert(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap());
@@ -234,6 +300,98 @@ async fn file_response(
         Body::empty()
     } else {
         Body::from_stream(slice_stream(fp.to_path_buf(), 0, size))
+    };
+    (StatusCode::OK, h, body).into_response()
+}
+
+/// Serve an HTML document with the Sols launcher appended.
+///
+/// Inline script + a tiny external file keeps the site's own markup untouched:
+/// the file on disk stays byte-identical, and only this response is different.
+fn sols_html(
+    st: &ServeState,
+    raw: &[u8],
+    md: &std::fs::Metadata,
+    headers: &HeaderMap,
+    head_only: bool,
+    cfg: &SolsCfg,
+) -> Response {
+    let html = String::from_utf8_lossy(raw);
+    let site = serde_json::to_string(&st.site_id).unwrap_or_else(|_| "\"\"".to_string());
+    let snippet = format!(
+        "<script>window.__SOLS={{\"site\":{site},\"port\":{},\"v\":1}};</script>\
+         <script src=\"/__sols/widget.js\" defer></script>",
+        cfg.dashboard_port
+    );
+    // `to_ascii_lowercase` preserves byte offsets for ASCII, so the index is
+    // valid in the original UTF-8 string.
+    let out = match html.to_ascii_lowercase().rfind("</body>") {
+        Some(i) => format!("{}{}{}", &html[..i], snippet, &html[i..]),
+        None => format!("{html}{snippet}"),
+    };
+    let bytes = out.into_bytes();
+
+    let size = md.len();
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let etag = format!("\"{size:x}-{mtime:x}-sols1\"");
+
+    let mut h = HeaderMap::new();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    h.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    h.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|t| t.trim() == etag))
+        .unwrap_or(false)
+    {
+        return (StatusCode::NOT_MODIFIED, h).into_response();
+    }
+
+    let wants_gzip = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("gzip"))
+        .unwrap_or(false);
+    if wants_gzip {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::new(6));
+        if enc.write_all(&bytes).is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "gzip failed").into_response();
+        }
+        let gz = enc.finish().unwrap_or_default();
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        h.insert(header::CONTENT_LENGTH, HeaderValue::from(gz.len()));
+        let body = if head_only {
+            Body::empty()
+        } else {
+            Body::from(gz)
+        };
+        return (StatusCode::OK, h, body).into_response();
+    }
+
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(bytes.len()));
+    let body = if head_only {
+        Body::empty()
+    } else {
+        Body::from(bytes)
     };
     (StatusCode::OK, h, body).into_response()
 }

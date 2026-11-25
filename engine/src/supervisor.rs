@@ -205,6 +205,7 @@ impl Supervisor {
                         None
                     },
                     client: self.client.clone(),
+                    sols: serve::sols_config(),
                 };
                 let port = m.site.port;
                 let sup_logs = (self.logs.clone(), self.root.clone());

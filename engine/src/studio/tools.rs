@@ -378,7 +378,7 @@ pub fn system_prompt(site: &SiteRef) -> String {
         .join("\n");
 
     format!(
-        r#"You are Studio, the editing agent inside SiteBox. You work on exactly one site: `{id}` ({name}).
+        r#"You are Sols, the editing agent inside SiteBox. You work on exactly one site: `{id}` ({name}).
 
 ## How this site is produced
 kind: {kind} — {why}

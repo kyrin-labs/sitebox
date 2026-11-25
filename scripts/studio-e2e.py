@@ -536,6 +536,20 @@ def main():
         s, _, _ = req(base + "/api/studio/shots/demo/..%2F..%2Fsettings.json", token=TOKEN)
         check("shot path guard", s in (403, 404), s)
 
+        print("── P4: the Sols launcher is injected into served pages")
+        req(base + "/api/sites/demo/start", "POST", {}, token=TOKEN)
+        time.sleep(0.8)
+        with urllib.request.urlopen("http://127.0.0.1:4601/", timeout=10) as r:
+            page = r.read().decode()
+            etag = r.headers.get("ETag", "")
+        check("launcher injected into HTML", "__SOLS" in page and "/__sols/widget.js" in page, len(page))
+        check("injected response has its own ETag", etag.endswith('-sols1"'), etag)
+        with urllib.request.urlopen("http://127.0.0.1:4601/__sols/widget.js", timeout=10) as r:
+            widget = r.read().decode()
+            wtype = r.headers.get("Content-Type", "")
+        check("widget served", "Sols" in widget and "javascript" in wtype, wtype)
+        req(base + "/api/sites/demo/stop", "POST", {}, token=TOKEN)
+
         print("── P4: audit + legacy dashboard untouched")
         audit = [json.loads(l) for l in (SCRATCH / "dashboard/data/studio/audit.jsonl").read_text().splitlines() if l.strip()]
         check("audit has apply+undo", sum(1 for a in audit if a.get("action") == "apply") >= 2 and any(a.get("action") == "undo" for a in audit), len(audit))
