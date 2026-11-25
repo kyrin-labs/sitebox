@@ -1,0 +1,488 @@
+/* SiteBox Studio — the editing agent's chat panel.
+ *
+ * The server enforces the rules (no writes from the model, snapshot before
+ * apply, rollback on a red check). This file only draws what happened and asks
+ * the operator for the one decision the server will not make for them: Apply.
+ */
+
+(function () {
+  'use strict';
+
+  const state = {
+    site: '',
+    thread: '',
+    sites: [],
+    settings: {},
+    browser: null,
+    busy: false,
+    es: null,
+    streamEl: null,
+    patchEls: new Map(),
+  };
+
+  const $ = (sel, root) => (root || document).querySelector(sel);
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  /* Minimal, safe markdown: escape first, then only the constructs we emit. */
+  function md(text) {
+    let s = esc(text);
+    const blocks = [];
+    s = s.replace(/```([\s\S]*?)```/g, (_, code) => {
+      blocks.push(code);
+      return `\u0000${blocks.length - 1}\u0000`;
+    });
+    s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|\n)(#{1,4}) (.+)/g, (_, pre, _h, t) => `${pre}<strong>${t}</strong>`);
+    s = s.replace(/\n/g, '<br>');
+    s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre class="st-code">${blocks[+i]}</pre>`);
+    return s;
+  }
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: { 'content-type': 'application/json' } }, opts || {}));
+    const text = await res.text();
+    let data;
+    try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  /* ── shell ─────────────────────────────────────────────────────────────── */
+
+  function mount() {
+    if ($('#studio-launcher')) return;
+
+    const btn = el('button', 'studio-launcher');
+    btn.id = 'studio-launcher';
+    btn.title = 'SiteBox Studio';
+    btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Studio</span>';
+    btn.addEventListener('click', () => toggle(true));
+    document.body.appendChild(btn);
+
+    const panel = el('aside', 'studio-panel');
+    panel.id = 'studio-panel';
+    panel.innerHTML = `
+      <header class="st-head">
+        <div class="st-head__title">
+          <strong>Studio</strong>
+          <span class="st-status" id="st-status">…</span>
+        </div>
+        <div class="st-head__actions">
+          <button class="st-icon" id="st-new" title="New conversation">＋</button>
+          <button class="st-icon" id="st-settings" title="Settings">⚙</button>
+          <button class="st-icon" id="st-close" title="Close">✕</button>
+        </div>
+      </header>
+      <div class="st-bar">
+        <select id="st-site" class="st-select"></select>
+        <select id="st-thread" class="st-select st-select--thread"></select>
+        <button class="st-btn st-btn--ghost" id="st-undo" title="Restore the last snapshot">Undo</button>
+      </div>
+      <div class="st-log" id="st-log"></div>
+      <form class="st-compose" id="st-form">
+        <textarea id="st-input" rows="2" placeholder="บอกว่าจะแก้ตรงไหน…"></textarea>
+        <div class="st-compose__row">
+          <span class="st-hint" id="st-hint"></span>
+          <button type="button" class="st-btn st-btn--ghost" id="st-abort" hidden>Stop</button>
+          <button type="submit" class="st-btn st-btn--primary" id="st-send">Send</button>
+        </div>
+      </form>
+      <div class="st-settings" id="st-settings-panel" hidden>
+        <label>Base URL<input id="st-base" placeholder="https://api.example.com/v1"></label>
+        <label>Model<input id="st-model" placeholder="model-name"></label>
+        <label>API key<input id="st-key" type="password" placeholder="unchanged"></label>
+        <div class="st-settings__row">
+          <span class="st-hint" id="st-settings-hint"></span>
+          <button class="st-btn st-btn--primary" id="st-save">Save</button>
+        </div>
+      </div>`;
+    document.body.appendChild(panel);
+
+    $('#st-close').addEventListener('click', () => toggle(false));
+    $('#st-site').addEventListener('change', (e) => {
+      state.site = e.target.value;
+      localStorage.setItem('studio.site', state.site);
+      loadThreads(true);
+    });
+    $('#st-thread').addEventListener('change', (e) => selectThread(e.target.value));
+    $('#st-new').addEventListener('click', () => newThread());
+    $('#st-settings').addEventListener('click', () => {
+      const p = $('#st-settings-panel');
+      p.hidden = !p.hidden;
+      if (!p.hidden) fillSettings();
+    });
+    $('#st-save').addEventListener('click', saveSettings);
+    $('#st-undo').addEventListener('click', undo);
+    $('#st-abort').addEventListener('click', abort);
+    $('#st-form').addEventListener('submit', (e) => { e.preventDefault(); send(); });
+    $('#st-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+
+    refreshStatus();
+  }
+
+  function toggle(open) {
+    const p = $('#studio-panel');
+    p.classList.toggle('is-open', open);
+    if (open) {
+      refreshStatus();
+      $('#st-input').focus();
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const s = await api('/api/studio/status');
+      state.settings = s.settings || {};
+      state.sites = s.sites || [];
+      state.browser = s.browser;
+      renderStatus();
+      fillSites();
+    } catch (e) {
+      $('#st-status').textContent = e.message;
+      $('#st-status').classList.add('is-bad');
+    }
+  }
+
+  function renderStatus() {
+    const s = state.settings;
+    const badge = $('#st-status');
+    badge.classList.toggle('is-bad', !s.configured);
+    badge.textContent = s.configured
+      ? `${s.model}${state.browser ? ' · shots on' : ' · checks only'}`
+      : 'not configured';
+    $('#st-hint').textContent = s.configured ? '' : 'ตั้งค่า base URL + model ก่อน';
+    $('#st-send').disabled = !s.configured;
+  }
+
+  function fillSites() {
+    const sel = $('#st-site');
+    if (sel.options.length === state.sites.length && sel.options.length > 0) return;
+    sel.innerHTML = state.sites.map((s) => `<option value="${esc(s.id)}">${esc(s.name || s.id)}</option>`).join('');
+    const saved = localStorage.getItem('studio.site');
+    if (saved && state.sites.some((s) => s.id === saved)) state.site = saved;
+    else if (state.sites[0]) state.site = state.sites[0].id;
+    if (state.site) sel.value = state.site;
+  }
+
+  function fillSettings() {
+    $('#st-base').value = state.settings.base_url || '';
+    $('#st-model').value = state.settings.model || '';
+    $('#st-key').value = '';
+    $('#st-key').placeholder = state.settings.has_key ? 'unchanged (leave blank)' : 'sk-…';
+    $('#st-settings-hint').textContent = state.settings.endpoint || '';
+  }
+
+  async function saveSettings() {
+    const body = {
+      base_url: $('#st-base').value.trim(),
+      model: $('#st-model').value.trim(),
+    };
+    const key = $('#st-key').value.trim();
+    if (key) body.api_key = key;
+    try {
+      state.settings = await api('/api/studio/config', { method: 'PUT', body: JSON.stringify(body) });
+      $('#st-settings-panel').hidden = true;
+      renderStatus();
+    } catch (e) {
+      $('#st-settings-hint').textContent = e.message;
+    }
+  }
+
+  /* ── threads ───────────────────────────────────────────────────────────── */
+
+  async function loadThreads(fresh) {
+    state.patchEls.clear();
+    $('#st-log').innerHTML = '';
+    if (!state.site) return;
+    let threads = [];
+    try { threads = await api(`/api/studio/threads?site=${encodeURIComponent(state.site)}`); } catch (_) { threads = []; }
+    if (!Array.isArray(threads) || threads.length === 0) {
+      await newThread();
+      return;
+    }
+    const sel = $('#st-thread');
+    sel.innerHTML = threads.map((t) => `<option value="${esc(t.id)}">${esc(t.title || '(new conversation)')}</option>`).join('');
+    selectThread(threads[0].id);
+  }
+
+  async function newThread() {
+    if (!state.site) return;
+    try {
+      const t = await api('/api/studio/threads', { method: 'POST', body: JSON.stringify({ site_id: state.site }) });
+      await loadThreads(false);
+      selectThread(t.id);
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  async function selectThread(id) {
+    if (!id) return;
+    state.thread = id;
+    $('#st-thread').value = id;
+    $('#st-log').innerHTML = '';
+    state.patchEls.clear();
+    try {
+      const d = await api(`/api/studio/threads/${encodeURIComponent(id)}/messages`);
+      (d.messages || []).forEach(renderStored);
+    } catch (_) { /* a fresh thread has no messages file yet */ }
+    subscribe(id);
+    $('#st-input').focus();
+  }
+
+  function subscribe(threadId) {
+    if (state.es) { state.es.close(); state.es = null; }
+    state.es = new EventSource(`/api/studio/events?thread=${encodeURIComponent(threadId)}`);
+    state.es.onmessage = (m) => {
+      let ev;
+      try { ev = JSON.parse(m.data); } catch (_) { return; }
+      handleEvent(ev);
+    };
+    state.es.onerror = () => { /* EventSource reconnects by itself */ };
+  }
+
+  /* ── rendering ─────────────────────────────────────────────────────────── */
+
+  function renderStored(m) {
+    if (m.role === 'user') addMsg('user', m.content);
+    else if (m.role === 'assistant' && m.content) addMsg('assistant', m.content);
+    else if (m.role === 'tool') addToolLine(m.name || 'tool', m.content, true);
+  }
+
+  function addMsg(role, text) {
+    const n = el('div', `st-msg st-msg--${role}`);
+    n.innerHTML = md(text);
+    $('#st-log').appendChild(n);
+    scroll();
+    return n;
+  }
+
+  function addToolLine(name, detail, quiet) {
+    const d = el('details', 'st-tool');
+    const s = el('summary');
+    s.innerHTML = `<span class="st-tool__dot"></span>${esc(String(name).replace(/^sitebox_/, ''))}`;
+    d.appendChild(s);
+    const pre = el('pre', 'st-tool__body', typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2));
+    d.appendChild(pre);
+    if (quiet) d.classList.add('is-old');
+    $('#st-log').appendChild(d);
+    scroll();
+    return d;
+  }
+
+  function handleEvent(ev) {
+    switch (ev.type) {
+      case 'text_delta': {
+        if (!state.streamEl) state.streamEl = addMsg('assistant', '');
+        state.streamEl.insertAdjacentHTML('beforeend', md(ev.text));
+        scroll();
+        break;
+      }
+      case 'tool_start': {
+        state.streamEl = null;
+        const label = String(ev.name || '').replace(/^sitebox_/, '');
+        const d = addToolLine(ev.name, JSON.stringify(ev.args || {}));
+        d.dataset.running = '1';
+        d.classList.add('is-running');
+        d.querySelector('summary').insertAdjacentHTML('beforeend', `<span class="st-tool__state">running ${esc(label)}…</span>`);
+        d.open = false;
+        break;
+      }
+      case 'tool_end': {
+        const ds = [...document.querySelectorAll('.st-tool.is-running')];
+        const d = ds[ds.length - 1];
+        if (d) {
+          d.classList.remove('is-running');
+          d.dataset.running = '';
+          const st = d.querySelector('.st-tool__state');
+          if (st) st.textContent = ev.ok === false ? 'failed' : 'done';
+          const pre = d.querySelector('.st-tool__body');
+          if (pre) pre.textContent = JSON.stringify(ev.result, null, 2);
+          const url = ev.result && ev.result.url;
+          if (url && String(url).startsWith('/api/studio/shots/')) {
+            const img = el('img', 'st-shot');
+            img.src = url;
+            img.alt = 'screenshot';
+            d.appendChild(img);
+          }
+          if (ev.ok === false) d.classList.add('is-bad');
+        }
+        break;
+      }
+      case 'patch':
+        state.streamEl = null;
+        renderPatch(ev.patch);
+        break;
+      case 'done':
+        state.busy = false;
+        state.streamEl = null;
+        setBusy(false);
+        break;
+      case 'error':
+        state.busy = false;
+        state.streamEl = null;
+        setBusy(false);
+        addMsg('error', ev.message || 'error');
+        break;
+      case 'aborted':
+        state.busy = false;
+        state.streamEl = null;
+        setBusy(false);
+        break;
+      case 'turn_start':
+        state.busy = true;
+        setBusy(true);
+        break;
+    }
+  }
+
+  function renderPatch(p) {
+    const card = el('div', 'st-patch');
+    card.dataset.patch = p.id;
+    const v = p.verify || {};
+    const chip = v.ok ? '<span class="st-chip is-ok">staged checks pass</span>'
+      : `<span class="st-chip is-bad">${(v.fail || 0)} check${(v.fail || 0) === 1 ? '' : 's'} failing</span>`;
+    card.innerHTML = `
+      <div class="st-patch__head">
+        <code>${esc(p.path)}</code>
+        <span class="st-patch__stat"><b>+${p.added || 0}</b> <i>−${p.removed || 0}</i></span>
+      </div>
+      <div class="st-patch__reason">${esc(p.reason || '')}</div>
+      <div class="st-patch__chips">${chip}<span class="st-chip">${esc(v.mode || '')}</span></div>
+      <pre class="st-diff">${esc(p.diff || '')}</pre>
+      <div class="st-patch__actions">
+        <button class="st-btn st-btn--primary st-apply">Apply</button>
+        <button class="st-btn st-btn--ghost st-toggle-diff">Hide diff</button>
+        <span class="st-hint st-patch__result"></span>
+      </div>`;
+    $('#st-log').appendChild(card);
+    state.patchEls.set(p.id, card);
+    card.querySelector('.st-toggle-diff').addEventListener('click', (e) => {
+      const pre = card.querySelector('.st-diff');
+      pre.hidden = !pre.hidden;
+      e.target.textContent = pre.hidden ? 'Show diff' : 'Hide diff';
+    });
+    card.querySelector('.st-apply').addEventListener('click', () => applyPatch(p.id, card));
+    scroll();
+  }
+
+  async function applyPatch(id, card) {
+    const btn = card.querySelector('.st-apply');
+    const out = card.querySelector('.st-patch__result');
+    btn.disabled = true;
+    out.textContent = 'applying…';
+    try {
+      const r = await api(`/api/studio/patches/${encodeURIComponent(id)}/apply`, { method: 'POST' });
+      if (r.ok) {
+        card.classList.add('is-applied');
+        out.textContent = 'applied · checks pass';
+        btn.textContent = 'Applied';
+      } else {
+        card.classList.add('is-rolledback');
+        out.textContent = r.restored ? 'checks failed · restored' : 'checks failed';
+        btn.textContent = 'Not applied';
+        const fails = (r.static && r.static.findings || []).filter((f) => f.status === 'fail');
+        fails.slice(0, 4).forEach((f) => {
+          const line = el('div', 'st-fail', `${f.check}: ${f.title}${f.evidence ? ' — ' + f.evidence : ''}`);
+          card.appendChild(line);
+        });
+      }
+    } catch (e) {
+      out.textContent = e.message;
+      btn.disabled = false;
+    }
+  }
+
+  async function undo() {
+    if (!state.site) return;
+    if (!confirm('คืนค่า site กลับไป snapshot ล่าสุด?')) return;
+    try {
+      const r = await api(`/api/studio/sites/${encodeURIComponent(state.site)}/undo`, { method: 'POST' });
+      const text = r.ok
+        ? `ย้อนกลับแล้ว (${(r.changed || []).length} ไฟล์) · checks pass`
+        : 'ย้อนกลับแล้ว แต่ checks ไม่ผ่าน';
+      addMsg(r.ok ? 'system' : 'error', text);
+      toast(text);
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  async function abort() {
+    if (!state.thread) return;
+    try { await api('/api/studio/abort', { method: 'POST', body: JSON.stringify({ thread_id: state.thread }) }); }
+    catch (e) { toast(e.message); }
+  }
+
+  /* ── sending ───────────────────────────────────────────────────────────── */
+
+  function setBusy(on) {
+    $('#st-send').disabled = on || !state.settings.configured;
+    $('#st-abort').hidden = !on;
+    $('#st-input').disabled = on;
+  }
+
+  async function send() {
+    const input = $('#st-input');
+    const message = input.value.trim();
+    if (!message || state.busy) return;
+    if (!state.thread) { await newThread(); if (!state.thread) return; }
+    input.value = '';
+    addMsg('user', message);
+    state.busy = true;
+    setBusy(true);
+    try {
+      await api('/api/studio/chat', {
+        method: 'POST',
+        body: JSON.stringify({ thread_id: state.thread, message }),
+      });
+    } catch (e) {
+      addMsg('error', e.message);
+      state.busy = false;
+      setBusy(false);
+    }
+  }
+
+  function toast(msg) {
+    const t = el('div', 'st-toast', msg);
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 3200);
+  }
+
+  function scroll() {
+    const log = $('#st-log');
+    log.scrollTop = log.scrollHeight;
+  }
+
+  window.studioOpen = function (siteId) {
+    mount();
+    if (siteId) {
+      state.site = siteId;
+      $('#st-site').value = siteId;
+      localStorage.setItem('studio.site', siteId);
+      loadThreads(true);
+    }
+    toggle(true);
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mount);
+  } else {
+    mount();
+  }
+})();
