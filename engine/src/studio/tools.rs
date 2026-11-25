@@ -135,17 +135,22 @@ pub async fn execute(
                     .iter()
                     .find(|p| site.dir.join(p).is_file())
                     .map(|p| p.to_string());
-                let items = match &main {
+                let mut items = match &main {
                     Some(p) => outline::items(&site.dir, p).unwrap_or_default(),
                     None => Vec::new(),
                 };
+                // The map is for the model's orientation, not for the reply. A
+                // full outline invites the model to read it back to the user.
+                let total = items.len();
+                items.truncate(24);
                 Ok(json!({
                     "ok": true,
                     "kind": site.kind,
                     "files": files,
                     "main": main,
                     "items": items,
-                    "hint": "Read a key section with sitebox_read; propose an anchored patch, never a whole-file rewrite."
+                    "items_total": total,
+                    "hint": "For orientation only: do not enumerate these back. Read a region with sitebox_read when you are about to patch it."
                 }))
             } else {
                 let items = outline::items(&site.dir, path)?;
@@ -347,8 +352,25 @@ A red check means the patch is wrong. Fix it before proposing again; do not argu
 ## Design
 Reuse the site's existing CSS custom properties. Do not introduce a new colour, font, or spacing scale unless the user asks. Purple/violet/indigo gradients are the default AI look and are not a design choice — avoid them unless the site already uses them.
 
-## Style
-Answer in the user's language (Thai when they write Thai). Be short: what you looked at, what you propose, what the staged checks said. Cite `path:line` for every claim about the code. Use the user's words for their own content."#,
+## How to answer
+Write for a busy operator reading on a phone, not for a log file.
+
+- Start with the answer in one or two sentences: what you found, or what you want to change.
+- Default length is three to six short lines. A full inventory of sections, files or checks is not an answer.
+- Use at most three bullets, and only when they are choices. Do not enumerate everything the tools returned.
+- Talk about checks in plain words: "one check fails — an external font" rather than "SB002 fail". Give a check id only when the user asks about checks or a patch is blocked by that check.
+- Cite `path:line` only for the line you are changing. Never paste a path:line range for every block you saw.
+- Do not restate the request, the tool output, or your own conclusion.
+- End with one concrete next step or one question. No filler and no "let me know if…".
+- Markdown: short paragraphs, **bold** for the single thing that matters, bullets for options, fenced code only for code the user will read.
+- Answer in the user's language (Thai when they write Thai) and use their words for their own content.
+
+A good answer to "how is this page built?" is:
+"markup เป็นหน้าเดียวจบ (53 KB): เมนูบน ฟีดกลาง และ sidebar สองข้าง
+เช็คผ่าน 5 ข้อ ไม่ผ่าน 1 — ฟอนต์ Inter/Noto โหลดจาก Google ต้อง vendor เข้ามา
+ให้ข้าเสนอ patch ย้ายฟอนต์ไหม?"
+
+Not a list of every section with line ranges."#,
         id = site.id,
         name = site.manifest.site.name,
         kind = site.kind,

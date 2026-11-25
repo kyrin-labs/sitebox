@@ -510,3 +510,9 @@ a:hover { text-decoration: underline; }
 .st-msg--user a { color: #fff; }
 .st-msg li::marker { color: var(--text-3); }
 .st-msg pre.st-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Reading comfort: the chat is prose, not a console. */
+.st-msg { font-size: 0.875rem; line-height: 1.65; max-width: 94%; padding: 0.6rem 0.75rem; }
+.st-msg p { margin: 0 0 0.55rem; }
+.st-msg p:last-child { margin-bottom: 0; }
+.st-msg li { margin: 0.2rem 0; }
+.st-msg code { font-size: 0.82em; overflow-wrap: anywhere; }

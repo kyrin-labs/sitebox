@@ -195,6 +195,9 @@
       state.browser = s.browser;
       renderStatus();
       fillSites();
+      // Opening the panel without a card click must still show the last
+      // conversation; otherwise the log looks empty until the site is changed.
+      if (!state.thread && state.site) loadThreads(true);
     } catch (e) {
       $('#st-status').textContent = e.message;
       $('#st-status').classList.add('is-bad');
