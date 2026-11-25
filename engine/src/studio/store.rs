@@ -12,6 +12,17 @@ use std::path::PathBuf;
 use super::{new_id, StudioState};
 use crate::util;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub text: String,
+    #[serde(default = "pending")]
+    pub status: String,
+}
+
+fn pending() -> String {
+    "pending".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Thread {
     pub id: String,
@@ -22,6 +33,9 @@ pub struct Thread {
     /// Last page the operator was looking at when talking to this thread.
     #[serde(default)]
     pub page: Option<String>,
+    /// The visible plan for the current piece of work.
+    #[serde(default)]
+    pub plan: Vec<PlanStep>,
     #[serde(default)]
     pub created: String,
     #[serde(default)]
@@ -103,6 +117,7 @@ pub fn create(st: &StudioState, site_id: &str, title: &str) -> Result<Thread> {
         site_id: site_id.to_string(),
         title: title.trim().to_string(),
         page: None,
+        plan: Vec::new(),
         created: now.clone(),
         updated: now,
     };
@@ -139,6 +154,15 @@ pub fn set_page(st: &StudioState, id: &str, page: &str) -> Result<()> {
         return Ok(());
     }
     t.page = Some(page.chars().take(300).collect());
+    t.updated = util::now_iso();
+    let p = thread_dir(st, id).join("meta.json");
+    super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())
+}
+
+/// Replace the visible plan. Statuses are the model's own: pending, doing, done.
+pub fn set_plan(st: &StudioState, id: &str, steps: Vec<PlanStep>) -> Result<()> {
+    let mut t = get(st, id)?;
+    t.plan = steps.into_iter().take(8).collect();
     t.updated = util::now_iso();
     let p = thread_dir(st, id).join("meta.json");
     super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())

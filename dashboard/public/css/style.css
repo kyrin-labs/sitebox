@@ -542,3 +542,15 @@ body.sols-embed .studio-panel {
 }
 body.sols-embed .st-log,
 body.sols-embed .st-compose { width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; }
+
+/* Visible plan: orchestration the operator can watch. */
+.st-plan {
+  display: flex; flex-direction: column; gap: .18rem;
+  padding: .5rem .9rem; border-bottom: 1px solid var(--border-l);
+  background: var(--surface); font-size: .76rem;
+}
+.st-plan__row { display: flex; gap: .45rem; align-items: flex-start; color: var(--text-2); }
+.st-plan__row.is-done { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--border); }
+.st-plan__row.is-doing { color: var(--text); font-weight: 600; }
+.st-plan__dot { color: var(--accent); flex-shrink: 0; }
+.st-plan__row.is-done .st-plan__dot { color: var(--accent2); }

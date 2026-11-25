@@ -82,7 +82,7 @@ impl Settings {
             "has_key": self.key().is_some(),
             "configured": self.configured(),
             "endpoint": if self.base_url.trim().is_empty() { String::new() } else { self.endpoint() },
-            "max_rounds": self.max_rounds.unwrap_or(8),
+            "max_rounds": self.max_rounds.unwrap_or(12),
             "extra_headers": self.extra_headers,
         })
     }

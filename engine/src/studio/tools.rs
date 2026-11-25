@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::patch::PatchSpec;
-use super::{outline, shot, site_path, stage, store, SiteRef, StudioState};
+use super::{outline, shot, site_path, skills, stage, store, SiteRef, StudioState};
 use crate::checks;
 use crate::util;
 
@@ -15,6 +15,70 @@ const MAX_READ_LINES: usize = 400;
 
 pub fn definitions() -> Value {
     json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "sitebox_grep",
+                "description": "Find a literal string across the site's source files in one call. Use this to answer 'where does this text live' or 'how many pages have it' instead of reading files one by one.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "literal text to find (at least 3 characters)"},
+                        "glob": {"type": "string", "description": "optional file pattern, e.g. public/*.html"},
+                        "ignore_case": {"type": "boolean"},
+                        "max": {"type": "integer", "description": "max matches, default 40"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_skills",
+                "description": "List the SiteBox skills bundled with you and the one-line rule for when each applies.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_skill",
+                "description": "Read a bundled SiteBox skill before acting. The skill is the doctrine for that kind of work (design, data, create, verify, config, engine). Read it instead of guessing a workflow.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "skill name, e.g. sitebox-design"},
+                        "file": {"type": "string", "description": "optional markdown file inside the skill; default SKILL.md"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_plan",
+                "description": "Show or update the operator-visible plan. Call it before the first action with 2-5 steps, then call it again as steps move between pending, doing and done.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "text": {"type": "string"},
+                                    "status": {"type": "string", "enum": ["pending", "doing", "done"]}
+                                },
+                                "required": ["text"]
+                            }
+                        }
+                    },
+                    "required": ["steps"]
+                }
+            }
+        },
         {
             "type": "function",
             "function": {
@@ -134,6 +198,123 @@ pub async fn execute(
     args: &Value,
 ) -> Result<Value> {
     match name {
+        "sitebox_grep" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if query.chars().count() < 3 {
+                bail!("query must be at least 3 characters");
+            }
+            let ignore_case = args
+                .get("ignore_case")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let glob = args.get("glob").and_then(|v| v.as_str());
+            let max = args
+                .get("max")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(40)
+                .clamp(1, 200) as usize;
+            let needle = if ignore_case {
+                query.to_lowercase()
+            } else {
+                query.to_string()
+            };
+
+            let mut matches = Vec::new();
+            let mut files_hit = 0usize;
+            let mut truncated = false;
+            for (rel, _) in outline::source_files(&site.dir, 2000) {
+                if let Some(g) = glob {
+                    if !glob_match(g, &rel) {
+                        continue;
+                    }
+                }
+                let Ok(p) = site_path(&site.dir, &rel) else {
+                    continue;
+                };
+                let Ok(text) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                let mut hit = false;
+                for (i, line) in text.lines().enumerate() {
+                    let hay = if ignore_case {
+                        line.to_lowercase()
+                    } else {
+                        line.to_string()
+                    };
+                    if hay.contains(&needle) {
+                        hit = true;
+                        if matches.len() < max {
+                            let trimmed: String = line.trim().chars().take(180).collect();
+                            matches.push(json!({"path": rel, "line": i + 1, "text": trimmed}));
+                        } else {
+                            truncated = true;
+                        }
+                    }
+                }
+                if hit {
+                    files_hit += 1;
+                }
+            }
+            Ok(json!({
+                "ok": true,
+                "query": query,
+                "files": files_hit,
+                "matches": matches,
+                "truncated": truncated,
+            }))
+        }
+        "sols_skills" => Ok(json!({"ok": true, "skills": skills::list()})),
+        "sols_skill" => {
+            let skill = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let file = args.get("file").and_then(|v| v.as_str());
+            let (path, text) = skills::read(skill, file)?;
+            let total = text.chars().count();
+            let clipped: String = text.chars().take(80_000).collect();
+            Ok(json!({
+                "ok": true,
+                "name": skill,
+                "file": path,
+                "chars": total,
+                "text": clipped,
+                "note": "Follow this skill; do not restate it to the operator."
+            }))
+        }
+        "sols_plan" => {
+            let raw = args
+                .get("steps")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut steps: Vec<store::PlanStep> = raw
+                .iter()
+                .filter_map(|s| {
+                    let text = s.get("text").and_then(|v| v.as_str())?.trim().to_string();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let status = match s.get("status").and_then(|v| v.as_str()) {
+                        Some("doing") => "doing",
+                        Some("done") => "done",
+                        _ => "pending",
+                    };
+                    Some(store::PlanStep {
+                        text,
+                        status: status.to_string(),
+                    })
+                })
+                .collect();
+            if steps.is_empty() {
+                bail!("plan needs at least one step");
+            }
+            steps.truncate(8);
+            store::set_plan(st, thread_id, steps.clone())?;
+            super::emit(&st.events, thread_id, json!({"type":"plan","steps":steps}));
+            Ok(json!({"ok": true, "steps": steps}))
+        }
         "sitebox_site_kind" => Ok(json!({
             "ok": true,
             "site": site.id,
@@ -383,12 +564,35 @@ pub fn system_prompt(site: &SiteRef, page: Option<&str>) -> String {
         ),
         None => "The operator's current page is unknown. Ask if the page matters.".to_string(),
     };
+    let skill_index = skills::list()
+        .iter()
+        .map(|s| {
+            let d: String = s.description.chars().take(150).collect();
+            format!("- {}: {}", s.name, d)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     format!(
         r#"You are Sols, the editing agent inside SiteBox. You work on exactly one site: `{id}` ({name}).
 
+You work the way SiteBox's own agent does when it builds a site: read the skill that owns the task, plan in visible steps, execute with tools, verify with checks, report in a few lines.
+
+## How you work
+1. Say the goal in one sentence.
+2. Load the owning skill with `sols_skill` before acting. The skills are the doctrine; do not invent a workflow they already define.
+3. Call `sols_plan` with 2-5 steps before the first action, then again as steps move between pending, doing and done.
+4. Batch the work: one outline, then read only the region you will change. Never re-read what you already have.
+5. Verify with `sitebox_check`, and `sitebox_verify` when the site is running, before you claim anything.
+6. Close with what changed, what the checks said, and one next step.
+
 ## Where the operator is
 {where_}
+
+## Skills (bundled, read on demand)
+{skill_index}
+
+Routing: look, layout, copy, tokens → sitebox-design · real content, numbers, sources → sitebox-data · build or change a page → sitebox-create · prove it → sitebox-verify · register, port, start/stop, logs → sitebox-config · manifest, pipeline, engine commands → sitebox-engine · the skills themselves → sitebox-skill-maintainer. `sols_skill` reads the file; `sols_skills` lists every file including references.
 
 ## How this site is produced
 kind: {kind} — {why}
@@ -403,6 +607,7 @@ pipeline steps: {steps}
 You cannot write files. You have `sitebox_propose_patch`, which stages an exact-substring edit in a copy, runs the static checks, and queues it for the operator. The operator clicks Apply; the server snapshots first and rolls back automatically if a check fails. Never say a change is live, applied, or done — say it is proposed or queued.
 
 ## Finding what they mean
+- Use `sitebox_grep` for "where does this text live": one call returns `path:line` for every page that contains it. Do not read files one at a time to count occurrences.
 - If the text they quote appears in several files (a footer, a tagline, a nav), say that plainly and offer to change every page in one pass: one patch per file. Never silently change one page of ten.
 - A phrase repeated across pages is a multi-file edit. Propose at most three patches in one turn, then stop and tell the operator to apply them and say "continue". Do not try to finish ten files in one turn.
 - Read at most three regions before you either propose a patch or ask one question. If which page or which wording is unclear, ask — do not tour the site.
@@ -470,4 +675,29 @@ Not a list of every section with line ranges."#,
             files
         },
     )
+}
+
+/// Tiny glob: `*` matches anything (including `/`), `?` matches one character.
+/// Enough for `public/*.html`, which is how the model asks for a file set.
+fn glob_match(pat: &str, s: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let t: Vec<char> = s.chars().collect();
+    let (n, m) = (p.len(), t.len());
+    let mut dp = vec![vec![false; m + 1]; n + 1];
+    dp[0][0] = true;
+    for i in 1..=n {
+        if p[i - 1] == '*' {
+            dp[i][0] = dp[i - 1][0];
+        }
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            dp[i][j] = match p[i - 1] {
+                '*' => dp[i - 1][j] || dp[i][j - 1],
+                '?' => dp[i - 1][j - 1],
+                c => dp[i - 1][j - 1] && c == t[j - 1],
+            };
+        }
+    }
+    dp[n][m]
 }

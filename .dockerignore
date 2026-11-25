@@ -8,7 +8,6 @@ dashboard/data/*.tmp
 engine/target
 logs
 docs
-skills
 skills-lock.json
 CONTRIBUTING.md
 README.md

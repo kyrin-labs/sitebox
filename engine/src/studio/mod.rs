@@ -15,6 +15,7 @@ pub mod llm;
 pub mod outline;
 pub mod patch;
 pub mod shot;
+pub mod skills;
 pub mod snapshot;
 pub mod stage;
 pub mod store;
@@ -272,7 +273,7 @@ async fn run_turn_inner(
     if !settings.configured() {
         bail!("agent is not configured: set base URL and model in Studio settings");
     }
-    let max_rounds = settings.max_rounds.unwrap_or(8).clamp(1, 12);
+    let max_rounds = settings.max_rounds.unwrap_or(12).clamp(1, 20);
     let tools = tools::definitions();
     let mut tokens_in: u64 = 0;
     let mut tokens_out: u64 = 0;

@@ -151,6 +151,7 @@
         <select id="st-thread" class="st-select st-select--thread"></select>
         <button class="st-btn st-btn--ghost" id="st-undo" title="Restore the last snapshot">Undo</button>
       </div>
+      <div class="st-plan" id="st-plan" hidden></div>
       <div class="st-log" id="st-log"></div>
       <form class="st-compose" id="st-form">
         <textarea id="st-input" rows="2" placeholder="บอกว่าจะแก้ตรงไหน…"></textarea>
@@ -285,6 +286,7 @@
   async function loadThreads(fresh) {
     state.patchEls.clear();
     $('#st-log').innerHTML = '';
+    renderPlan([]);
     if (!state.site) return;
     let threads = [];
     try { threads = await api(`/api/studio/threads?site=${encodeURIComponent(state.site)}`); } catch (_) { threads = []; }
@@ -317,6 +319,7 @@
     try {
       const d = await api(`/api/studio/threads/${encodeURIComponent(id)}/messages`);
       (d.messages || []).forEach(renderStored);
+      renderPlan(d.thread && d.thread.plan);
     } catch (_) { /* a fresh thread has no messages file yet */ }
     subscribe(id);
     $('#st-input').focus();
@@ -362,8 +365,27 @@
     return d;
   }
 
+  function renderPlan(steps) {
+    const box = $('#st-plan');
+    if (!box) return;
+    if (!steps || !steps.length) {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    const icon = { done: '●', doing: '◐', pending: '○' };
+    box.hidden = false;
+    box.innerHTML = steps.map((s) => {
+      const status = s.status || 'pending';
+      return `<div class="st-plan__row is-${esc(status)}"><span class="st-plan__dot">${icon[status] || '○'}</span><span>${esc(s.text)}</span></div>`;
+    }).join('');
+  }
+
   function handleEvent(ev) {
     switch (ev.type) {
+      case 'plan':
+        renderPlan(ev.steps);
+        break;
       case 'text_delta': {
         if (!state.streamEl) {
           state.streamEl = addMsg('assistant', '');

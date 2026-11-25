@@ -6,6 +6,9 @@ FROM rust:1-alpine AS build
 RUN apk add --no-cache musl-dev build-base
 WORKDIR /src/engine
 COPY engine/ ./
+# The skills are embedded by build.rs; without them the binary would ship
+# without the doctrine Sols is supposed to follow.
+COPY skills/ /src/skills/
 RUN cargo build --release
 
 # ── runtime ──────────────────────────────────────────────────────────────

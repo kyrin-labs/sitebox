@@ -168,6 +168,24 @@ class MockLLM(BaseHTTPRequestHandler):
                 self._stream("Queued; the apply should roll back.", None)
             return
 
+        if "skill test" in user_text:
+            if n == 0:
+                self._stream("Loading the skill.", {"name": "sols_skills", "arguments": "{}"})
+            elif n == 1:
+                self._stream("Reading design.", {"name": "sols_skill", "arguments": json.dumps({"name": "sitebox-design"})})
+            elif n == 2:
+                self._stream("Finding the text.", {"name": "sitebox_grep", "arguments": json.dumps({"query": "One paragraph"})})
+            elif n == 3:
+                args = {"steps": [
+                    {"text": "read the skill", "status": "done"},
+                    {"text": "propose a patch", "status": "doing"},
+                    {"text": "verify", "status": "pending"},
+                ]}
+                self._stream("Planning.", {"name": "sols_plan", "arguments": json.dumps(args)})
+            else:
+                self._stream("Loaded the doctrine and planned the work.", None)
+            return
+
         if "lifecycle" in user_text:
             if n == 0:
                 self._stream("Starting the site.", {"name": "sitebox_site_start", "arguments": "{}"})
@@ -435,9 +453,29 @@ def main():
         check("undo ok", s == 200 and rep3.get("ok") is True, (s, rep3))
         check("undo restores identical bytes", (SCRATCH / "sites/demo/public/index.html").read_bytes() == before)
 
+        print("── P2: bundled skills and a visible plan")
+        s, thk, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
+        req(base + "/api/studio/chat", "POST", {"thread_id": thk["id"], "message": "skill test"}, token=TOKEN)
+        sk_msgs = []
+        for _ in range(60):
+            time.sleep(0.3)
+            sk_msgs = req(base + f"/api/studio/threads/{thk['id']}/messages", token=TOKEN)[1].get("messages", [])
+            if any(m.get("role") == "assistant" and "doctrine" in (m.get("content") or "") for m in sk_msgs):
+                break
+        tool_blob = "\n".join(m.get("content") or "" for m in sk_msgs if m.get("role") == "tool")
+        check("skills are bundled", "sitebox-design" in tool_blob and "sitebox-verify" in tool_blob, len(tool_blob))
+        check("skill body readable", "# " in tool_blob and len(tool_blob) > 2000, len(tool_blob))
+        check("grep finds text in one call", '"path":"public/index.html"' in tool_blob.replace(" ", "") and '"files":1' in tool_blob.replace(" ", ""), len(tool_blob))
+        check("plan stored on the thread", len((req(base + f"/api/studio/threads/{thk['id']}/messages", token=TOKEN)[1].get("thread", {}) or {}).get("plan", [])) == 3, "no plan")
+        time.sleep(1.2)  # let the skill turn release the site lock
+
         print("── P2/P3: a patch that breaks a check rolls back")
         s, th2, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
-        req(base + "/api/studio/chat", "POST", {"thread_id": th2["id"], "message": "rollback please"}, token=TOKEN)
+        for _ in range(30):
+            sc, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th2["id"], "message": "rollback please"}, token=TOKEN)
+            if sc != 409:
+                break
+            time.sleep(0.4)
         bad = wait_patch(th2["id"])
         time.sleep(0.5)
         check("bad patch queued", bad and "missing.png" in bad.get("new", ""), bad and bad.get("path"))
