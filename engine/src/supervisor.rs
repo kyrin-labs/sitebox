@@ -274,8 +274,24 @@ impl Supervisor {
                 let mut cmd = tokio::process::Command::new("node");
                 cmd.arg(&server)
                     .current_dir(&site_dir)
-                    .env("PORT", m.site.port.to_string())
-                    .stdout(std::process::Stdio::piped())
+                    .env("PORT", m.site.port.to_string());
+                // The gateway lives in the engine's .env, not in the dashboard
+                // process environment. Pass it to node sites explicitly so a
+                // server.js can call the provider without a key in public/.
+                for key in ["AI_BASE_URL", "AI_MODEL", "AI_API_KEY", "SEARXNG_URL"] {
+                    if let Some(v) = crate::studio::config::env_or_file(&self.root, key) {
+                        cmd.env(key, v);
+                    }
+                }
+                // Some gateways need request headers (a user-agent, a session
+                // id). They live in settings.json, so hand them over as JSON.
+                let headers = crate::studio::config::Settings::load(&self.root).extra_headers;
+                if !headers.is_empty() {
+                    if let Ok(v) = serde_json::to_string(&headers) {
+                        cmd.env("AI_HEADERS", v);
+                    }
+                }
+                cmd.stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
                 let mut child = cmd.spawn().context("spawn node")?;
                 let pid = child.id();

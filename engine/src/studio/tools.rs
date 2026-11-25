@@ -88,6 +88,41 @@ pub fn definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "sitebox_http",
+                "description": "Call a route on this site (localhost only) and return the status and body. Use it to test /api/ endpoints you just wrote — a 200 with the wrong JSON is still a bug.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "method": {"type": "string", "description": "GET or POST, default GET"},
+                        "path": {"type": "string", "description": "path on the site, e.g. /api/chat"},
+                        "body": {"type": "object", "description": "JSON body for POST"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_asset",
+                "description": "Download public photos (jpeg/png/webp/gif) into public/assets and return paths and pixel sizes. Pass one `url`, or `items` for a batch (up to 12). Only adds new files, never overwrites.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "name": {"type": "string", "description": "file name without extension, e.g. feed-01"},
+                        "items": {
+                            "type": "array",
+                            "description": "batch form: [{url, name}]",
+                            "items": {"type": "object", "properties": {"url": {"type": "string"}, "name": {"type": "string"}}}
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sitebox_probe",
                 "description": "Render a page at a given width and report layout numbers: elements wider than the viewport, clipped scroll containers, and text below 12px. Use it at width 375 before calling a page finished.",
                 "parameters": {
@@ -241,7 +276,7 @@ pub fn definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "sitebox_propose_patch",
-                "description": "Propose ONE exact-substring edit. `old` must occur exactly `count` times in the file or the server refuses. The server stages the patch in a copy, runs the static checks, and queues it for the operator to apply. You cannot write the file yourself.",
+                "description": "Propose exact-substring edits. Each `old` must occur exactly `count` times in its file or the server refuses. Pass `path/old/new` for one, or `patches` for up to 12 in one call. The server stages each patch in a copy, runs the static checks, and queues it for the operator (or applies it during site creation).",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -249,9 +284,18 @@ pub fn definitions() -> Value {
                         "old": {"type": "string", "description": "exact existing text to replace, including indentation"},
                         "new": {"type": "string", "description": "replacement text"},
                         "count": {"type": "integer", "description": "exact number of occurrences of `old` (default 1)"},
-                        "reason": {"type": "string", "description": "one sentence: what this changes and why"}
-                    },
-                    "required": ["path", "old", "new", "reason"]
+                        "reason": {"type": "string", "description": "one sentence: what this changes and why"},
+                        "create": {"type": "boolean", "description": "write a new file (send the whole content in `new`; no `old`)"},
+                        "patches": {
+                            "type": "array",
+                            "description": "batch form: [{path, old, new, count?, reason}]",
+                            "items": {"type": "object", "properties": {
+                                "path": {"type": "string"}, "old": {"type": "string"},
+                                "new": {"type": "string"}, "count": {"type": "integer"},
+                                "reason": {"type": "string"}, "create": {"type": "boolean"}
+                            }, "required": ["path", "new", "reason"]}
+                        }
+                    }
                 }
             }
         }
@@ -426,6 +470,148 @@ pub async fn execute_unbound(
 
 /// Web search through the operator's SearXNG. Configured with `SEARXNG_URL`
 /// (environment first, then `.env` at the data root).
+
+/// Bring one photo into the site while it is being created. A clone without
+/// photography is a wireframe, and the check catalog forbids hotlinking, so the
+/// agent needs a way to own the bytes it references.
+async fn add_asset(st: &StudioState, site: &SiteRef, args: &Value) -> Result<Value> {
+    // One call can carry a whole feed: a photo grid is ten files, and a tool
+    // that needs ten rounds to do it never finishes inside a turn.
+    let mut items: Vec<(String, String)> = Vec::new();
+    if let Some(list) = args.get("items").and_then(|v| v.as_array()) {
+        for it in list.iter().take(12) {
+            let url = it.get("url").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let name = it.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if !url.is_empty() {
+                items.push((url.to_string(), name.to_string()));
+            }
+        }
+    }
+    if items.is_empty() {
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if url.is_empty() {
+            bail!("`url` or `items` is required");
+        }
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        items.push((url.to_string(), name.to_string()));
+    }
+
+    let mut assets = Vec::new();
+    let mut errors = Vec::new();
+    for (url, name) in &items {
+        match fetch_one_asset(site, url, name).await {
+            Ok(v) => assets.push(v),
+            Err(e) => errors.push(json!({"url": url, "error": format!("{e:#}")})),
+        }
+    }
+    Ok(json!({
+        "ok": errors.is_empty(),
+        "assets": assets,
+        "errors": errors,
+        "next": "Reference each with its relative `url` and set width/height on the <img>.",
+    }))
+}
+
+async fn fetch_one_asset(site: &SiteRef, raw: &str, wanted: &str) -> Result<Value> {
+    let url = safe_url(raw)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent("SiteBox-Sols/1.0")
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 4
+                || !host_is_public(attempt.url().host_str().unwrap_or(""))
+            {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()?;
+    let resp = client
+        .get(url.clone())
+        .send()
+        .await
+        .with_context(|| format!("fetching {url} failed"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("{url} answered {status}");
+    }
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ext = match ctype.split(';').next().unwrap_or("").trim() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        other => bail!("{url} is `{other}`, not a photo (jpeg/png/webp/gif)"),
+    };
+    let bytes = resp.bytes().await?;
+    if bytes.len() > 3 * 1024 * 1024 {
+        bail!("{url} is {} bytes; the asset limit is 3 MB", bytes.len());
+    }
+
+    let dir = site.dir.join("public/assets");
+    std::fs::create_dir_all(&dir)?;
+    let stem = asset_slug(wanted, raw);
+    let mut path = dir.join(format!("{stem}.{ext}"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem}-{n}.{ext}"));
+        n += 1;
+        if n > 40 {
+            bail!("too many files with that name");
+        }
+    }
+    super::atomic_write(&path, &bytes)?;
+    let (w, h) = image::image_dimensions(&path).unwrap_or((0, 0));
+    let file = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    Ok(json!({
+        "path": format!("public/assets/{file}"),
+        "url": format!("/assets/{file}"),
+        "bytes": bytes.len(),
+        "width": w,
+        "height": h,
+        "content_type": ctype,
+    }))
+}
+
+fn asset_slug(wanted: &str, url: &str) -> String {
+    let source = if wanted.trim().is_empty() {
+        url.rsplit('/')
+            .next()
+            .unwrap_or("image")
+            .split('.')
+            .next()
+            .unwrap_or("image")
+    } else {
+        wanted
+    };
+    let mut s: String = source
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    while s.starts_with('-') || s.starts_with('_') {
+        s.remove(0);
+    }
+    if s.is_empty() {
+        s = format!("img-{}", &util::sha256_bytes(url.as_bytes())[..6]);
+    }
+    s.chars().take(48).collect()
+}
+
 async fn web_search(st: &StudioState, args: &Value) -> Result<Value> {
     let base = config::env_or_file(&st.root, "SEARXNG_URL").ok_or_else(|| {
         anyhow::anyhow!(
@@ -792,6 +978,7 @@ pub async fn execute(
     auto_apply: bool,
 ) -> Result<Value> {
     match name {
+        "sols_asset" => add_asset(st, site, args).await,
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(args).await,
         "sitebox_grep" => {
@@ -1002,6 +1189,56 @@ pub async fn execute(
             let report = checks::run_http(&base, &st.check_client).await;
             Ok(json!({"ok": report.ok(), "base": base, "findings": report.findings}))
         }
+        "sitebox_http" => {
+            if !st.sup.is_running(&site.id).await {
+                bail!(
+                    "site {} is not running; start it before testing routes",
+                    site.id
+                );
+            }
+            let route = args.get("path").and_then(|v| v.as_str()).unwrap_or("/");
+            if !route.starts_with('/') {
+                bail!("path must start with /");
+            }
+            let method = args
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("GET")
+                .to_uppercase();
+            let url = format!("http://127.0.0.1:{}{route}", site.manifest.site.port);
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(90))
+                .no_gzip()
+                .build()?;
+            let mut req = match method.as_str() {
+                "GET" => client.get(&url),
+                "POST" => client.post(&url),
+                other => bail!("method {other} is not supported"),
+            };
+            if let Some(body) = args.get("body") {
+                req = req.json(body);
+            }
+            let resp = req
+                .send()
+                .await
+                .with_context(|| format!("{method} {route} failed"))?;
+            let status = resp.status().as_u16();
+            let ctype = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let text = resp.text().await.unwrap_or_default();
+            let body: String = text.chars().take(4000).collect();
+            Ok(json!({
+                "ok": (200..400).contains(&status),
+                "status": status,
+                "content_type": ctype,
+                "body": body,
+                "truncated": text.chars().count() > 4000,
+            }))
+        }
         "sitebox_probe" => {
             if !st.sup.is_running(&site.id).await {
                 bail!(
@@ -1069,7 +1306,48 @@ async fn propose(
     args: &Value,
     auto_apply: bool,
 ) -> Result<Value> {
+    // A whole-page edit is eight small replacements; one call carries them all
+    // so the round budget goes to thinking, not to bookkeeping.
+    if let Some(list) = args.get("patches").and_then(|v| v.as_array()) {
+        if list.is_empty() {
+            bail!("`patches` is empty");
+        }
+        let mut done = Vec::new();
+        let mut errors = Vec::new();
+        for (i, item) in list.iter().take(12).enumerate() {
+            match propose_one(st, site, thread_id, item, auto_apply).await {
+                Ok(v) => done.push(v),
+                Err(e) => errors.push(json!({"index": i, "error": format!("{e:#}")})),
+            }
+        }
+        return Ok(json!({
+            "ok": errors.is_empty(),
+            "patches": done,
+            "errors": errors,
+            "next": if errors.is_empty() { "All patches are in place." } else { "Fix the failed entries and send only those again." },
+        }));
+    }
+    propose_one(st, site, thread_id, args, auto_apply).await
+}
+
+async fn propose_one(
+    st: &StudioState,
+    site: &SiteRef,
+    thread_id: &str,
+    args: &Value,
+    auto_apply: bool,
+) -> Result<Value> {
+    let wants_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let target_exists = site_path(&site.dir, wants_path)
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    let explicit_create = args
+        .get("create")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let old_text = args.get("old").and_then(|v| v.as_str()).unwrap_or("");
     let spec = PatchSpec {
+        create: explicit_create || (!target_exists && old_text.is_empty()),
         path: args
             .get("path")
             .and_then(|v| v.as_str())
@@ -1085,7 +1363,13 @@ async fn propose(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        count: args.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
+        count: if args.get("count").is_some() {
+            args.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as usize
+        } else if !target_exists && old_text.is_empty() {
+            0
+        } else {
+            1
+        },
         reason: args
             .get("reason")
             .and_then(|v| v.as_str())
@@ -1095,18 +1379,30 @@ async fn propose(
     super::patch::validate(&spec, &site.kind)?;
 
     let target = site_path(&site.dir, &spec.path)?;
-    let size = std::fs::metadata(&target)
-        .with_context(|| format!("{} does not exist", spec.path))?
-        .len();
-    if size > super::patch::MAX_FILE_BYTES {
-        bail!(
-            "{} is {size} bytes; the patch limit is {}",
-            spec.path,
-            super::patch::MAX_FILE_BYTES
-        );
-    }
-    let before = std::fs::read_to_string(&target)
-        .map_err(|_| anyhow::anyhow!("{} is not UTF-8 text", spec.path))?;
+    let before = if spec.create {
+        if target.exists() {
+            bail!("{} already exists; patch it instead", spec.path);
+        }
+        String::new()
+    } else {
+        let size = std::fs::metadata(&target)
+            .with_context(|| {
+                format!(
+                    "{} does not exist (pass `create` to make a new file)",
+                    spec.path
+                )
+            })?
+            .len();
+        if size > super::patch::MAX_FILE_BYTES {
+            bail!(
+                "{} is {size} bytes; the patch limit is {}",
+                spec.path,
+                super::patch::MAX_FILE_BYTES
+            );
+        }
+        std::fs::read_to_string(&target)
+            .map_err(|_| anyhow::anyhow!("{} is not UTF-8 text", spec.path))?
+    };
     let after = super::patch::apply_text(&before, &spec.old, &spec.new, spec.count)?;
     super::patch::html_sanity(&spec.path, &after)?;
     let (diff, stat) = super::patch::diff_hunk(&before, &after);
@@ -1123,6 +1419,7 @@ async fn propose(
         new: spec.new.clone(),
         count: spec.count,
         reason: spec.reason.clone(),
+        create: spec.create,
         diff: diff.clone(),
         status: "pending".into(),
         created: util::now_iso(),
@@ -1215,7 +1512,7 @@ Work the way SiteBox's own agent does: read the skill that owns the task, plan i
 3. Call `sols_plan` with 3-5 steps before the first action, then update it as steps move between pending, doing and done.
 4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Do not interview the operator when the request is already clear: make the reasonable choice, say it in one line, and build. Choose `id` and `name` yourself and say what you chose.
 5. `sols_create_site` writes the folder, manifest, starter page and registry entry, picks a free port, starts the site and binds this conversation to it. It already starts the site: do not call `sitebox_site_start` afterwards. A static site serves files from disk, so a patch needs no restart either.
-6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
+6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. Photography: `sols_asset` downloads a photo into `public/assets` while you are creating (prefer `https://picsum.photos/seed/<word>/800/800` for placeholder shots). Never hotlink an image; always set width/height on `<img>`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
 
 ## Skills (bundled, read on demand)
 {skill_index}
@@ -1237,6 +1534,29 @@ You cannot write files except through `sols_create_site` (once, before a site ex
 
 ## Language
 Answer in the language the operator used, and only that language. Never mix scripts: a Chinese or Japanese character inside a Thai or English sentence is a bug, not a style.
+
+## Editing
+Send a whole change as one call with `patches` (up to 12 exact replacements) instead of one call per line. Prefer a few larger anchors over many tiny ones.
+
+## Photography
+A photo-sharing page, portfolio or product page needs photographs, not gradients. Use `sols_asset` to download one (picsum.photos seeds are fine for placeholders), reference it with the returned `/assets/...` url, and set width/height on every `<img>`. Never hotlink an image from another site.
+
+## Real functionality
+A site that has to think, remember or call an API is a node site, not a mockup.
+- Write the UI under `public/`, then `server.js` at the site root and patch `sitebox.toml` to `serve = "node"`. Node's built-in modules only: no `npm install` at runtime.
+- The gateway comes from the environment: `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`. Read them in `server.js` with `process.env`. Never put a key in `public/` or in the page; the browser only talks to your `/api/` routes.
+- Listen on `0.0.0.0`, not `127.0.0.1`: the checks only see localhost, but the operator opens the site from another device on the LAN.
+- Keep state (threads, profiles, memory) in a JSON file under the site folder such as `data/store.json`, not under `public/`.
+- Some gateways need extra request headers. SiteBox passes them to node servers as `AI_HEADERS`, a JSON object; send them on every provider request.
+- After a restart, call the route with `sitebox_http` and read the body. A 200 with `{{"error":...}}` or `live:false` is a bug, not success.
+- If the provider call fails, log the status and body and return the real error (a `live: false` with a canned reply hides the bug). Never fall back silently.
+- A file that does not exist yet is a creating patch: pass `create: true` and the whole content in `new`.
+
+## Deciding versus asking
+- When the operator says "do it", "all of it", "go ahead" or repeats a request, act. Do not ask again and do not restate the question.
+- Ask at most one question per turn, and only when a wrong guess would waste the work. Anything else: choose the sensible default, say it in one line, and build.
+- Never answer with only a question when part of the request is already actionable.
+- Do not re-read a region you read earlier in the same turn; the transcript already holds it.
 
 ## How to answer
 Three to six short lines, at most three bullets, plain words for checks, `path:line` only for the line you change, one next step. Thai when the operator writes Thai."#
@@ -1324,6 +1644,19 @@ Reuse the site's existing CSS custom properties. Do not introduce a new colour, 
 ## Language
 Answer in the language the operator used, and only that language. Never mix scripts: a Chinese or Japanese character inside a Thai or English sentence is a bug, not a style.
 
+## Real functionality
+A site that has to think, remember or call an API is a node site, not a mockup.
+- Write the UI under `public/`, then `server.js` at the site root and patch `sitebox.toml` to `serve = "node"`. Node's built-in modules only: no `npm install` at runtime.
+- The gateway comes from the environment: `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`. Read them in `server.js` with `process.env`. Never put a key in `public/` or in the page; the browser only talks to your `/api/` routes.
+- Keep state (threads, profiles, memory) in a JSON file under the site folder such as `data/store.json`, not under `public/`.
+- A file that does not exist yet is a creating patch: pass `create: true` and the whole content in `new`.
+
+## Deciding versus asking
+- When the operator says "do it", "all of it", "go ahead" or repeats a request, act. Do not ask again and do not restate the question.
+- Ask at most one question per turn, and only when a wrong guess would waste the work. Anything else: choose the sensible default, say it in one line, and build.
+- Never answer with only a question when part of the request is already actionable.
+- Do not re-read a region you read earlier in the same turn; the transcript already holds it.
+
 ## How to answer
 Write for a busy operator reading on a phone, not for a log file.
 
@@ -1391,6 +1724,22 @@ fn glob_match(pat: &str, s: &str) -> bool {
         }
     }
     dp[n][m]
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::asset_slug;
+
+    #[test]
+    fn makes_safe_file_stems() {
+        assert_eq!(asset_slug("feed-01", "https://x/i.jpg"), "feed-01");
+        assert_eq!(
+            asset_slug("", "https://cdn.example/photo%20one.JPG"),
+            "photo20one"
+        );
+        assert_eq!(asset_slug("../../etc/passwd", "https://x/"), "etcpasswd");
+        assert!(asset_slug("", "https://x/").starts_with("img-"));
+    }
 }
 
 #[cfg(test)]

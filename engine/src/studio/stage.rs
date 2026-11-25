@@ -55,12 +55,25 @@ pub fn verify(st: &StudioState, site: &SiteRef, spec: &PatchSpec) -> Result<(Sta
 
         let target =
             site_path(&stage_site, &spec.path).with_context(|| format!("stage {}", spec.path))?;
-        let text = std::fs::read_to_string(&target)
-            .map_err(|_| anyhow::anyhow!("{} is not UTF-8 text", spec.path))?;
-        let next = super::patch::apply_text(&text, &spec.old, &spec.new, spec.count)?;
-        // Break the hard link before writing: writing in place would edit the live file.
-        std::fs::remove_file(&target)?;
-        std::fs::write(&target, next)?;
+        if spec.create {
+            if target.exists() {
+                anyhow::bail!(
+                    "{} already exists; patch it instead of creating it",
+                    spec.path
+                );
+            }
+            if let Some(parent) = target.parent() {
+                super::ensure_dir(parent)?;
+            }
+            std::fs::write(&target, &spec.new)?;
+        } else {
+            let text = std::fs::read_to_string(&target)
+                .map_err(|_| anyhow::anyhow!("{} is not UTF-8 text", spec.path))?;
+            let next = super::patch::apply_text(&text, &spec.old, &spec.new, spec.count)?;
+            // Break the hard link before writing: writing in place would edit the live file.
+            std::fs::remove_file(&target)?;
+            std::fs::write(&target, next)?;
+        }
 
         let mut m = site.manifest.clone();
         m.site.path = "site".into();

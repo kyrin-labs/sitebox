@@ -83,6 +83,9 @@ pub struct PatchRec {
     pub count: usize,
     #[serde(default)]
     pub reason: String,
+    /// This patch wrote a file that did not exist; a failed apply must remove it.
+    #[serde(default)]
+    pub create: bool,
     #[serde(default)]
     pub diff: String,
     #[serde(default)]

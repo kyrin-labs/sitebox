@@ -168,8 +168,15 @@ fn load_port(st: &StudioState, site: &str) -> u16 {
 fn write_and_check(st: &StudioState, rec: &store::PatchRec) -> Result<Written> {
     let site = site_ref(&st.root, &rec.site_id)?;
     let target = site_path(&site.dir, &rec.path)?;
-    let before = std::fs::read_to_string(&target)
-        .map_err(|_| anyhow::anyhow!("{} is no longer readable text", rec.path))?;
+    let before = if rec.create {
+        if target.exists() {
+            anyhow::bail!("{} already exists; refusing to overwrite it", rec.path);
+        }
+        String::new()
+    } else {
+        std::fs::read_to_string(&target)
+            .map_err(|_| anyhow::anyhow!("{} is no longer readable text", rec.path))?
+    };
     // Re-assert the anchor: the file may have changed since the patch was queued.
     let after = patch::apply_text(&before, &rec.old, &rec.new, rec.count)
         .map_err(|e| anyhow::anyhow!("patch is stale: {e}"))?;
@@ -185,6 +192,11 @@ fn write_and_check(st: &StudioState, rec: &store::PatchRec) -> Result<Written> {
         &site.dir,
         &format!("before patch: {}", rec.reason),
     )?;
+    if rec.create {
+        if let Some(parent) = target.parent() {
+            super::ensure_dir(parent)?;
+        }
+    }
     super::atomic_write(&target, after.as_bytes())?;
 
     let mut build: Vec<Value> = Vec::new();
@@ -220,6 +232,9 @@ fn write_and_check(st: &StudioState, rec: &store::PatchRec) -> Result<Written> {
         Ok(v) => v,
         Err(e) => {
             let _ = snapshot::restore(st, &site.dir, &snap);
+            if rec.create {
+                let _ = std::fs::remove_file(&target);
+            }
             if !site.manifest.pipeline.is_empty() {
                 let _ = pipeline::apply(&site.manifest, &st.root, false, None);
             }
@@ -234,6 +249,9 @@ fn write_and_check(st: &StudioState, rec: &store::PatchRec) -> Result<Written> {
     let mut restored = false;
     if !introduced.is_empty() {
         snapshot::restore(st, &site.dir, &snap)?;
+        if rec.create {
+            let _ = std::fs::remove_file(&target);
+        }
         if !site.manifest.pipeline.is_empty() {
             let _ = pipeline::apply(&site.manifest, &st.root, false, None);
         }

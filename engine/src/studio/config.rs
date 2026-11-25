@@ -116,7 +116,7 @@ impl Settings {
             "has_key": self.key().is_some(),
             "configured": self.configured(),
             "endpoint": if self.base_url.trim().is_empty() { String::new() } else { self.endpoint() },
-            "max_rounds": self.max_rounds.unwrap_or(12),
+            "max_rounds": self.max_rounds.unwrap_or(16),
             "extra_headers": self.extra_headers,
             "from_env": Self::from_env(root),
         })
@@ -131,7 +131,7 @@ impl Settings {
             self.model = v.trim().to_string();
         }
         if let Some(v) = body.get("max_rounds").and_then(|v| v.as_u64()) {
-            self.max_rounds = Some(v.clamp(1, 12) as u32);
+            self.max_rounds = Some(v.clamp(1, 24) as u32);
         }
         // `api_key` is only touched when the field is present at all: an absent
         // field means "the UI did not change it", not "erase the key".

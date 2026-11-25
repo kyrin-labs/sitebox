@@ -210,6 +210,23 @@ class MockLLM(BaseHTTPRequestHandler):
                 self._stream("Proposed the rename.", None)
             return
 
+        if "create file test" in user_text:
+            if n == 0:
+                args = {"path": "public/extra.html",
+                        "new": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Extra</title></head><body><h1>Extra</h1></body></html>\n",
+                        "create": True, "reason": "add a second page"}
+                self._stream("Creating a file.", {"name": "sitebox_propose_patch", "arguments": json.dumps(args)})
+            else:
+                self._stream("Created the file.", None)
+            return
+
+        if "http test" in user_text:
+            if n == 0:
+                self._stream("Calling the site.", {"name": "sitebox_http", "arguments": json.dumps({"path": "/"})})
+            else:
+                self._stream("Called it.", None)
+            return
+
         if "search test" in user_text:
             if n == 0:
                 self._stream("Searching.", {"name": "sols_search", "arguments": json.dumps({"query": "sitebox test"})})
@@ -625,6 +642,38 @@ def main():
         bad = [c for c in answer6 if 0x3000 <= ord(c) <= 0x303F or 0x4E00 <= ord(c) <= 0x9FFF or 0xFF00 <= ord(c) <= 0xFFEF]
         check("no CJK in a Thai answer", not bad, answer6)
         check("Thai survives the filter", "สวัสดีครับ" in answer6.replace(" ", ""), answer6)
+
+        print("── P2f: creating a file and calling a route")
+        s, th7, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
+        for _ in range(40):
+            sc, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th7["id"], "message": "create file test"}, token=TOKEN)
+            if sc != 409:
+                break
+            time.sleep(0.4)
+        p7 = wait_patch(th7["id"])
+        check("create patch queued", bool(p7) and p7.get("path") == "public/extra.html", p7)
+        if p7:
+            s, rep7, _ = req(base + f"/api/studio/patches/{p7['id']}/apply", "POST", {}, token=TOKEN)
+            check("create patch applies", s == 200 and rep7.get("ok") is True, (s, rep7))
+            check("new file exists", (SCRATCH / "sites/demo/public/extra.html").is_file(), "missing")
+
+        req(base + "/api/sites/demo/start", "POST", {}, token=TOKEN)
+        time.sleep(1.0)
+        s, th8, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
+        for _ in range(40):
+            sc, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th8["id"], "message": "http test"}, token=TOKEN)
+            if sc != 409:
+                break
+            time.sleep(0.4)
+        blob8 = ""
+        for _ in range(60):
+            time.sleep(0.3)
+            m8 = req(base + f"/api/studio/threads/{th8['id']}/messages", token=TOKEN)[1]
+            blob8 = "\n".join(m.get("content") or "" for m in m8["messages"] if m.get("role") == "tool")
+            if "status" in blob8:
+                break
+        check("http tool reports the status", '"status":200' in blob8.replace(" ", ""), blob8[:160])
+        req(base + "/api/sites/demo/stop", "POST", {}, token=TOKEN)
 
         print("── P2/P3: a patch that breaks a check rolls back")
         s, th2, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)

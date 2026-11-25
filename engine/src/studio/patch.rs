@@ -20,6 +20,9 @@ pub struct PatchSpec {
     pub count: usize,
     #[serde(default)]
     pub reason: String,
+    /// True when `path` does not exist yet and this patch writes it whole.
+    #[serde(default)]
+    pub create: bool,
 }
 
 fn one() -> usize {
@@ -28,8 +31,29 @@ fn one() -> usize {
 
 /// Reject a patch before it reaches the filesystem.
 pub fn validate(spec: &PatchSpec, site_kind: &str) -> Result<()> {
+    if spec.create {
+        if !spec.old.is_empty() {
+            bail!("a creating patch takes no `old`; send the whole file in `new`");
+        }
+        if spec.new.trim().is_empty() {
+            bail!("`new` is empty; a new file needs content");
+        }
+        if spec.path.starts_with('.') || spec.path.contains("..") {
+            bail!("invalid path: {}", spec.path);
+        }
+        if spec.new.len() > MAX_PATCH_BYTES {
+            bail!(
+                "new file is {} bytes; the limit is {MAX_PATCH_BYTES}",
+                spec.new.len()
+            );
+        }
+        if site_kind == "generated" && spec.path.starts_with("public/") {
+            bail!("this site is generated: new files belong in the source, not build output");
+        }
+        return Ok(());
+    }
     if spec.old.is_empty() {
-        bail!("`old` must not be empty — a patch replaces an existing anchor");
+        bail!("`old` must not be empty — a patch replaces an existing anchor (or pass `create` for a new file)");
     }
     if spec.old == spec.new {
         bail!("patch changes nothing: `old` and `new` are identical");
@@ -56,6 +80,10 @@ pub fn validate(spec: &PatchSpec, site_kind: &str) -> Result<()> {
 
 /// Replace exactly `expect` non-overlapping occurrences of `old`.
 pub fn apply_text(text: &str, old: &str, new: &str, expect: usize) -> Result<String> {
+    if old.is_empty() {
+        // Creating a file: there is nothing to anchor on.
+        return Ok(new.to_string());
+    }
     let found = text.matches(old).count();
     if found != expect {
         bail!(
@@ -163,6 +191,7 @@ mod tests {
     #[test]
     fn generated_site_refuses_public() {
         let spec = PatchSpec {
+            create: false,
             path: "public/index.html".into(),
             old: "x".into(),
             new: "y".into(),
