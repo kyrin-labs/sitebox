@@ -355,18 +355,24 @@
     const card = el('div', 'st-patch');
     card.dataset.patch = p.id;
     const v = p.verify || {};
-    const chip = v.ok ? '<span class="st-chip is-ok">staged checks pass</span>'
-      : `<span class="st-chip is-bad">${(v.fail || 0)} check${(v.fail || 0) === 1 ? '' : 's'} failing</span>`;
+    const intro = v.introduced || [];
+    const pre = v.pre_existing || [];
+    const chip = intro.length === 0
+      ? '<span class="st-chip is-ok">no new failures</span>'
+      : `<span class="st-chip is-bad">${intro.length} new failure${intro.length === 1 ? '' : 's'}: ${esc(intro.join(', '))}</span>`;
+    const preChip = pre.length
+      ? `<span class="st-chip" title="these checks were already failing before this patch">${pre.length} pre-existing: ${esc(pre.join(', '))}</span>`
+      : '';
     card.innerHTML = `
       <div class="st-patch__head">
         <code>${esc(p.path)}</code>
         <span class="st-patch__stat"><b>+${p.added || 0}</b> <i>−${p.removed || 0}</i></span>
       </div>
       <div class="st-patch__reason">${esc(p.reason || '')}</div>
-      <div class="st-patch__chips">${chip}<span class="st-chip">${esc(v.mode || '')}</span></div>
+      <div class="st-patch__chips">${chip}${preChip}<span class="st-chip">${esc(v.mode || '')}</span></div>
       <pre class="st-diff">${esc(p.diff || '')}</pre>
       <div class="st-patch__actions">
-        <button class="st-btn st-btn--primary st-apply">Apply</button>
+        <button class="st-btn st-btn--primary st-apply" ${state.busy ? 'disabled' : ''}>Apply</button>
         <button class="st-btn st-btn--ghost st-toggle-diff">Hide diff</button>
         <span class="st-hint st-patch__result"></span>
       </div>`;
@@ -388,15 +394,17 @@
     out.textContent = 'applying…';
     try {
       const r = await api(`/api/studio/patches/${encodeURIComponent(id)}/apply`, { method: 'POST' });
+      const pre = (r.pre_existing || []).length;
       if (r.ok) {
         card.classList.add('is-applied');
-        out.textContent = 'applied · checks pass';
+        out.textContent = pre ? `applied · no new failures (${pre} pre-existing)` : 'applied · checks pass';
         btn.textContent = 'Applied';
       } else {
         card.classList.add('is-rolledback');
-        out.textContent = r.restored ? 'checks failed · restored' : 'checks failed';
+        out.textContent = r.restored ? 'introduced new failures · restored' : 'checks failed';
         btn.textContent = 'Not applied';
-        const fails = (r.static && r.static.findings || []).filter((f) => f.status === 'fail');
+        const fails = ((r.static && r.static.findings) || [])
+          .filter((f) => f.status === 'fail' && (r.introduced || []).includes(f.check));
         fails.slice(0, 4).forEach((f) => {
           const line = el('div', 'st-fail', `${f.check}: ${f.title}${f.evidence ? ' — ' + f.evidence : ''}`);
           card.appendChild(line);
@@ -413,9 +421,12 @@
     if (!confirm('คืนค่า site กลับไป snapshot ล่าสุด?')) return;
     try {
       const r = await api(`/api/studio/sites/${encodeURIComponent(state.site)}/undo`, { method: 'POST' });
-      const text = r.ok
-        ? `ย้อนกลับแล้ว (${(r.changed || []).length} ไฟล์) · checks pass`
-        : 'ย้อนกลับแล้ว แต่ checks ไม่ผ่าน';
+      const n = (r.changed || []).length;
+      const text = !r.ok
+        ? 'ย้อนกลับไม่สำเร็จ'
+        : r.checks_ok
+          ? `ย้อนกลับแล้ว (${n} ไฟล์) · checks pass`
+          : `ย้อนกลับแล้ว (${n} ไฟล์) · checks เดิมยังแดง`;
       addMsg(r.ok ? 'system' : 'error', text);
       toast(text);
     } catch (e) {
@@ -435,6 +446,11 @@
     $('#st-send').disabled = on || !state.settings.configured;
     $('#st-abort').hidden = !on;
     $('#st-input').disabled = on;
+    // A patch can be offered before the turn's last message lands; applying it
+    // then would answer 409 because the site lock is still held by the turn.
+    document.querySelectorAll('.st-apply').forEach((b) => {
+      b.disabled = on;
+    });
   }
 
   async function send() {

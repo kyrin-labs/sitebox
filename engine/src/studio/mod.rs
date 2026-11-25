@@ -40,6 +40,10 @@ pub struct StudioState {
     pub data: PathBuf,
     pub sup: Arc<Supervisor>,
     pub client: reqwest::Client,
+    /// HTTP checks need a client that does not decompress on our behalf: with
+    /// gzip enabled, reqwest strips `Content-Encoding` and SB104 fails on a
+    /// correctly compressed response.
+    pub check_client: reqwest::Client,
     /// Per-process session id: the cookie the dashboard hands its own browser.
     pub sid: String,
     /// Optional fixed token for non-browser clients (`STUDIO_TOKEN`).
@@ -70,11 +74,17 @@ impl StudioState {
             .ok()
             .filter(|t| !t.trim().is_empty());
         let (events, _) = broadcast::channel(1024);
+        let check_client = reqwest::Client::builder()
+            .no_gzip()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             root,
             data,
             sup,
             client,
+            check_client,
             sid,
             token,
             busy: Default::default(),

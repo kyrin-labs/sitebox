@@ -58,6 +58,11 @@ fs.writeFileSync('public/index.html', html);
 console.log('built');
 """
 
+LEGACY_INDEX = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Legacy</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter&display=swap" rel="stylesheet">
+</head><body><main><h1>Legacy</h1><p>old page</p></main></body></html>"""
+
 GEN_INDEX = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Gen</title></head>
 <body><main><h1>Gen</h1><p>generated</p></main></body></html>"""
@@ -73,6 +78,21 @@ description = "studio e2e fixture"
 port = 4601
 category = "tools"
 path = "sites/demo"
+public_dir = "public"
+serve = "static"
+"""
+
+LEGACY_TOML = """schema = 1
+pipeline = []
+checks = []
+
+[site]
+id = "legacy"
+name = "Legacy"
+description = "already red before any patch"
+port = 4603
+category = "tools"
+path = "sites/legacy"
 public_dir = "public"
 serve = "static"
 """
@@ -140,6 +160,16 @@ class MockLLM(BaseHTTPRequestHandler):
                 self._stream("Proposing a patch that should fail the checks.", {"name": "sitebox_propose_patch", "arguments": json.dumps(args)})
             else:
                 self._stream("Queued; the apply should roll back.", None)
+            return
+
+        if "legacy" in user_text:
+            if n == 0:
+                args = {"path": "public/index.html", "old": "<h1>Legacy</h1>",
+                        "new": "<h1>Legacy Two</h1>", "count": 1,
+                        "reason": "change a heading on an already-red site"}
+                self._stream("Reading the legacy page.", {"name": "sitebox_propose_patch", "arguments": json.dumps(args)})
+            else:
+                self._stream("Queued a patch for a site that was already red.", None)
             return
 
         if "buildfail" in user_text:
@@ -292,11 +322,14 @@ def main():
     if not BIN.is_file():
         raise SystemExit(f"missing {BIN}; run: cargo build --bins (in engine/)")
     (SCRATCH / "sites/demo/public").mkdir(parents=True)
+    (SCRATCH / "sites/legacy/public").mkdir(parents=True)
     (SCRATCH / "sites/gen/public").mkdir(parents=True)
     (SCRATCH / "sites/gen/tools").mkdir(parents=True)
     (SCRATCH / "dashboard/data").mkdir(parents=True)
     (SCRATCH / "sites/demo/sitebox.toml").write_text(TOML)
     (SCRATCH / "sites/demo/public/index.html").write_text(INDEX)
+    (SCRATCH / "sites/legacy/sitebox.toml").write_text(LEGACY_TOML)
+    (SCRATCH / "sites/legacy/public/index.html").write_text(LEGACY_INDEX)
     (SCRATCH / "sites/gen/sitebox.toml").write_text(GEN_TOML)
     (SCRATCH / "sites/gen/tools/build.js").write_text(GEN_BUILD)
     (SCRATCH / "sites/gen/public/index.html").write_text(GEN_INDEX)
@@ -305,6 +338,7 @@ def main():
         "sites": [
             {"id": "demo", "name": "Demo", "port": 4601, "path": "sites/demo", "category": "tools", "url": "http://127.0.0.1:4601"},
             {"id": "gen", "name": "Generated", "port": 4602, "path": "sites/gen", "category": "tools", "url": "http://127.0.0.1:4602"},
+            {"id": "legacy", "name": "Legacy", "port": 4603, "path": "sites/legacy", "category": "tools", "url": "http://127.0.0.1:4603"},
         ],
     }, indent=2))
 
@@ -337,7 +371,7 @@ def main():
         s, st0, _ = req(base + "/api/studio/status", token=TOKEN)
         check("status with token", s == 200, st0)
         check("unconfigured at boot", st0.get("settings", {}).get("configured") is False, st0)
-        check("site list populated", len(st0.get("sites", [])) == 2, st0.get("sites"))
+        check("site list populated", len(st0.get("sites", [])) == 3, st0.get("sites"))
         s, cfg, _ = req(base + "/api/studio/config", "PUT", {
             "base_url": f"http://127.0.0.1:{MOCK}/v1", "model": "mock-1", "api_key": "sk-secret",
         }, token=TOKEN)
@@ -409,6 +443,20 @@ def main():
         check("build step ran", any(b.get("name") == "build" for b in grep.get("build") or []), grep.get("build"))
         check("build output carries the change", "<h1>Gen Two</h1>" in built, built[:120])
 
+        print("── P3: a site that was already red can still be edited")
+        s, th6, _ = req(base + "/api/studio/threads", "POST", {"site_id": "legacy"}, token=TOKEN)
+        req(base + "/api/studio/chat", "POST", {"thread_id": th6["id"], "message": "legacy change"}, token=TOKEN)
+        lp = wait_patch(th6["id"])
+        time.sleep(0.4)
+        lv = (lp or {}).get("verify") or {}
+        check("pre-existing failure recognised", lv.get("ok") is True and "SB002" in (lv.get("pre_existing") or []), lv)
+        check("patch itself introduces nothing", (lv.get("introduced") or []) == [], lv.get("introduced"))
+        s, lrep, _ = req(base + f"/api/studio/patches/{lp['id']}/apply", "POST", {}, token=TOKEN)
+        legacy_now = (SCRATCH / "sites/legacy/public/index.html").read_text()
+        check("apply succeeds despite red baseline", s == 200 and lrep.get("ok") is True and lrep.get("restored") is False, (s, lrep))
+        check("legacy heading changed", "<h1>Legacy Two</h1>" in legacy_now)
+        check("pre-existing reported on apply", "SB002" in (lrep.get("pre_existing") or []), lrep.get("pre_existing"))
+
         print("── P3: a failing build also rolls back")
         s, th5, _ = req(base + "/api/studio/threads", "POST", {"site_id": "gen"}, token=TOKEN)
         req(base + "/api/studio/chat", "POST", {"thread_id": th5["id"], "message": "buildfail"}, token=TOKEN)
@@ -449,7 +497,7 @@ def main():
         audit = [json.loads(l) for l in (SCRATCH / "dashboard/data/studio/audit.jsonl").read_text().splitlines() if l.strip()]
         check("audit has apply+undo", sum(1 for a in audit if a.get("action") == "apply") >= 2 and any(a.get("action") == "undo" for a in audit), len(audit))
         s, sites, _ = req(base + "/api/sites")
-        check("original /api/sites still answers", s == 200 and len(sites) == 2, (s, sites))
+        check("original /api/sites still answers", s == 200 and len(sites) == 3, (s, sites))
         s, _, _ = req(base + "/js/studio.js")
         check("studio.js served", s == 200, s)
         print("INFO audit lines:", len(audit))

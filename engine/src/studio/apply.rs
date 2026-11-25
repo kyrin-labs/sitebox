@@ -8,13 +8,19 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::io::Write;
 
-use super::{patch, site_path, site_ref, snapshot, store, SiteRef, StudioState};
+use super::{patch, site_path, site_ref, snapshot, stage, store, SiteRef, StudioState};
 use crate::{checks, pipeline, util};
 
 struct Written {
     snapshot: snapshot::SnapMeta,
     static_report: checks::CheckReport,
+    /// Absolute check result — reported, never the rollback trigger.
     static_ok: bool,
+    baseline_ok: bool,
+    /// Checks that became red because of this patch.
+    introduced: Vec<String>,
+    /// Checks that were already red before it.
+    pre_existing: Vec<String>,
     build: Vec<Value>,
     restored: bool,
 }
@@ -34,19 +40,37 @@ pub async fn apply(st: &StudioState, patch_id: &str) -> Result<Value> {
 
     let st2 = st.clone();
     let rec2 = rec.clone();
+    // HTTP baseline before the write, so a pre-existing failure (a site that
+    // never sent gzip, say) cannot be blamed on this patch.
+    let port = load_port(st, &site_id);
+    let baseline_http = run_http_if_running(st, &site_id, port).await;
+    let baseline_http_fails = baseline_http
+        .as_ref()
+        .map(stage::fail_ids)
+        .unwrap_or_default();
     let written = tokio::task::spawn_blocking(move || write_and_check(&st2, &rec2)).await;
 
     let outcome: Result<Value> = match written {
         Ok(Ok(w)) => {
             // The HTTP checks need the site running, so they happen outside the
             // blocking section, after the files are already in place.
-            let http = if w.static_ok {
-                run_http_if_running(st, &site_id, load_port(st, &site_id)).await
+            let http = if w.introduced.is_empty() {
+                run_http_if_running(st, &site_id, port).await
             } else {
                 None
             };
-            let http_ok = http.as_ref().map(|r| r.ok()).unwrap_or(true);
-            let ok = w.static_ok && http_ok;
+            let http_introduced: Vec<String> = http
+                .as_ref()
+                .map(|r| {
+                    stage::fail_ids(r)
+                        .difference(&baseline_http_fails)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let http_pre_existing: Vec<String> = baseline_http_fails.iter().cloned().collect();
+            let http_ok = http_introduced.is_empty();
+            let ok = w.introduced.is_empty() && http_ok;
             let mut restored = w.restored;
             if !ok && !restored {
                 let st3 = st.clone();
@@ -82,12 +106,27 @@ pub async fn apply(st: &StudioState, patch_id: &str) -> Result<Value> {
                 "patch_id": rec.id,
                 "snapshot": w.snapshot.id,
                 "build": w.build,
-                "static": { "ok": w.static_ok, "findings": w.static_report.findings },
-                "http": http.map(|r| json!({"ok": r.ok(), "findings": r.findings})),
+                "static": {
+                    "ok": w.static_ok,
+                    "baseline_ok": w.baseline_ok,
+                    "introduced": w.introduced,
+                    "pre_existing": w.pre_existing,
+                    "findings": w.static_report.findings
+                },
+                "introduced": w.introduced,
+                "pre_existing": w.pre_existing,
+                "http": http.map(|r| json!({
+                    "ok": r.ok(),
+                    "introduced": http_introduced,
+                    "pre_existing": http_pre_existing,
+                    "findings": r.findings
+                })),
                 "note": if restored {
-                    "Checks failed after the edit: the site was restored to the snapshot. Nothing was left half-applied."
-                } else if ok {
+                    "The patch introduced failing checks: the site was restored to the snapshot. Nothing was left half-applied."
+                } else if w.pre_existing.is_empty() && http_pre_existing.is_empty() {
                     "Applied. The checks passed; the site is serving the new files."
+                } else if w.introduced.is_empty() {
+                    "Applied. No new failures; the site already had failing checks before this patch."
                 } else {
                     "Applied, but a check failed outside the rollback path. Read the findings."
                 },
@@ -124,6 +163,11 @@ fn write_and_check(st: &StudioState, rec: &store::PatchRec) -> Result<Written> {
     // Re-assert the anchor: the file may have changed since the patch was queued.
     let after = patch::apply_text(&before, &rec.old, &rec.new, rec.count)
         .map_err(|e| anyhow::anyhow!("patch is stale: {e}"))?;
+
+    // Baseline before the write: a site can already be red for reasons that
+    // have nothing to do with this patch (a CDN link, an old missing dimension).
+    let baseline = checks::run_static(&st.root, &site.manifest)?;
+    let baseline_fails = stage::fail_ids(&baseline);
 
     let snap = snapshot::create(
         st,
@@ -174,8 +218,11 @@ fn write_and_check(st: &StudioState, rec: &store::PatchRec) -> Result<Written> {
     };
 
     let static_ok = static_report.ok();
+    let after_fails = stage::fail_ids(&static_report);
+    let introduced: Vec<String> = after_fails.difference(&baseline_fails).cloned().collect();
+    let pre_existing: Vec<String> = baseline_fails.iter().cloned().collect();
     let mut restored = false;
-    if !static_ok {
+    if !introduced.is_empty() {
         snapshot::restore(st, &site.dir, &snap)?;
         if !site.manifest.pipeline.is_empty() {
             let _ = pipeline::apply(&site.manifest, &st.root, false, None);
@@ -187,6 +234,9 @@ fn write_and_check(st: &StudioState, rec: &store::PatchRec) -> Result<Written> {
         snapshot: snap,
         static_report,
         static_ok,
+        baseline_ok: baseline.ok(),
+        introduced,
+        pre_existing,
         build,
         restored,
     })
@@ -229,11 +279,13 @@ fn undo_inner(st: &StudioState, site: &SiteRef, snap: &snapshot::SnapMeta) -> Re
             "site": site.id,
             "snapshot": snap.id,
             "changed": changed,
-            "ok": report.ok() && build_ok,
+            "ok": build_ok,
+            "checks_ok": report.ok(),
         }),
     );
     Ok(json!({
-        "ok": report.ok() && build_ok,
+        "ok": build_ok,
+        "checks_ok": report.ok(),
         "restored_snapshot": snap.id,
         "redo_snapshot": current.id,
         "changed": changed,
@@ -272,7 +324,7 @@ async fn run_http_if_running(
         return None;
     }
     let base = format!("http://127.0.0.1:{port}");
-    Some(checks::run_http(&base, &st.client).await)
+    Some(checks::run_http(&base, &st.check_client).await)
 }
 
 pub fn audit(st: &StudioState, entry: Value) {
