@@ -53,6 +53,30 @@ pub fn definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "sitebox_site_start",
+                "description": "Start the site this conversation is attached to. Use it when the site is stopped and you need a live page, HTTP checks or a screenshot, or when the user asks.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sitebox_site_stop",
+                "description": "Stop the site this conversation is attached to. Only do this when the user asks: stopping a site takes it off the air until someone starts it again.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sitebox_site_restart",
+                "description": "Restart the site this conversation is attached to, picking up a change to server.js or a manifest.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sitebox_check",
                 "description": "Run the static check catalog (SB0xx) on the current site. Use before proposing when you need a baseline.",
                 "parameters": {"type": "object", "properties": {}}
@@ -122,6 +146,7 @@ pub async fn execute(
             },
             "port": site.manifest.site.port,
             "serve": site.manifest.site.serve,
+            "running": st.sup.is_running(&site.id).await,
             "pipeline_steps": site.manifest.pipeline.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
         })),
         "sitebox_outline" => {
@@ -193,6 +218,35 @@ pub async fn execute(
                 "total_lines": total,
                 "truncated": to < total,
                 "text": body,
+            }))
+        }
+        "sitebox_site_start" => {
+            let r = st.sup.start(&site.manifest).await?;
+            Ok(json!({
+                "ok": r.ok,
+                "running": st.sup.is_running(&site.id).await,
+                "port": r.port,
+                "verified": r.verified,
+                "message": r.message,
+            }))
+        }
+        "sitebox_site_stop" => {
+            st.sup.stop(&site.id).await?;
+            Ok(json!({
+                "ok": true,
+                "running": st.sup.is_running(&site.id).await,
+                "port": site.manifest.site.port,
+                "message": format!("{} stopped", site.id),
+            }))
+        }
+        "sitebox_site_restart" => {
+            let r = st.sup.restart(&site.manifest).await?;
+            Ok(json!({
+                "ok": r.ok,
+                "running": st.sup.is_running(&site.id).await,
+                "port": r.port,
+                "verified": r.verified,
+                "message": r.message,
             }))
         }
         "sitebox_check" => {
@@ -348,6 +402,13 @@ You cannot write files. You have `sitebox_propose_patch`, which stages an exact-
 ## Checks
 Static: SB001 index exists, SB002 no third-party asset, SB003 every <img> has width/height, SB004 splice markers, SB005 referenced assets exist, SB010 image dims match, SB020/021 no placeholders or NaN, SB030 JSON parses. HTTP: SB101-SB107.
 A red check means the patch is wrong. Fix it before proposing again; do not argue with the check.
+
+## Site lifecycle
+You may start, stop and restart the site this conversation is attached to: `sitebox_site_start`, `sitebox_site_stop`, `sitebox_site_restart`.
+- Start it when you need a live page, HTTP checks or a screenshot, or when the user asks.
+- Stop it only when the user asks. Never stop it to "clean up" or as a side effect of another task.
+- Restart after changing `server.js` or `sitebox.toml`; a static site reads files from disk and needs no restart.
+- The tool result carries `running` and `verified`. Report those, not your intention.
 
 ## Design
 Reuse the site's existing CSS custom properties. Do not introduce a new colour, font, or spacing scale unless the user asks. Purple/violet/indigo gradients are the default AI look and are not a design choice — avoid them unless the site already uses them.

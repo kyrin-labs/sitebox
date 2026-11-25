@@ -162,6 +162,15 @@ class MockLLM(BaseHTTPRequestHandler):
                 self._stream("Queued; the apply should roll back.", None)
             return
 
+        if "lifecycle" in user_text:
+            if n == 0:
+                self._stream("Starting the site.", {"name": "sitebox_site_start", "arguments": "{}"})
+            elif n == 1:
+                self._stream("Stopping it again.", {"name": "sitebox_site_stop", "arguments": "{}"})
+            else:
+                self._stream("Started it, then stopped it.", None)
+            return
+
         if "legacy" in user_text:
             if n == 0:
                 args = {"path": "public/index.html", "old": "<h1>Legacy</h1>",
@@ -467,6 +476,29 @@ def main():
         s, bres, _ = req(base + f"/api/studio/patches/{bp['id']}/apply", "POST", {}, token=TOKEN)
         check("failed build returns an error", s == 409 and "snapshot restored" in json.dumps(bres), (s, bres))
         check("generator restored after failed build", (SCRATCH / "sites/gen/tools/build.js").read_bytes() == gen_before)
+
+        print("── P4: the agent can start and stop its own site")
+        def port_open(port):
+            import socket as _s
+            sk = _s.socket(); sk.settimeout(0.4)
+            try:
+                return sk.connect_ex(("127.0.0.1", port)) == 0
+            finally:
+                sk.close()
+        check("demo is stopped before the turn", not port_open(4601))
+        s, th8, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
+        req(base + "/api/studio/chat", "POST", {"thread_id": th8["id"], "message": "lifecycle please"}, token=TOKEN)
+        for _ in range(60):
+            time.sleep(0.25)
+            st_box = req(base + f"/api/studio/threads/{th8['id']}/messages", token=TOKEN)[1]
+            if any(m.get("role") == "assistant" and "stopped" in (m.get("content") or "") for m in st_box.get("messages", [])):
+                break
+        msgs8 = st_box.get("messages", [])
+        tool_text = [m.get("content") or "" for m in msgs8 if m.get("role") == "tool"]
+        print("INFO lifecycle tools:", [t[:80] for t in tool_text])
+        check("start tool reported running", any('"verified":true' in t and '"running":true' in t for t in tool_text), tool_text[:1])
+        check("stop tool reported stopped", any('"running":false' in t for t in tool_text), tool_text[-1:])
+        check("site is off after the stop", not port_open(4601))
 
         print("── P4: abort a slow turn, then keep working")
         req(base + "/api/studio/config", "PUT", {"base_url": f"http://127.0.0.1:{MOCK}/v1", "model": "mock-slow"}, token=TOKEN)
