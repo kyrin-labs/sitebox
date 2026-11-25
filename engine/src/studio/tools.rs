@@ -104,8 +104,13 @@ pub fn definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "sitebox_build",
-                "description": "Run the site's pipeline (image resize, data generation) now and return each step's status. A build writes into public/, so run it before checking or verifying.",
-                "parameters": {"type": "object", "properties": {}}
+                "description": "Run the site's pipeline (image resize, data generation) now and return each step's status. A build writes into public/, so run it before checking or verifying. Pass force when you changed the build script, which is not tracked as an input.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "force": {"type": "boolean", "description": "rerun steps whose inputs look unchanged"}
+                    }
+                }
             }
         },
         {
@@ -1279,7 +1284,8 @@ pub async fn execute(
             }))
         }
         "sitebox_build" => {
-            let steps = crate::pipeline::apply(&site.manifest, &st.root, false, None)?;
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let steps = crate::pipeline::apply(&site.manifest, &st.root, force, None)?;
             let failed: Vec<String> = steps
                 .iter()
                 .filter(|s| s.status == "fail" || s.status == "blocked")
@@ -1710,7 +1716,7 @@ A site that has to think, remember or call an API is a node site, not a mockup.
 - Listen on `0.0.0.0`, not `127.0.0.1`: the checks only see localhost, but the operator opens the site from another device on the LAN.
 - Keep state (threads, profiles, memory) in a JSON file under the site folder such as `data/store.json`, not under `public/`.
 - Some gateways need extra request headers. SiteBox passes them to node servers as `AI_HEADERS`, a JSON object; send them on every provider request.
-- Files the operator drops in `<root>/imports/` come in with `sols_import`; then a pipeline step (`sitebox_build`) can resize or convert them. Learn the manifest shape from the `sitebox-engine` skill.
+- Files the operator drops in `<root>/imports/` come in with `sols_import`; then a pipeline step (`sitebox_build`) can resize or convert them. After you edit the build script itself, call `sitebox_build` with `force: true` — the script is not one of the step's declared inputs. Learn the manifest shape from the `sitebox-engine` skill.
 - `sitebox_outline` lists source files only; use `sitebox_ls` to see written assets (public/assets) or anything else on disk.
 - After a restart, call the route with `sitebox_http` and read the body. A 200 with `{{"error":...}}` or `live:false` is a bug, not success.
 - If the provider call fails, log the status and body and return the real error (a `live: false` with a canned reply hides the bug). Never fall back silently.
