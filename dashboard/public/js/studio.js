@@ -183,6 +183,7 @@
       }
     });
     $('#st-site').addEventListener('change', (e) => {
+      if (!e.target.value) { newSiteThread(); return; }
       state.site = e.target.value;
       localStorage.setItem('studio.site', state.site);
       loadThreads(true);
