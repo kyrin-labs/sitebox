@@ -16,6 +16,8 @@ use super::{config::Settings, emit, llm, tools, SiteRef, StudioState};
 const MAX_ROUNDS: usize = 8;
 /// A bee that spends more calls than this is touring, not working.
 const MAX_CALLS: usize = 14;
+const QUICK_ROUNDS: usize = 4;
+const QUICK_CALLS: usize = 8;
 /// A swarm that needs more than four workers needs a better plan.
 pub const MAX_TASKS: usize = 4;
 const MAX_REPORT: usize = 10_000;
@@ -86,6 +88,9 @@ pub async fn notes(st: &StudioState, thread: &str) -> Vec<Note> {
 pub struct Brief {
     pub title: String,
     pub brief: String,
+    /// "quick" is for a mechanical sweep (4 rounds, 8 calls); "deep" for
+    /// research or design (8 rounds, 14 calls). Default: deep.
+    pub effort: String,
 }
 
 pub struct Report {
@@ -152,7 +157,7 @@ fn bee_tools(has_site: bool) -> Value {
     Value::Array(list)
 }
 
-fn prompt(site: Option<&SiteRef>, title: &str, brief: &str) -> String {
+fn prompt(site: Option<&SiteRef>, title: &str, brief: &str, budget: usize) -> String {
     format!(
         r#"You are Bee, a worker sent by Sols, the editing agent inside SiteBox. You have one assignment. Nobody is reading along: your only output is the report you return.
 
@@ -170,12 +175,13 @@ You share a scratchpad with the other bees sent in the same wave.
 You can read and search, not write. `sitebox_grep` finds text, `sitebox_read` opens a region, `sitebox_outline` shows the file shape, `sols_search` and `sols_fetch` reach the web, `sols_skill` reads SiteBox doctrine. When the deliverable is ready, call `bee_report` with it.
 
 ## How to work
-- Work the assignment, not the whole site. At most three reads before you either answer or say what is missing. You have 14 tool calls; if you reach them, report what you have.
+- Work the assignment, not the whole site. At most three reads before you either answer or say what is missing. Report what you have when the budget is spent: you have {budget} tool calls.
 - A mechanical sweep is one call: one `sitebox_grep` covers every file. Opening files one by one to count something is how a bee runs out of rounds.
 - Facts need their source URL. Never invent a number, a name or a quote; if the web gives you nothing, say so in one line.
 - The report is for Sols, not for the operator: dense, structured, no preamble, no "here is what I found".
 - Reply in the language of the brief and only that language. A Chinese or Japanese character inside a Thai sentence is a bug.
 {where}"#,
+        budget = budget,
         where = match site {
             Some(s) => format!(
                 "- Write for the site `{}` at port {}.\n\n## The site as it stands\nkind: {}, serve: {}\n{}",
@@ -212,6 +218,9 @@ async fn one(
         tokens_in: 0,
         tokens_out: 0,
     };
+    let quick = brief.effort == "quick";
+    let max_rounds = if quick { QUICK_ROUNDS } else { MAX_ROUNDS };
+    let max_calls = if quick { QUICK_CALLS } else { MAX_CALLS };
     let settings = Settings::load(&st.root);
     if !settings.configured() {
         out.report = "the agent is not configured".into();
@@ -219,7 +228,12 @@ async fn one(
     }
     let defs = bee_tools(site.is_some());
     let mut messages = vec![
-        json!({"role": "system", "content": prompt(site, &brief.title, &brief.brief)}),
+        json!({"role": "system", "content": prompt(
+            site,
+            &brief.title,
+            &brief.brief,
+            if quick { QUICK_CALLS } else { MAX_CALLS },
+        )}),
         json!({"role": "user", "content": brief.brief}),
     ];
 
@@ -229,11 +243,11 @@ async fn one(
         json!({"type":"bee","id":id,"title":brief.title,"status":"start"}),
     );
 
-    for round in 0..MAX_ROUNDS {
+    for round in 0..max_rounds {
         out.rounds = round + 1;
         // Last chance: ask for the report instead of letting the bee burn its
         // final round on another read and return nothing.
-        if round + 1 == MAX_ROUNDS {
+        if round + 1 == max_rounds {
             messages.push(json!({
                 "role": "user",
                 "content": "This is your last round. Call bee_report now with what you have; a partial report beats no report."
@@ -318,7 +332,7 @@ async fn one(
                 finished = true;
                 break;
             }
-            if out.calls > MAX_CALLS {
+            if out.calls > max_calls {
                 messages.push(json!({
                     "role": "tool", "tool_call_id": call_id, "name": name,
                     "content": "Your tool budget is spent. Call bee_report now with what you have."

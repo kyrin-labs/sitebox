@@ -166,11 +166,12 @@ pub fn definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "sitebox_probe",
-                "description": "Render a page at a given width and report layout numbers: elements wider than the viewport, clipped scroll containers, and text below 12px. Use it at width 375 before calling a page finished.",
+                "description": "Render pages at a given width and report layout numbers: elements wider than the viewport, clipped scroll containers, and text below 12px. Pass every route you changed in one call with `routes` — one round instead of one per page.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "route": {"type": "string", "description": "path on the site, default /"},
+                        "route": {"type": "string", "description": "one path on the site, default /"},
+                        "routes": {"type": "array", "items": {"type": "string"}, "description": "up to 6 paths, probed in parallel, e.g. [\"/\", \"/registry/\", \"/cases/a.html\"]"},
                         "width": {"type": "integer", "description": "default 500 (the headless browser minimum), max 1440"},
                         "height": {"type": "integer", "description": "default 900"}
                     }
@@ -356,7 +357,8 @@ pub fn definitions() -> Value {
                                 "type": "object",
                                 "properties": {
                                     "title": {"type": "string", "description": "3-6 words, shown in the UI"},
-                                    "brief": {"type": "string", "description": "The full assignment: what to find or write, the shape of the answer, the language, and what counts as done. The bee cannot see this chat."}
+                                    "brief": {"type": "string", "description": "The full assignment: what to find or write, the shape of the answer, the language, and what counts as done. The bee cannot see this chat."},
+                                    "effort": {"type": "string", "enum": ["quick", "deep"], "description": "quick = 4 rounds / 8 calls for a mechanical sweep or a narrow audit; deep (default) = 8 rounds / 14 calls for research or design."}
                                 },
                                 "required": ["title", "brief"]
                             }
@@ -552,7 +554,15 @@ pub async fn execute_unbound(
                     if title.is_empty() || brief.chars().count() < 10 {
                         return None;
                     }
-                    Some(super::bee::Brief { title, brief })
+                    let effort = match t.get("effort").and_then(|v| v.as_str()) {
+                        Some("quick") => "quick",
+                        _ => "deep",
+                    };
+                    Some(super::bee::Brief {
+                        title,
+                        brief,
+                        effort: effort.to_string(),
+                    })
                 })
                 .collect();
             if briefs.is_empty() {
@@ -1121,7 +1131,15 @@ pub async fn execute(
                     if title.is_empty() || brief.chars().count() < 10 {
                         return None;
                     }
-                    Some(super::bee::Brief { title, brief })
+                    let effort = match t.get("effort").and_then(|v| v.as_str()) {
+                        Some("quick") => "quick",
+                        _ => "deep",
+                    };
+                    Some(super::bee::Brief {
+                        title,
+                        brief,
+                        effort: effort.to_string(),
+                    })
                 })
                 .collect();
             if briefs.is_empty() {
@@ -1532,12 +1550,37 @@ pub async fn execute(
                     site.id
                 );
             }
-            let route = args.get("route").and_then(|v| v.as_str()).unwrap_or("/");
-            let route = if route.starts_with('/') {
-                route.to_string()
-            } else {
-                format!("/{route}")
-            };
+            // A build touches several pages; probing them one call at a time
+            // costs a model round each, which is the expensive part.
+            let mut routes: Vec<String> = args
+                .get("routes")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .take(6)
+                        .map(|r| r.trim().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if routes.is_empty() {
+                routes.push(
+                    args.get("route")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("/")
+                        .to_string(),
+                );
+            }
+            let routes: Vec<String> = routes
+                .into_iter()
+                .map(|r| {
+                    if r.starts_with('/') {
+                        r
+                    } else {
+                        format!("/{r}")
+                    }
+                })
+                .collect();
             let width = args
                 .get("width")
                 .and_then(|v| v.as_u64())
@@ -1548,25 +1591,69 @@ pub async fn execute(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(900)
                 .clamp(480, 2000) as u32;
-            let join = if route.contains('?') { '&' } else { '?' };
-            let url = format!(
-                "http://127.0.0.1:{}{route}{join}sols_probe=1",
-                site.manifest.site.port
-            );
-            let dom = shot::dump_dom_at(&url, width, height).await?;
-            let found = extract_probe(&dom).ok_or_else(|| {
-                anyhow::anyhow!("the probe script did not run; is this page served by SiteBox?")
-            })?;
-            Ok(json!({
-                "ok": true,
-                "url": url,
-                "viewport": found.get("viewport"),
-                "doc_width": found.get("doc_width"),
-                "overflow": found.get("overflow").cloned().unwrap_or(json!([])),
-                "clipped": found.get("clipped").cloned().unwrap_or(json!([])),
-                "small_text": found.get("small_text").cloned().unwrap_or(json!([])),
-                "note": "Anything in `overflow` or `clipped` is a visible bug at this width; `small_text` lists text under 12px.",
-            }))
+            let port = site.manifest.site.port;
+            let urls: Vec<String> = routes
+                .iter()
+                .map(|r| {
+                    let join = if r.contains('?') { '&' } else { '?' };
+                    format!("http://127.0.0.1:{port}{r}{join}sols_probe=1")
+                })
+                .collect();
+            let doms = futures_util::future::join_all(
+                urls.iter().map(|u| shot::dump_dom_at(u, width, height)),
+            )
+            .await;
+            let mut pages = Vec::new();
+            let mut first: Option<Value> = None;
+            for (i, dom) in doms.into_iter().enumerate() {
+                let found = match dom {
+                    Ok(d) => match extract_probe(&d) {
+                        Some(f) => f,
+                        None => {
+                            pages.push(json!({
+                                "route": routes[i],
+                                "url": urls[i],
+                                "error": "the probe script did not run; is this page served by SiteBox?"
+                            }));
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        pages.push(json!({
+                            "route": routes[i],
+                            "url": urls[i],
+                            "error": format!("{e:#}")
+                        }));
+                        continue;
+                    }
+                };
+                let page = json!({
+                    "route": routes[i],
+                    "url": urls[i],
+                    "viewport": found.get("viewport"),
+                    "doc_width": found.get("doc_width"),
+                    "overflow": found.get("overflow").cloned().unwrap_or(json!([])),
+                    "clipped": found.get("clipped").cloned().unwrap_or(json!([])),
+                    "small_text": found.get("small_text").cloned().unwrap_or(json!([])),
+                });
+                if first.is_none() {
+                    first = Some(page.clone());
+                }
+                pages.push(page);
+            }
+            let clean = pages.iter().all(|p| {
+                p.get("error").is_none()
+                    && p.get("overflow").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true)
+                    && p.get("clipped").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true)
+                    && p.get("small_text").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true)
+            });
+            let mut out = first.unwrap_or_else(|| json!({}));
+            if let Some(o) = out.as_object_mut() {
+                o.insert("ok".into(), json!(clean));
+                o.insert("pages".into(), json!(pages));
+                o.insert("note".into(), json!("One call probed every route. Anything in `overflow` or `clipped` is a visible bug at this width; `small_text` lists text under 12px."));
+            }
+            Ok(out)
         }
         "sitebox_shot" => {
             let width = args.get("width").and_then(|v| v.as_u64()).unwrap_or(1440) as u32;
@@ -1815,6 +1902,7 @@ You are the only writer; bees are your readers. `sols_bee` runs 1-4 workers at o
 - Good splits: research the reference product and return its screens, flows and copy tone with URLs; draft the copy for sections A/B/C; propose the page structure and tokens from the skills.
 - The reports arrive as one tool result. Fold them into your own plan and patches; never paste a bee report to the operator as your answer.
 - **Two waves beat one.** Wave 1 researches (facts, structure, copy). Then send wave 2 with the wave-1 findings quoted in the briefs and an explicit job: find contradictions, check every number against its source, or attack the copy. Wave 2 is how bees disagree without talking to each other — put the criticism in the brief, not in a request to "discuss".
+- Mark mechanical work `effort: "quick"` (scanning files, checking numbers, listing tokens); keep research and design `deep`.
 - Bees in the same wave share a scratchpad (`bee_note` / `bee_notes`); `sols_board` reads it afterwards. It is a place to avoid duplicate work, not a conversation: a bee cannot ask another a question.
 
 ## Big jobs: send bees
@@ -1829,7 +1917,8 @@ You are the only writer; bees are your readers. `sols_bee` runs 1-4 workers at o
 - Cite the result URL you used. Snippets are search results, not verified facts; if the search returns nothing, say so in one line instead of guessing.
 - `sols_fetch` opens one result when its snippet is not enough. Only fetch a URL the request is about or a search returned.
 - You do have search. Never tell the operator you have no search tool.
-- Before you call a page finished, run `sitebox_probe` at width 500 (the browser minimum). Anything it reports as wider than the viewport, clipped, or under 12px is a bug: fix it and probe again.
+- Before you call a page finished, run `sitebox_probe` at width 500 (the browser minimum) with every route you changed in `routes` — one call, not one per page. Anything it reports as wider than the viewport, clipped, or under 12px is a bug: fix it and probe again.
+- Every tool call costs a model round. Batch reads, grep and probes; probe once after a batch of patches, not after each patch.
 - Research budget: at most 3 searches and 4 fetches before you act. A JS app returns a shell; fetch it once with \`render\`: true instead of touring ten URLs.
 - When the operator asks for a site that emulates a product, build the product's own surface (the chat panel, the character grid, the flow a user would touch), never an article about it. Use a new brand name and your own copy; never reuse the reference's name, logo or screenshots.
 
