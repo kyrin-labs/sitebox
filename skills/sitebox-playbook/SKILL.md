@@ -170,6 +170,26 @@ plays on an explicit click; a route change stops the previous player.
 - A site that was already red before your patch: compare the fail set before and
   after; only introduced failures are yours.
 
+## 8b. Real data for clones
+
+A clone without the real thing is a wireframe. These routes work when the site
+itself blocks scraping:
+
+- **X / Twitter profiles**: fetch `https://r.jina.ai/https://x.com/<handle>` — it
+  returns the display name, bio, avatar, banner and recent posts with their
+  image URLs (pbs.twimg.com). Download the avatar, banner and post media with
+  `sols_asset`; keep the post text as written (Thai stays Thai). If a count is
+  not in the page, omit it instead of inventing one.
+- **YouTube channels**: `sols_youtube(channel)` returns the real title, avatar,
+  subscriber line and the latest uploads with ids, titles, view counts and
+  thumbnail URLs. Download thumbnails with `sols_asset` (`i.ytimg.com/vi/<id>/...`).
+- **Steam games**: the store CDN serves `https://cdn.cloudflare.steamstatic.com/steam/apps/<appid>/header.jpg`
+  and `.../capsule_616x353.jpg`; `sols_search` finds the appid. Download them —
+  `SB002` refuses hotlinked third-party assets.
+
+The reference's brand stays out: new name, new logo, own chrome. The data and
+the media are real; the identity is yours.
+
 ## 9. Working with bees
 
 - **Wave 1** researches: structure, facts with URLs, copy drafts, tokens.

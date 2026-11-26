@@ -56,6 +56,21 @@ pub fn definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "sols_youtube",
+                "description": "Read a real YouTube channel: title, avatar, subscriber count and the most recent videos (id, title, thumbnail, views, published). Use it before building any page about a channel, then download the thumbnails with sols_asset.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "channel": {"type": "string", "description": "handle or URL, e.g. 9arm, @9arm, https://www.youtube.com/@9arm"},
+                        "limit": {"type": "integer", "description": "videos to return, 1-12, default 8"}
+                    },
+                    "required": ["channel"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sols_search",
                 "description": "Search the web through the configured SearXNG instance. Use for facts outside the site (companies, places, people, prices, domains, news). Returns titles, URLs and snippets.",
                 "parameters": {
@@ -598,6 +613,7 @@ pub async fn execute_unbound(
         "sols_create_site" => create_site(st, thread_id, args).await,
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(st, args).await,
+        "sols_youtube" => youtube(args).await,
         "sols_bee" => {
             // Research before the build: web and doctrine only, no site tools.
             let raw = args
@@ -644,6 +660,235 @@ pub async fn execute_unbound(
 /// Bring one photo into the site while it is being created. A clone without
 /// photography is a wireframe, and the check catalog forbids hotlinking, so the
 /// agent needs a way to own the bytes it references.
+
+/// Extract the JSON object that follows `marker` in a page, matching braces.
+fn json_after(text: &str, marker: &str) -> Option<Value> {
+    let i = text.find(marker)?;
+    let rest = &text[i + marker.len()..];
+    let start = rest.find('{')?;
+    let s = &rest[start..];
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, b) in bytes.iter().enumerate() {
+        let c = *b as char;
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_str = true;
+        } else if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+            if depth == 0 {
+                return serde_json::from_str(&s[..=i]).ok();
+            }
+        }
+    }
+    None
+}
+
+fn yt_text(v: &Value) -> String {
+    if let Some(s) = v.as_str() {
+        return s.to_string();
+    }
+    if let Some(runs) = v.get("runs").and_then(|r| r.as_array()) {
+        return runs
+            .iter()
+            .filter_map(|r| r.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("");
+    }
+    if let Some(s) = v.get("simpleText").and_then(|t| t.as_str()) {
+        return s.to_string();
+    }
+    String::new()
+}
+
+fn collect_videos(v: &Value, out: &mut Vec<Value>, limit: usize) {
+    if out.len() >= limit {
+        return;
+    }
+    match v {
+        Value::Object(m) => {
+            if let Some(vr) = m.get("videoRenderer") {
+                let id = vr.get("videoId").and_then(|x| x.as_str()).unwrap_or("");
+                if !id.is_empty() {
+                    let title = vr.get("title").map(yt_text).unwrap_or_default();
+                    let thumb = vr
+                        .get("thumbnail")
+                        .and_then(|t| t.get("thumbnails"))
+                        .and_then(|t| t.as_array())
+                        .and_then(|a| a.last())
+                        .and_then(|t| t.get("url"))
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let views = vr
+                        .get("viewCountText")
+                        .map(yt_text)
+                        .unwrap_or_default();
+                    let published = vr
+                        .get("publishedTimeText")
+                        .map(yt_text)
+                        .unwrap_or_default();
+                    out.push(json!({
+                        "id": id, "title": title, "thumbnail": thumb,
+                        "views": views, "published": published,
+                        "url": format!("https://www.youtube.com/watch?v={id}")
+                    }));
+                }
+            }
+            for x in m.values() {
+                collect_videos(x, out, limit);
+                if out.len() >= limit {
+                    return;
+                }
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                collect_videos(x, out, limit);
+                if out.len() >= limit {
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    match v {
+        Value::Object(m) => {
+            if let Some(x) = m.get(key) {
+                return Some(x);
+            }
+            m.values().find_map(|x| find_key(x, key))
+        }
+        Value::Array(a) => a.iter().find_map(|x| find_key(x, key)),
+        _ => None,
+    }
+}
+
+/// A real channel sheet: identity from the rendered page, uploads from the
+/// channel's RSS feed (the page itself is a JS shell that no longer ships a
+/// stable video list).
+async fn youtube(args: &Value) -> Result<Value> {
+    let raw = args.get("channel").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if raw.is_empty() {
+        bail!("channel is required, e.g. 9arm or a channel URL");
+    }
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(8)
+        .clamp(1, 15) as usize;
+    let url = if raw.starts_with("http") {
+        raw.to_string()
+    } else {
+        let h = raw.trim_start_matches('@');
+        format!("https://www.youtube.com/@{h}/videos")
+    };
+    let dom = shot::dump_dom_at(&url, 1280, 1200).await?;
+
+    let external = dom
+        .split("\"externalId\":\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .filter(|s| s.starts_with("UC"))
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("could not resolve a channel id for {url}"))?;
+
+    let title = dom
+        .split("\"channelMetadataRenderer\":{\"title\":\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .unwrap_or("")
+        .to_string();
+    let avatar = dom
+        .split("\"avatar\":{\"thumbnails\":[{\"url\":\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .unwrap_or("")
+        .to_string();
+    let subs = dom
+        .split('>')
+        .zip(dom.split('>').skip(1))
+        .map(|(a, _)| a.replace('<', "").trim().to_string())
+        .find(|t| t.contains("subscriber") && t.chars().any(|c| c.is_ascii_digit()) && t.len() < 40)
+        .map(|t| t.trim_end_matches("/span").trim().to_string())
+        .unwrap_or_default();
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent("SiteBox-Sols/1.0")
+        .build()?;
+    let xml = client
+        .get(format!(
+            "https://www.youtube.com/feeds/videos.xml?channel_id={external}"
+        ))
+        .send()
+        .await?
+        .text()
+        .await?;
+    let mut videos = Vec::new();
+    for entry in xml.split("<entry>").skip(1).take(limit) {
+        let id = entry
+            .split("<yt:videoId>")
+            .nth(1)
+            .and_then(|r| r.split("</yt:videoId>").next())
+            .unwrap_or("");
+        let t = entry
+            .split("<title>")
+            .nth(1)
+            .and_then(|r| r.split("</title>").next())
+            .unwrap_or("")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'");
+        let published = entry
+            .split("<published>")
+            .nth(1)
+            .and_then(|r| r.split("</published>").next())
+            .unwrap_or("");
+        let views = entry
+            .split("<media:statistics views=\"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap_or("");
+        if id.is_empty() {
+            continue;
+        }
+        videos.push(json!({
+            "id": id,
+            "title": t,
+            "published": published,
+            "views": views,
+            "thumbnail": format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"),
+            "url": format!("https://www.youtube.com/watch?v={id}")
+        }));
+    }
+    if videos.is_empty() {
+        bail!("the channel feed for {external} returned no videos");
+    }
+    Ok(json!({
+        "ok": true,
+        "channel": {"id": external, "title": title, "avatar": avatar, "subscribers": subs, "url": url},
+        "videos": videos,
+        "note": "Real channel data. Download the avatar and thumbnails with sols_asset, keep titles and view counts as written, and do not invent uploads."
+    }))
+}
+
 async fn add_asset(st: &StudioState, site: &SiteRef, args: &Value) -> Result<Value> {
     // One call can carry a whole feed: a photo grid is ten files, and a tool
     // that needs ten rounds to do it never finishes inside a turn.
@@ -1219,6 +1464,7 @@ pub async fn execute(
         "sols_asset" => add_asset(st, site, args).await,
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(st, args).await,
+        "sols_youtube" => youtube(args).await,
         "sitebox_grep" => {
             let query = args
                 .get("query")
