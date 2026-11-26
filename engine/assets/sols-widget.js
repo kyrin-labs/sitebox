@@ -30,13 +30,17 @@
     '</svg>';
 
   var host, root, frameWrap, open = false, prevMargin = null;
+  var dockW = (function () {
+    var v = parseInt(localStorage.getItem('sols.width') || '', 10);
+    return v >= 320 && v <= 900 ? v : 470;
+  })();
 
   // Share the viewport instead of covering it: the page narrows by the drawer
   // width, so the operator can read the site and talk to Sols at once. Wide
   // mode is a modal and gives the space back.
   function dock(on) {
     if (!document.body) return;
-    var width = window.innerWidth <= 560 ? 0 : 470;
+    var width = window.innerWidth <= 560 ? 0 : dockW;
     if (on && width) {
       if (prevMargin === null) prevMargin = document.body.style.marginRight || '';
       document.body.style.transition = 'margin-right .18s ease';
@@ -63,12 +67,21 @@
       'border:1px solid rgba(89,194,255,.55);box-shadow:0 8px 28px rgba(20,90,180,.35),inset 0 1px 0 rgba(255,255,255,.08);' +
       'transition:transform .15s ease,box-shadow .15s ease}' +
       '.btn:hover{transform:translateY(-1px);box-shadow:0 12px 32px rgba(20,90,180,.45)}' +
-      '.wrap{position:fixed;top:0;right:0;bottom:0;width:min(470px,100%);display:flex;' +
+      '.wrap{position:fixed;top:0;right:0;bottom:0;width:min(var(--w,470px),100%);display:flex;' +
       'justify-content:flex-end;background:transparent;pointer-events:none;animation:solsIn .18s ease}' +
-      '.panel{width:100%;height:100%;border:0;background:#fff;box-shadow:-16px 0 48px rgba(0,0,0,.4);pointer-events:auto}' +
+      '.panel{width:100%;height:100%;border:0;border-left:1px solid rgba(0,0,0,.14);' +
+      'background:#fff;box-shadow:none;pointer-events:auto}' +
+      '.grip{position:absolute;left:-3px;top:0;bottom:0;width:8px;cursor:col-resize;pointer-events:auto;z-index:2}' +
+      '.grip:hover,.wrap.dragging .grip{background:rgba(9,105,218,.22)}' +
+      '.grip::after{content:"";position:absolute;left:3px;top:50%;margin-top:-18px;width:3px;height:36px;' +
+      'border-radius:2px;background:rgba(0,0,0,.16)}' +
+      '.grip:hover::after,.wrap.dragging .grip::after{background:rgba(9,105,218,.75)}' +
+      '.wrap.dragging .panel{pointer-events:none}' +
+      '.wrap.wide .grip{display:none}' +
       '.wrap.wide{inset:0;width:auto;justify-content:center;align-items:center;padding:4vh 3vw;' +
       'background:rgba(6,12,22,.5);backdrop-filter:blur(2px);pointer-events:auto}' +
-      '.wrap.wide .panel{width:min(1040px,100%);height:100%;border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.45);pointer-events:auto}' +
+      '.wrap.wide .panel{width:min(1040px,100%);height:100%;border-left:0;border-radius:14px;' +
+      'box-shadow:0 24px 80px rgba(0,0,0,.45);pointer-events:auto}' +
       '@keyframes solsIn{from{opacity:0}to{opacity:1}}' +
       '@media(max-width:560px){.panel{width:100%}.btn span{display:none}}' +
       '</style>' +
@@ -92,12 +105,45 @@
       '&embed=1&route=' + encodeURIComponent(location.pathname + location.search) +
       '&v=' + (cfg.v || 1);
     f.setAttribute('allow', 'clipboard-write');
+    var grip = document.createElement('div');
+    grip.className = 'grip';
+    grip.title = 'ลากเพื่อปรับความกว้าง';
+    frameWrap.style.setProperty('--w', dockW + 'px');
+    frameWrap.appendChild(grip);
     frameWrap.appendChild(f);
     root.appendChild(frameWrap);
+    bindDrag(grip);
     dock(true);
     var btn = root.querySelector('.btn');
     if (btn) btn.style.display = 'none';
     open = true;
+  }
+
+  function bindDrag(grip) {
+    grip.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      grip.setPointerCapture && grip.setPointerCapture(e.pointerId);
+      var startX = e.clientX;
+      var startW = dockW;
+      frameWrap.classList.add('dragging');
+      document.body.style.transition = 'none';
+      function move(ev) {
+        var w = Math.round(startW - (ev.clientX - startX));
+        var max = Math.min(760, Math.round(window.innerWidth * 0.72));
+        dockW = Math.max(320, Math.min(max, w));
+        frameWrap.style.setProperty('--w', dockW + 'px');
+        if (document.body) document.body.style.marginRight = dockW + 'px';
+      }
+      function up() {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        frameWrap && frameWrap.classList.remove('dragging');
+        if (document.body) document.body.style.transition = 'margin-right .18s ease';
+        try { localStorage.setItem('sols.width', String(dockW)); } catch (err) {}
+      }
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    });
   }
 
   function close() {
