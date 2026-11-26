@@ -557,6 +557,20 @@ async fn remove(
         abs = Some(p);
     }
     st.sup.stop(&id).await.ok();
+    if purge {
+        // A turn on a deleted site would keep writing into a folder that is
+        // about to disappear, and its conversation is about to go with it.
+        let threads = studio::store::list(&st.studio, Some(&id));
+        for t in &threads {
+            if let Some(h) = st.studio.turns.lock().await.remove(&t.id) {
+                h.abort();
+            }
+            st.studio.busy.lock().await.remove(&studio::lock_key(t));
+        }
+        if let Err(e) = studio::store::purge_site(&st.studio, &id) {
+            eprintln!("purge studio data for {id}: {e:#}");
+        }
+    }
     if let Some(p) = abs {
         let _ = std::fs::remove_dir_all(p);
     }
@@ -566,7 +580,7 @@ async fn remove(
     Json(json!({
         "ok": true,
         "purged": purge,
-        "note": if purge { "site stopped, folder deleted, entry removed" } else { "config removed only — the folder is still on disk" }
+        "note": if purge { "site stopped, folder deleted, entry removed, conversations and their patches removed" } else { "config removed only — the folder and its conversations are still on disk" }
     }))
     .into_response()
 }

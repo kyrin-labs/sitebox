@@ -200,6 +200,29 @@ pub fn set_plan(st: &StudioState, id: &str, steps: Vec<PlanStep>) -> Result<()> 
     super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())
 }
 
+/// Remove everything the studio keeps for a site: its conversations, queued
+/// patches, snapshots and screenshots. Called when the site itself is purged —
+/// leaving them behind made deleted sites reappear in the thread list and kept
+/// their screenshots forever.
+pub fn purge_site(st: &StudioState, site: &str) -> Result<()> {
+    for t in list(st, Some(site)) {
+        let _ = std::fs::remove_dir_all(st.data.join("threads").join(&t.id));
+    }
+    if let Ok(rd) = std::fs::read_dir(st.data.join("patches")) {
+        for e in rd.flatten() {
+            let Ok(raw) = std::fs::read_to_string(e.path()) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
+            if v.get("site_id").and_then(|x| x.as_str()) == Some(site) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    for sub in ["snapshots", "shots"] {
+        let _ = std::fs::remove_dir_all(st.data.join(sub).join(site));
+    }
+    Ok(())
+}
+
 pub fn list(st: &StudioState, site: Option<&str>) -> Vec<Thread> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(threads_dir(st)) else {
