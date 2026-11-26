@@ -263,7 +263,9 @@
       fillSites();
       // Opening the panel without a card click must still show the last
       // conversation; otherwise the log looks empty until the site is changed.
-      if (!state.thread && state.site) loadThreads(true);
+      if (!state.thread && state.site && !document.body.classList.contains('sols-embed')) {
+        loadThreads(true);
+      }
     } catch (e) {
       $('#st-status').textContent = e.message;
       $('#st-status').classList.add('is-bad');
@@ -293,7 +295,11 @@
     // value selectable so the bar does not lie about what it is attached to.
     opts.unshift('<option value="">New site…</option>');
     sel.innerHTML = opts.join('');
-    const saved = localStorage.getItem('studio.site');
+    // Embed opens for one specific site; the dashboard's last choice must not
+    // win over the site the operator is actually looking at.
+    const saved = document.body.classList.contains('sols-embed')
+      ? null
+      : localStorage.getItem('studio.site');
     if (!state.site && saved && state.sites.some((s) => s.id === saved)) state.site = saved;
     else if (!state.site && state.sites[0]) state.site = state.sites[0].id;
     sel.value = state.site || '';
@@ -342,8 +348,11 @@
     $('#st-log').innerHTML = '';
     renderPlan([]);
     if (!state.site) return;
+    const asked = state.site;
     let threads = [];
-    try { threads = await api(`/api/studio/threads?site=${encodeURIComponent(state.site)}`); } catch (_) { threads = []; }
+    try { threads = await api(`/api/studio/threads?site=${encodeURIComponent(asked)}`); } catch (_) { threads = []; }
+    // A slower answer for the site we just left must not replace the new one.
+    if (state.site !== asked) return;
     if (!Array.isArray(threads) || threads.length === 0) {
       await newThread();
       return;
@@ -391,6 +400,7 @@
     state.patchEls.clear();
     try {
       const d = await api(`/api/studio/threads/${encodeURIComponent(id)}/messages`);
+      if (state.site && d.thread && d.thread.site_id && d.thread.site_id !== state.site) return;
       state.mode = (d.thread && d.thread.mode) || 'ask';
       $('#st-mode').value = state.mode;
       (d.messages || []).forEach(renderStored);
