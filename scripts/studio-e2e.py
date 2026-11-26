@@ -793,7 +793,7 @@ def main():
             time.sleep(0.3)
         s2, b2, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th7["id"], "message": "legacy change", "nonce": nonce}, token=TOKEN)
         check("duplicate nonce is accepted and ignored", s1 == 202 and s2 == 202 and b2.get("duplicate") is True, (s1, b1, s2, b2))
-        time.sleep(3)
+        time.sleep(6)
         s, box, _ = req(base + f"/api/studio/threads/{th7['id']}/messages", token=TOKEN)
         users = [m for m in box.get("messages", []) if m.get("role") == "user"]
         check("only one user message stored", len(users) == 1, len(users))

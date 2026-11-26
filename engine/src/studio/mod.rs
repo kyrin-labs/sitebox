@@ -9,6 +9,8 @@
 //! 3. **Every path is resolved against exactly one site folder.** There is no
 //!    tool that accepts a root-relative or absolute path.
 
+pub mod agent;
+pub mod turn;
 pub mod apply;
 pub mod bee;
 pub mod config;
@@ -307,6 +309,157 @@ fn current_site(st: &StudioState, thread_id: &str) -> Result<Option<SiteRef>> {
     Ok(Some(site_ref(&st.root, &t.site_id)?))
 }
 
+/// A Sols turn as the shared loop sees it: a dispatcher, two persistence hooks
+/// and the turn policy. Everything that used to be inline in the round loop is
+/// now either here (side effects) or in `turn` (decisions).
+struct SolsHost<'a> {
+    st: &'a StudioState,
+    thread_id: &'a str,
+    user_msg: &'a str,
+    auto_apply: bool,
+    turn_no: u64,
+    req: turn::Request,
+    state: turn::State,
+    queued: Option<turn::Nudge>,
+    round: usize,
+    tool_ms: u128,
+    per_tool: std::collections::BTreeMap<String, u128>,
+    patches_proposed: usize,
+    finished: bool,
+}
+
+impl agent::Host for SolsHost<'_> {
+    fn tools(&self) -> Value {
+        tools::definitions()
+    }
+
+    async fn dispatch(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        emit(
+            &self.st.events,
+            self.thread_id,
+            json!({"type":"tool_start","name":name,"args":args,"call_id":call_id}),
+        );
+        let t = std::time::Instant::now();
+        // Only page/content writes count as "the work started". A download is
+        // preparation: measuring a turn by it let a build spend twenty rounds
+        // fetching assets and never write the page.
+        if matches!(
+            name,
+            "sitebox_propose_patch" | "sols_create_site" | "sitebox_new_page" | "sitebox_build"
+        ) {
+            self.state.mutated += 1;
+        }
+        let site = current_site(self.st, self.thread_id)?;
+        let result = match site.as_ref() {
+            Some(s) => tools::execute(self.st, s, self.thread_id, name, &args, self.auto_apply).await,
+            None => tools::execute_unbound(self.st, self.thread_id, name, &args).await,
+        };
+        let ms = t.elapsed().as_millis();
+        self.tool_ms += ms;
+        *self.per_tool.entry(name.to_string()).or_insert(0) += ms;
+        let _ = store::append_timing(
+            self.st,
+            self.thread_id,
+            &json!({"turn":self.turn_no,"kind":"tool","name":name,"ms":ms}),
+        );
+        let value = match result {
+            Ok(v) => v,
+            Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+        };
+        tools::touched_paths(&value, &mut self.state.touched);
+        if name == "sitebox_propose_patch" {
+            self.patches_proposed += value
+                .get("patches")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(usize::from(value.get("patch_id").is_some()));
+        }
+        emit(
+            &self.st.events,
+            self.thread_id,
+            json!({"type":"tool_end","name":name,"call_id":call_id,"ok":value.get("ok").and_then(|v| v.as_bool()).unwrap_or(true),"result":short(&value)}),
+        );
+        store::append_msg(
+            self.st,
+            self.thread_id,
+            &store::Message {
+                role: "tool".into(),
+                // A swarm returns several reports at once; clipping them to the
+                // single-tool budget silently drops the later bees.
+                content: clip(
+                    &value.to_string(),
+                    if name == "sols_bee" { 24_000 } else { 6_000 },
+                ),
+                tool_calls: None,
+                tool_call_id: Some(call_id.to_string()),
+                name: Some(name.to_string()),
+                ts: util::now_iso(),
+            },
+        )?;
+        Ok(value)
+    }
+
+    async fn on_assistant(&mut self, text: &str, calls: &[Value]) -> Result<()> {
+        store::append_msg(
+            self.st,
+            self.thread_id,
+            &store::Message {
+                role: "assistant".into(),
+                content: text.to_string(),
+                tool_calls: if calls.is_empty() {
+                    None
+                } else {
+                    Some(calls.to_vec())
+                },
+                tool_call_id: None,
+                name: None,
+                ts: util::now_iso(),
+            },
+        )
+    }
+
+    async fn before_round(&mut self, round: usize, messages: &mut Vec<Value>) -> Result<()> {
+        self.round = round;
+        // Long turns push the request thousands of tokens back; measured runs
+        // ended with "no instruction in this turn" after twenty reads. Restate
+        // it at the end of every request, where recency works for us.
+        messages.push(json!({
+            "role": "system",
+            "content": format!(
+                "The operator's request for this turn (do not lose it, do not re-ask it):\n{}",
+                clip(self.user_msg, 1200)
+            )
+        }));
+        if let Some(n) = self.queued.take() {
+            messages.push(json!({"role": "system", "content": n.message()}));
+        }
+        if let Some(n) = turn::before_round(&mut self.state, &self.req, round) {
+            emit(&self.st.events, self.thread_id, json!({"type":"nudge","stuck":true}));
+            messages.push(json!({"role": "system", "content": n.message()}));
+        }
+        Ok(())
+    }
+
+    fn wants_more(&mut self) -> bool {
+        if let Some(n) = turn::after_round(&mut self.state, &self.req, self.round) {
+            let payload = match &n {
+                turn::Nudge::Missing(list) => json!({"type":"nudge","missing":list.join(", ")}),
+                _ => json!({"type":"nudge"}),
+            };
+            emit(&self.st.events, self.thread_id, payload);
+            self.queued = Some(n);
+            return true;
+        }
+        self.finished = true;
+        false
+    }
+}
+
 async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Result<()> {
     // A turn that starts with no site is the one that creates it; its patches
     // are applied as they pass the checks. Later turns go through review. The
@@ -335,227 +488,66 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
     let base = settings.max_rounds.unwrap_or(16);
     // A build that touches five pages needs more than an edit: measured runs
     // used 20 rounds and still had to stop before probing.
-    let max_rounds = if auto_apply { base.max(26) } else { base }.clamp(1, 32);
-    let tools = tools::definitions();
-    let mut tokens_in: u64 = 0;
-    let mut tokens_out: u64 = 0;
-    let mut patches_proposed = 0usize;
-    // Where the minutes went: one line per model round and per tool call, plus
-    // a summary the panel can show without reading the whole file.
+    let max_rounds = (if auto_apply { base.max(26) } else { base }).clamp(1, 32) as usize;
+    // Two extra rounds are the policy's nudge allowance, not model budget.
+    let rounds = max_rounds + 2;
     let turn_no = store::messages(st, thread_id)?
         .iter()
         .filter(|m| m.role == "user")
         .count() as u64;
-    let mut llm_ms: u128 = 0;
-    let mut tool_ms: u128 = 0;
-    let mut per_tool: std::collections::BTreeMap<String, u128> = Default::default();
-    // A turn that was asked to change something and ends without a single write
-    // gets one more round with the work restated. Measured: a five-clause build
-    // brief ended with "I have not received an instruction" after 19 read calls.
-    let mut mutated = 0usize;
-    let mut nudged = false;
-    let mut deliverable_nudged = false;
-    let mut stuck_nudged = false;
-    let mut nudge: Option<String> = None;
-    let wants_change = wants_change(user_msg);
-    // A path in the request is a promise: `/cases/x.html` must exist when the
-    // turn ends. Measured: a "create this page" brief came back with three
-    // unrelated fixes and no page.
-    let required = named_paths(user_msg);
-    let mut touched: std::collections::HashSet<String> = Default::default();
 
-    for round in 0..(max_rounds + 2) {
-        let site = current_site(st, thread_id)?;
-        let mut messages = build_messages(st, thread_id, site.as_ref())?;
-        // Long turns push the request thousands of tokens back; measured runs
-        // ended with "no instruction in this turn" after twenty reads. Restate
-        // it at the end of every request, where recency works for us.
-        messages.push(json!({
-            "role": "system",
-            "content": format!(
-                "The operator's request for this turn (do not lose it, do not re-ask it):\n{}",
-                clip(user_msg, 1200)
-            )
-        }));
-        if let Some(n) = nudge.take() {
-            messages.push(json!({"role": "system", "content": n}));
-        }
-        let t_llm = std::time::Instant::now();
-        let out = llm::stream_chat(
-            st,
-            &settings,
-            messages,
-            tools.clone(),
-            thread_id,
-            !lang::has_cjk(user_msg),
-        )
-        .await?;
-        let took = t_llm.elapsed().as_millis();
-        llm_ms += took;
+    let site = current_site(st, thread_id)?;
+    let mut messages = build_messages(st, thread_id, site.as_ref())?;
+    let mut host = SolsHost {
+        st,
+        thread_id,
+        user_msg,
+        auto_apply,
+        turn_no,
+        req: turn::Request::new(user_msg, rounds),
+        state: turn::State::default(),
+        queued: None,
+        round: 0,
+        tool_ms: 0,
+        per_tool: Default::default(),
+        patches_proposed: 0,
+        finished: false,
+    };
+    let cfg = agent::Config {
+        st,
+        settings: &settings,
+        thread_id,
+        strip_cjk: !lang::has_cjk(user_msg),
+        limits: agent::Limits {
+            rounds,
+            calls: 400,
+        },
+    };
+    let outcome = agent::run(cfg, messages, &mut host).await?;
+
+    let llm_ms: u128 = outcome.round_ms.iter().sum();
+    for (i, ms) in outcome.round_ms.iter().enumerate() {
         let _ = store::append_timing(
             st,
             thread_id,
-            &json!({"turn":turn_no,"kind":"llm","round":round+1,"ms":took}),
+            &json!({"turn":turn_no,"kind":"llm","round":i+1,"ms":ms}),
         );
-        tokens_in += out.tokens_in;
-        tokens_out += out.tokens_out;
+    }
+    dump_timing(st, thread_id, turn_no, llm_ms, host.tool_ms, &host.per_tool);
 
-        let has_calls = !out.tool_calls.is_empty();
-        store::append_msg(
-            st,
+    if host.finished {
+        emit(
+            &st.events,
             thread_id,
-            &store::Message {
-                role: "assistant".into(),
-                content: out.text.clone(),
-                tool_calls: if has_calls {
-                    Some(out.tool_calls.clone())
-                } else {
-                    None
-                },
-                tool_call_id: None,
-                name: None,
-                ts: util::now_iso(),
-            },
-        )?;
-
-        if !has_calls {
-            if wants_change && mutated == 0 && !nudged && round + 1 < max_rounds + 2 {
-                nudged = true;
-                nudge = Some(
-                    "You have not changed anything this turn, and the request asks for a change. \
-                     Do the work now: put the deliverables in the plan, read only what you need, \
-                     and call sitebox_propose_patch. If something truly blocks you, name the one \
-                     missing fact — do not ask a vague question."
-                        .to_string(),
-                );
-                emit(&st.events, thread_id, json!({"type":"nudge"}));
-                continue;
-            }
-            let missing: Vec<&String> = required
-                .iter()
-                .filter(|p| !touched.contains(p.as_str()))
-                .collect();
-            if !missing.is_empty() && !deliverable_nudged && round + 1 < max_rounds + 2 {
-                deliverable_nudged = true;
-                let list = missing
-                    .iter()
-                    .map(|p| p.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                nudge = Some(format!(
-                    "The request names {list}, and no patch has touched it. Create or edit that \
-                     exact path now; anything else you noticed goes in one sentence at the end.",
-                ));
-                emit(&st.events, thread_id, json!({"type":"nudge","missing":list}));
-                continue;
-            }
-            emit(
-                &st.events,
-                thread_id,
-                json!({"type":"done","rounds":round+1,"tokens_in":tokens_in,"tokens_out":tokens_out}),
-            );
-            dump_timing(st, thread_id, turn_no, llm_ms, tool_ms, &per_tool);
-            return Ok(());
-        }
-
-        // Six rounds of reading with nothing written means the model is touring.
-        // Say the next action outright instead of letting it spend the budget.
-        if wants_change && mutated == 0 && round >= 5 && !stuck_nudged {
-            stuck_nudged = true;
-            let target = if required.is_empty() {
-                "the file the request describes".to_string()
-            } else {
-                required.join(", ")
-            };
-            nudge = Some(format!(
-                "Stop reading. You already have the structure. Make the change now: one \
-                 sitebox_propose_patch with create: true for {target} (or edit the named file), \
-                 with the full content in `new`. Anything else goes in one sentence at the end."
-            ));
-            emit(&st.events, thread_id, json!({"type":"nudge","stuck":true}));
-        }
-
-        for call in &out.tool_calls {
-            let name = call
-                .get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let raw_args = call
-                .get("function")
-                .and_then(|f| f.get("arguments"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("{}");
-            let call_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("call");
-            let args: Value = serde_json::from_str(raw_args).unwrap_or_else(|_| json!({}));
-            emit(
-                &st.events,
-                thread_id,
-                json!({"type":"tool_start","name":name,"args":args,"call_id":call_id}),
-            );
-            let t_tool = std::time::Instant::now();
-            // Only page/content writes count as "the work started". A download
-            // is preparation: measuring a turn by it let a build spend twenty
-            // rounds fetching assets and never write the page.
-            if matches!(
-                name,
-                "sitebox_propose_patch" | "sols_create_site" | "sitebox_new_page" | "sitebox_build"
-            ) {
-                mutated += 1;
-            }
-            let result = match site.as_ref() {
-                Some(s) => tools::execute(st, s, thread_id, name, &args, auto_apply).await,
-                None => tools::execute_unbound(st, thread_id, name, &args).await,
-            };
-            let took = t_tool.elapsed().as_millis();
-            tool_ms += took;
-            *per_tool.entry(name.to_string()).or_insert(0) += took;
-            let _ = store::append_timing(
-                st,
-                thread_id,
-                &json!({"turn":turn_no,"kind":"tool","name":name,"ms":took}),
-            );
-            let result = match result {
-                Ok(v) => v,
-                Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
-            };
-            collect_paths(&result, &mut touched);
-            if name == "sitebox_propose_patch" {
-                patches_proposed += result
-                    .get("patches")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(usize::from(result.get("patch_id").is_some()));
-            }
-            emit(
-                &st.events,
-                thread_id,
-                json!({"type":"tool_end","name":name,"call_id":call_id,"ok":result.get("ok").and_then(|v| v.as_bool()).unwrap_or(true),"result":short(&result)}),
-            );
-            store::append_msg(
-                st,
-                thread_id,
-                &store::Message {
-                    role: "tool".into(),
-                    // A swarm returns several reports at once; clipping them to
-                    // the single-tool budget silently drops the later bees.
-                    content: clip(
-                        &result.to_string(),
-                        if name == "sols_bee" { 24_000 } else { 6_000 },
-                    ),
-                    tool_calls: None,
-                    tool_call_id: Some(call_id.to_string()),
-                    name: Some(name.to_string()),
-                    ts: util::now_iso(),
-                },
-            )?;
-        }
+            json!({"type":"done","rounds":outcome.rounds,"tokens_in":outcome.tokens_in,"tokens_out":outcome.tokens_out}),
+        );
+        return Ok(());
     }
 
-    dump_timing(st, thread_id, turn_no, llm_ms, tool_ms, &per_tool);
     // Running out of rounds is a failure the operator has to be able to read.
     // Ending the turn with a stack of tool cards and no sentence looks like a
     // broken panel, not like "I could not decide".
+    let patches_proposed = host.patches_proposed;
     let note = if auto_apply && patches_proposed > 0 {
         format!(
             "สร้าง site และลง patch ไป {patches_proposed} จุดแล้ว แต่ยังตรวจ/เก็บงานไม่ครบใน {max_rounds} รอบ — \
@@ -575,77 +567,13 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
         )
     };
     store::append_msg(st, thread_id, &store::Message::new("assistant", &note))?;
+    emit(&st.events, thread_id, json!({"type":"text_delta","text":note}));
     emit(
         &st.events,
         thread_id,
-        json!({"type":"text_delta","text":note}),
-    );
-    emit(
-        &st.events,
-        thread_id,
-        json!({"type":"done","rounds":max_rounds,"tokens_in":tokens_in,"tokens_out":tokens_out,"note":"tool round limit reached","message":note}),
+        json!({"type":"done","rounds":max_rounds,"tokens_in":outcome.tokens_in,"tokens_out":outcome.tokens_out,"note":"tool round limit reached","message":note}),
     );
     Ok(())
-}
-
-/// Every `path` a tool result mentions, normalized without a leading slash.
-fn collect_paths(v: &Value, out: &mut std::collections::HashSet<String>) {
-    match v {
-        Value::Object(map) => {
-            for (k, val) in map {
-                if k == "path" {
-                    if let Some(p) = val.as_str() {
-                        out.insert(p.trim_start_matches('/').to_string());
-                    }
-                } else {
-                    collect_paths(val, out);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for it in items {
-                collect_paths(it, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Paths the request asks for, e.g. `/cases/x.html` or `public/style.css`.
-fn named_paths(msg: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for raw in msg.split_whitespace() {
-        let t = raw.trim_matches(|c: char| {
-            c == '`' || c == '"' || c == '\'' || c == '(' || c == ')' || c == ',' || c == ';'
-        });
-        let lower = t.to_lowercase();
-        if (lower.ends_with(".html") || lower.ends_with(".css") || lower.ends_with(".js"))
-            && t.contains('/')
-        {
-            out.push(t.trim_start_matches('/').to_string());
-        }
-    }
-    out
-}
-
-/// Does the request ask for a change? Read-only briefs and questions must not
-/// trigger the nudge.
-fn wants_change(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    if m.contains("ห้ามแก้")
-        || m.contains("อย่าแก้")
-        || m.contains("อ่านอย่างเดียว")
-        || m.contains("read-only")
-        || m.contains("ห้าม patch")
-    {
-        return false;
-    }
-    const VERBS: &[&str] = &[
-        "สร้าง", "เพิ่ม", "แก้", "เปลี่ยน", "ลบ", "ปรับ", "ย้าย", "ใส่", "ติดตั้ง", "ทำเลย",
-        "ทำให้", "ทำเป็น", "อัปเดต", "rename", "add", "create", "change", "fix", "remove",
-        "delete", "update", "insert", "replace", "build",
-    ];
-    VERBS.iter().any(|v| m.contains(v))
 }
 
 fn dump_timing(

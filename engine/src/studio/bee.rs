@@ -7,10 +7,11 @@
 //! Sols stays the only thing that edits the site. That keeps one writer on the
 //! files, so a swarm cannot race itself.
 
+use anyhow::Result;
 use futures_util::future::join_all;
 use serde_json::{json, Value};
 
-use super::{config::Settings, emit, llm, tools, SiteRef, StudioState};
+use super::{agent, config::Settings, emit, tools, SiteRef, StudioState};
 
 /// Enough for one line of inquiry, not enough to tour a whole site.
 const MAX_ROUNDS: usize = 8;
@@ -203,6 +204,83 @@ You can read and search, not write. `sitebox_grep` finds text, `sitebox_read` op
     )
 }
 
+struct BeeHost<'a> {
+    st: &'a StudioState,
+    site: Option<&'a SiteRef>,
+    parent: &'a str,
+    brief: &'a Brief,
+    id: usize,
+    max_rounds: usize,
+    report: Option<String>,
+}
+
+impl agent::Host for BeeHost<'_> {
+    fn tools(&self) -> Value {
+        bee_tools(self.site.is_some())
+    }
+
+    async fn dispatch(&mut self, _call_id: &str, name: &str, args: Value) -> Result<Value> {
+        if name == "bee_note" {
+            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let n = add_note(self.st, self.parent, self.id, &self.brief.title, text).await;
+            return Ok(json!({"ok": true, "noted": n}));
+        }
+        if name == "bee_notes" {
+            let list = notes(self.st, self.parent).await;
+            let body = if list.is_empty() {
+                "the board is empty".to_string()
+            } else {
+                list.iter()
+                    .map(|n| format!("[bee {} · {}] {}", n.bee, n.title, n.text))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            return Ok(json!({"ok": true, "notes": body}));
+        }
+        if name == "bee_report" {
+            let text = args
+                .get("report")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            self.report = Some(text.clone());
+            return Ok(json!({"ok": true, "accepted": !text.is_empty()}));
+        }
+        // A bee's toolbox is a leaf set: it never crosses the writer
+        // dispatcher, so it cannot patch, build or spawn another bee.
+        if tools::is_read_only(name) {
+            return match self.site {
+                Some(site) => tools::read_only_site(self.st, site, "__bee", name, &args).await,
+                None => Ok(json!({"ok": false, "error": "no site is attached to this conversation"})),
+            };
+        }
+        match name {
+            "sols_search" => tools::web_search(self.st, &args).await,
+            "sols_fetch" => tools::web_fetch(self.st, &args).await,
+            "sols_youtube" => tools::youtube(&args).await,
+            "sols_steam" => tools::steam(&args).await,
+            "sols_design_index" => Ok(super::design::list(self.st)),
+            "sols_skills" => tools::tool_skills(),
+            "sols_skill" => tools::tool_skill(&args),
+            other => Ok(json!({
+                "ok": false,
+                "error": format!("`{other}` is not available to a bee")
+            })),
+        }
+    }
+
+    async fn before_round(&mut self, round: usize, messages: &mut Vec<Value>) -> Result<()> {
+        if round + 1 == self.max_rounds {
+            messages.push(json!({
+                "role": "user",
+                "content": "This is your last round. Call bee_report now with what you have; a partial report beats no report."
+            }));
+        }
+        Ok(())
+    }
+}
+
 async fn one(
     st: &StudioState,
     site: Option<&SiteRef>,
@@ -227,13 +305,12 @@ async fn one(
         out.report = "the agent is not configured".into();
         return out;
     }
-    let defs = bee_tools(site.is_some());
-    let mut messages = vec![
+    let messages = vec![
         json!({"role": "system", "content": prompt(
             site,
             &brief.title,
             &brief.brief,
-            if quick { QUICK_CALLS } else { MAX_CALLS },
+            max_calls,
         )}),
         json!({"role": "user", "content": brief.brief}),
     ];
@@ -244,139 +321,52 @@ async fn one(
         json!({"type":"bee","id":id,"title":brief.title,"status":"start"}),
     );
 
-    for round in 0..max_rounds {
-        out.rounds = round + 1;
-        // Last chance: ask for the report instead of letting the bee burn its
-        // final round on another read and return nothing.
-        if round + 1 == max_rounds {
-            messages.push(json!({
-                "role": "user",
-                "content": "This is your last round. Call bee_report now with what you have; a partial report beats no report."
-            }));
+    let mut host = BeeHost {
+        st,
+        site,
+        parent,
+        brief,
+        id,
+        max_rounds,
+        report: None,
+    };
+    let cfg = agent::Config {
+        st,
+        settings: &settings,
+        thread_id: "__bee",
+        strip_cjk: true,
+        limits: agent::Limits {
+            rounds: max_rounds,
+            calls: max_calls,
+        },
+    };
+    let outcome = agent::run(cfg, messages, &mut host).await;
+    let outcome = match outcome {
+        Ok(v) => v,
+        Err(e) => {
+            out.report = format!("bee failed: {e:#}");
+            emit(
+                &st.events,
+                parent,
+                json!({"type":"bee","id":id,"title":brief.title,"status":"error"}),
+            );
+            return out;
         }
-        let res = llm::stream_chat(st, &settings, messages.clone(), defs.clone(), "__bee", true).await;
-        let got = match res {
-            Ok(v) => v,
-            Err(e) => {
-                out.report = format!("bee failed: {e:#}");
-                emit(
-                    &st.events,
-                    parent,
-                    json!({"type":"bee","id":id,"title":brief.title,"status":"error"}),
-                );
-                return out;
-            }
-        };
-        out.tokens_in += got.tokens_in;
-        out.tokens_out += got.tokens_out;
+    };
+    out.rounds = outcome.rounds;
+    out.calls = outcome.calls;
+    out.tokens_in = outcome.tokens_in;
+    out.tokens_out = outcome.tokens_out;
 
-        if got.tool_calls.is_empty() {
-            out.report = got.text.trim().to_string();
-            out.ok = !out.report.is_empty();
-            break;
+    out.report = host.report.clone().unwrap_or_else(|| {
+        if outcome.text.trim().is_empty() {
+            "the bee ran out of rounds without a report".into()
+        } else {
+            format!("(no bee_report; last message)\n{}", outcome.text.trim())
         }
-
-        messages.push(json!({
-            "role": "assistant",
-            "content": got.text,
-            "tool_calls": got.tool_calls,
-        }));
-
-        let mut finished = false;
-        for call in &got.tool_calls {
-            let name = call
-                .get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let raw = call
-                .get("function")
-                .and_then(|f| f.get("arguments"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("{}");
-            let args: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!({}));
-            let call_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("call");
-            out.calls += 1;
-
-            if name == "bee_note" {
-                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let n = add_note(st, parent, id, &brief.title, text).await;
-                messages.push(json!({
-                    "role": "tool", "tool_call_id": call_id, "name": name,
-                    "content": format!("noted ({n} on the board)")
-                }));
-                continue;
-            }
-            if name == "bee_notes" {
-                let list = notes(st, parent).await;
-                let body = if list.is_empty() {
-                    "the board is empty".to_string()
-                } else {
-                    list.iter()
-                        .map(|n| format!("[bee {} · {}] {}", n.bee, n.title, n.text))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-                messages.push(json!({
-                    "role": "tool", "tool_call_id": call_id, "name": name, "content": body
-                }));
-                continue;
-            }
-            if name == "bee_report" {
-                out.report = args
-                    .get("report")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                out.ok = !out.report.is_empty();
-                finished = true;
-                break;
-            }
-            if out.calls > max_calls {
-                messages.push(json!({
-                    "role": "tool", "tool_call_id": call_id, "name": name,
-                    "content": "Your tool budget is spent. Call bee_report now with what you have."
-                }));
-                continue;
-            }
-            let allowed: &[&str] = if site.is_some() { ALLOWED } else { ALLOWED_PRE_SITE };
-            if !allowed.contains(&name) {
-                messages.push(json!({
-                    "role": "tool", "tool_call_id": call_id, "name": name,
-                    "content": format!("`{name}` is not available to a bee. Use the read-only tools and bee_report.")
-                }));
-                continue;
-            }
-            let result = match site {
-                Some(s) => tools::execute(st, s, "__bee", name, &args, false).await,
-                None => tools::execute_unbound(st, "__bee", name, &args).await,
-            }
-            .unwrap_or_else(|e| json!({"ok": false, "error": format!("{e:#}")}));
-            let text = result.to_string();
-            let clipped: String = text.chars().take(5000).collect();
-            messages.push(json!({
-                "role": "tool", "tool_call_id": call_id, "name": name, "content": clipped
-            }));
-        }
-        if finished {
-            break;
-        }
-    }
-
-    if out.report.is_empty() {
-        // Keep the bee's own last words if it never called bee_report.
-        out.report = messages
-            .iter()
-            .rev()
-            .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("assistant"))
-            .and_then(|m| m.get("content").and_then(|v| v.as_str()))
-            .map(|t| format!("(no bee_report; last message)\n{t}"))
-            .unwrap_or_else(|| "the bee ran out of rounds without a report".into());
-        out.ok = !out.report.is_empty();
-    }
-    let clipped: String = out.report.chars().take(MAX_REPORT).collect();
-    out.report = clipped;
+    });
+    out.ok = !out.report.trim().is_empty();
+    out.report = out.report.chars().take(MAX_REPORT).collect();
     emit(
         &st.events,
         parent,

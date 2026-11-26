@@ -554,11 +554,11 @@ fn free_port(root: &Path) -> Option<u16> {
     (4500..4900).find(|p| !used.contains(p) && !util::port_bound(*p))
 }
 
-fn tool_skills() -> Result<Value> {
+pub fn tool_skills() -> Result<Value> {
     Ok(json!({"ok": true, "skills": skills::list()}))
 }
 
-fn tool_skill(args: &Value) -> Result<Value> {
+pub fn tool_skill(args: &Value) -> Result<Value> {
     let skill = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let file = args.get("file").and_then(|v| v.as_str());
     let (path, text) = skills::read(skill, file)?;
@@ -829,7 +829,7 @@ fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
 /// A real channel sheet: identity from the rendered page, uploads from the
 /// channel's RSS feed (the page itself is a JS shell that no longer ships a
 /// stable video list).
-async fn youtube(args: &Value) -> Result<Value> {
+pub async fn youtube(args: &Value) -> Result<Value> {
     let raw = args.get("channel").and_then(|v| v.as_str()).unwrap_or("").trim();
     if raw.is_empty() {
         bail!("channel is required, e.g. 9arm or a channel URL");
@@ -938,7 +938,7 @@ async fn youtube(args: &Value) -> Result<Value> {
 
 /// The store front as data: prices arrive in satang, so they are converted once
 /// here instead of by a model that may drop a zero.
-async fn steam(args: &Value) -> Result<Value> {
+pub async fn steam(args: &Value) -> Result<Value> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -1154,7 +1154,7 @@ fn asset_slug(wanted: &str, url: &str) -> String {
     s.chars().take(48).collect()
 }
 
-async fn web_search(st: &StudioState, args: &Value) -> Result<Value> {
+pub async fn web_search(st: &StudioState, args: &Value) -> Result<Value> {
     let base = config::env_or_file(&st.root, "SEARXNG_URL").ok_or_else(|| {
         anyhow::anyhow!(
             "web search is not configured: set SEARXNG_URL (for example http://127.0.0.1:8899)"
@@ -1326,7 +1326,7 @@ fn safe_url(root: &std::path::Path, raw: &str) -> Result<reqwest::Url> {
     Ok(u)
 }
 
-async fn web_fetch(st: &StudioState, args: &Value) -> Result<Value> {
+pub async fn web_fetch(st: &StudioState, args: &Value) -> Result<Value> {
     let raw = args
         .get("url")
         .and_then(|v| v.as_str())
@@ -1539,19 +1539,107 @@ fn extract_probe(dom: &str) -> Option<Value> {
     serde_json::from_str(&decoded).ok()
 }
 
-pub async fn execute(
+
+/// Read-only site surface. A bee reaches the site through this seam and never
+/// through the writer dispatcher, so a worker cannot patch, build or spawn.
+/// Paths a tool result touched. The convention lives here, next to the tools
+/// that produce it, so the turn loop does not walk JSON it does not own.
+pub fn touched_paths(v: &Value, out: &mut std::collections::HashSet<String>) {
+    match v {
+        Value::Object(map) => {
+            for (k, val) in map {
+                if k == "path" {
+                    if let Some(p) = val.as_str() {
+                        out.insert(p.trim_start_matches('/').to_string());
+                    }
+                } else {
+                    touched_paths(val, out);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for it in items {
+                touched_paths(it, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn is_read_only(name: &str) -> bool {
+    matches!(
+        name,
+        "sitebox_read"
+            | "sitebox_grep"
+            | "sitebox_ls"
+            | "sitebox_outline"
+            | "sitebox_check"
+            | "sitebox_verify"
+            | "sitebox_http"
+            | "sitebox_probe"
+            | "sitebox_shot"
+    )
+}
+
+pub async fn read_only_site(
     st: &StudioState,
     site: &SiteRef,
     thread_id: &str,
     name: &str,
     args: &Value,
-    auto_apply: bool,
 ) -> Result<Value> {
-    if let Some(r) = shared_tool(st, thread_id, Some(site), name, args).await {
-        return r;
-    }
     match name {
-        "sitebox_grep" => {
+"sitebox_read" => {
+            {
+                let path_key = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let key = format!("{thread_id}:{path_key}");
+                let mut reads = st.reads.lock().await;
+                let n = reads.entry(key).or_insert(0);
+                *n += 1;
+                if *n > 2 {
+                    bail!(
+                        "you have already read `{path_key}` twice this turn. Use sitebox_grep to                          find the exact anchor and send a patch instead of reading it again."
+                    );
+                }
+            }
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let p = site_path(&site.dir, path)?;
+            let text = std::fs::read_to_string(&p)
+                .map_err(|_| anyhow::anyhow!("{path} is missing or not UTF-8 text"))?;
+            let lines: Vec<&str> = text.lines().collect();
+            let total = lines.len();
+            let from = args
+                .get("from")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .max(1) as usize;
+            let want_to = args
+                .get("to")
+                .and_then(|v| v.as_u64())
+                .unwrap_or((from + 199) as u64) as usize;
+            let to = want_to
+                .min(from.saturating_add(MAX_READ_LINES - 1))
+                .min(total);
+            if from > total {
+                bail!("from {from} is past the end ({total} lines)");
+            }
+            let body = lines[from - 1..to]
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("{:>6}| {}", from + i, l))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(json!({
+                "ok": true,
+                "path": path,
+                "from": from,
+                "to": to,
+                "total_lines": total,
+                "truncated": to < total,
+                "text": body,
+            }))
+        }
+"sitebox_grep" => {
             let query = args
                 .get("query")
                 .and_then(|v| v.as_str())
@@ -1634,209 +1722,7 @@ pub async fn execute(
                 "truncated": truncated,
             }))
         }
-                                "sitebox_site_kind" => Ok(json!({
-            "ok": true,
-            "site": site.id,
-            "kind": site.kind,
-            "why": site.kind_reason,
-            "editable": if site.kind == "generated" {
-                json!(["tools/", "synd/", "data files", "sitebox.toml (only with a reason)"])
-            } else {
-                json!(["public/index.html", "public/*.css", "public/*.js", "server.js"])
-            },
-            "port": site.manifest.site.port,
-            "serve": site.manifest.site.serve,
-            "running": st.sup.is_running(&site.id).await,
-            "pipeline_steps": site.manifest.pipeline.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
-        })),
-        "sitebox_outline" => {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if path.trim().is_empty() {
-                let files = outline::source_files(&site.dir, 40)
-                    .into_iter()
-                    .map(|(p, s)| json!({"path": p, "bytes": s}))
-                    .collect::<Vec<_>>();
-                let main = ["public/index.html", "index.html"]
-                    .iter()
-                    .find(|p| site.dir.join(p).is_file())
-                    .map(|p| p.to_string());
-                let mut items = match &main {
-                    Some(p) => outline::items(&site.dir, p).unwrap_or_default(),
-                    None => Vec::new(),
-                };
-                // The map is for the model's orientation, not for the reply. A
-                // full outline invites the model to read it back to the user.
-                let total = items.len();
-                items.truncate(24);
-                Ok(json!({
-                    "ok": true,
-                    "kind": site.kind,
-                    "files": files,
-                    "main": main,
-                    "items": items,
-                    "items_total": total,
-                    "hint": "For orientation only: do not enumerate these back. Read a region with sitebox_read when you are about to patch it."
-                }))
-            } else {
-                let items = outline::items(&site.dir, path)?;
-                Ok(json!({"ok": true, "path": path, "count": items.len(), "items": items}))
-            }
-        }
-        "sitebox_read" => {
-            {
-                let path_key = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                let key = format!("{thread_id}:{path_key}");
-                let mut reads = st.reads.lock().await;
-                let n = reads.entry(key).or_insert(0);
-                *n += 1;
-                if *n > 2 {
-                    bail!(
-                        "you have already read `{path_key}` twice this turn. Use sitebox_grep to                          find the exact anchor and send a patch instead of reading it again."
-                    );
-                }
-            }
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let p = site_path(&site.dir, path)?;
-            let text = std::fs::read_to_string(&p)
-                .map_err(|_| anyhow::anyhow!("{path} is missing or not UTF-8 text"))?;
-            let lines: Vec<&str> = text.lines().collect();
-            let total = lines.len();
-            let from = args
-                .get("from")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1)
-                .max(1) as usize;
-            let want_to = args
-                .get("to")
-                .and_then(|v| v.as_u64())
-                .unwrap_or((from + 199) as u64) as usize;
-            let to = want_to
-                .min(from.saturating_add(MAX_READ_LINES - 1))
-                .min(total);
-            if from > total {
-                bail!("from {from} is past the end ({total} lines)");
-            }
-            let body = lines[from - 1..to]
-                .iter()
-                .enumerate()
-                .map(|(i, l)| format!("{:>6}| {}", from + i, l))
-                .collect::<Vec<_>>()
-                .join("\n");
-            Ok(json!({
-                "ok": true,
-                "path": path,
-                "from": from,
-                "to": to,
-                "total_lines": total,
-                "truncated": to < total,
-                "text": body,
-            }))
-        }
-        "sitebox_site_start" => {
-            let r = st.sup.start(&site.manifest).await?;
-            Ok(json!({
-                "ok": r.ok,
-                "running": st.sup.is_running(&site.id).await,
-                "port": r.port,
-                "verified": r.verified,
-                "message": r.message,
-            }))
-        }
-        "sitebox_site_stop" => {
-            st.sup.stop(&site.id).await?;
-            Ok(json!({
-                "ok": true,
-                "running": st.sup.is_running(&site.id).await,
-                "port": site.manifest.site.port,
-                "message": format!("{} stopped", site.id),
-            }))
-        }
-        "sitebox_site_restart" => {
-            let r = st.sup.restart(&site.manifest).await?;
-            Ok(json!({
-                "ok": r.ok,
-                "running": st.sup.is_running(&site.id).await,
-                "port": r.port,
-                "verified": r.verified,
-                "message": r.message,
-            }))
-        }
-        "sitebox_check" => {
-            let report = checks::run_static(&st.root, &site.manifest)?;
-            Ok(json!({
-                "ok": report.ok(),
-                "mode": "static",
-                "findings": report.findings,
-            }))
-        }
-        "sitebox_verify" => {
-            if !st.sup.is_running(&site.id).await {
-                bail!(
-                    "site {} is not running; start it in the dashboard first",
-                    site.id
-                );
-            }
-            let base = format!("http://127.0.0.1:{}", site.manifest.site.port);
-            // The no-gzip client is deliberate: reqwest strips Content-Encoding
-            // after auto-decompressing, so SB104 would fail on a correct server.
-            let report = checks::run_http(&base, &st.check_client).await;
-            Ok(json!({"ok": report.ok(), "base": base, "findings": report.findings}))
-        }
-        "sols_import" => {
-            let from = args
-                .get("from")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim_start_matches('/');
-            if from.is_empty() || from.contains("..") {
-                bail!("`from` must be a path inside imports/");
-            }
-            let src = crate::util::safe_join(&st.root.join("imports"), from)
-                .ok_or_else(|| anyhow::anyhow!("bad path: {from}"))?;
-            if !src.is_file() {
-                bail!("imports/{from} does not exist; ask the operator to drop it there");
-            }
-            let size = std::fs::metadata(&src)?.len();
-            if size > 20 * 1024 * 1024 {
-                bail!("imports/{from} is {size} bytes; the limit is 20 MB");
-            }
-            let name = src
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let to = args
-                .get("to")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("assets-raw/{name}"));
-            let dest = site_path(&site.dir, &to)?;
-            if let Some(parent) = dest.parent() {
-                super::ensure_dir(parent)?;
-            }
-            std::fs::copy(&src, &dest)?;
-            Ok(json!({
-                "ok": true,
-                "path": to,
-                "bytes": size,
-                "next": "If this is a source image, add an images pipeline step in sitebox.toml and run sitebox_build.",
-            }))
-        }
-        "sitebox_build" => {
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let steps = crate::pipeline::apply(&site.manifest, &st.root, force, None)?;
-            let failed: Vec<String> = steps
-                .iter()
-                .filter(|s| s.status == "fail" || s.status == "blocked")
-                .map(|s| format!("{} ({})", s.name, s.status))
-                .collect();
-            Ok(json!({
-                "ok": failed.is_empty(),
-                "steps": steps.iter().map(|s| json!({"name": s.name, "status": s.status, "ms": s.ms, "detail": s.detail})).collect::<Vec<_>>(),
-                "failed": failed,
-            }))
-        }
-        "sitebox_ls" => {
+"sitebox_ls" => {
             let dir = args
                 .get("dir")
                 .and_then(|v| v.as_str())
@@ -1896,7 +1782,61 @@ pub async fn execute(
                 json!({"ok": true, "dir": if dir.is_empty() { "." } else { dir }, "entries": out, "truncated": out.len() >= max}),
             )
         }
-        "sitebox_http" => {
+"sitebox_outline" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.trim().is_empty() {
+                let files = outline::source_files(&site.dir, 40)
+                    .into_iter()
+                    .map(|(p, s)| json!({"path": p, "bytes": s}))
+                    .collect::<Vec<_>>();
+                let main = ["public/index.html", "index.html"]
+                    .iter()
+                    .find(|p| site.dir.join(p).is_file())
+                    .map(|p| p.to_string());
+                let mut items = match &main {
+                    Some(p) => outline::items(&site.dir, p).unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                // The map is for the model's orientation, not for the reply. A
+                // full outline invites the model to read it back to the user.
+                let total = items.len();
+                items.truncate(24);
+                Ok(json!({
+                    "ok": true,
+                    "kind": site.kind,
+                    "files": files,
+                    "main": main,
+                    "items": items,
+                    "items_total": total,
+                    "hint": "For orientation only: do not enumerate these back. Read a region with sitebox_read when you are about to patch it."
+                }))
+            } else {
+                let items = outline::items(&site.dir, path)?;
+                Ok(json!({"ok": true, "path": path, "count": items.len(), "items": items}))
+            }
+        }
+"sitebox_check" => {
+            let report = checks::run_static(&st.root, &site.manifest)?;
+            Ok(json!({
+                "ok": report.ok(),
+                "mode": "static",
+                "findings": report.findings,
+            }))
+        }
+"sitebox_verify" => {
+            if !st.sup.is_running(&site.id).await {
+                bail!(
+                    "site {} is not running; start it in the dashboard first",
+                    site.id
+                );
+            }
+            let base = format!("http://127.0.0.1:{}", site.manifest.site.port);
+            // The no-gzip client is deliberate: reqwest strips Content-Encoding
+            // after auto-decompressing, so SB104 would fail on a correct server.
+            let report = checks::run_http(&base, &st.check_client).await;
+            Ok(json!({"ok": report.ok(), "base": base, "findings": report.findings}))
+        }
+"sitebox_http" => {
             if !st.sup.is_running(&site.id).await {
                 bail!(
                     "site {} is not running; start it before testing routes",
@@ -1946,7 +1886,7 @@ pub async fn execute(
                 "truncated": text.chars().count() > 4000,
             }))
         }
-        "sitebox_probe" => {
+"sitebox_probe" => {
             if !st.sup.is_running(&site.id).await {
                 bail!(
                     "site {} is not running; start it before probing layout",
@@ -2058,7 +1998,7 @@ pub async fn execute(
             }
             Ok(out)
         }
-        "sitebox_shot" => {
+"sitebox_shot" => {
             let width = args.get("width").and_then(|v| v.as_u64()).unwrap_or(1440) as u32;
             let height = args.get("height").and_then(|v| v.as_u64()).unwrap_or(900) as u32;
             let route = args.get("route").and_then(|v| v.as_str()).unwrap_or("/");
@@ -2070,7 +2010,124 @@ pub async fn execute(
             }
             shot::capture(st, &site.id, site.manifest.site.port, width, height, route).await
         }
-                        "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
+        other => bail!("`{other}` is not a read-only site tool"),
+    }
+}
+
+pub async fn execute(
+    st: &StudioState,
+    site: &SiteRef,
+    thread_id: &str,
+    name: &str,
+    args: &Value,
+    auto_apply: bool,
+) -> Result<Value> {
+    if let Some(r) = shared_tool(st, thread_id, Some(site), name, args).await {
+        return r;
+    }
+    if is_read_only(name) {
+        return read_only_site(st, site, thread_id, name, args).await;
+    }
+    match name {
+                                        "sitebox_site_kind" => Ok(json!({
+            "ok": true,
+            "site": site.id,
+            "kind": site.kind,
+            "why": site.kind_reason,
+            "editable": if site.kind == "generated" {
+                json!(["tools/", "synd/", "data files", "sitebox.toml (only with a reason)"])
+            } else {
+                json!(["public/index.html", "public/*.css", "public/*.js", "server.js"])
+            },
+            "port": site.manifest.site.port,
+            "serve": site.manifest.site.serve,
+            "running": st.sup.is_running(&site.id).await,
+            "pipeline_steps": site.manifest.pipeline.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+        })),
+                        "sitebox_site_start" => {
+            let r = st.sup.start(&site.manifest).await?;
+            Ok(json!({
+                "ok": r.ok,
+                "running": st.sup.is_running(&site.id).await,
+                "port": r.port,
+                "verified": r.verified,
+                "message": r.message,
+            }))
+        }
+        "sitebox_site_stop" => {
+            st.sup.stop(&site.id).await?;
+            Ok(json!({
+                "ok": true,
+                "running": st.sup.is_running(&site.id).await,
+                "port": site.manifest.site.port,
+                "message": format!("{} stopped", site.id),
+            }))
+        }
+        "sitebox_site_restart" => {
+            let r = st.sup.restart(&site.manifest).await?;
+            Ok(json!({
+                "ok": r.ok,
+                "running": st.sup.is_running(&site.id).await,
+                "port": r.port,
+                "verified": r.verified,
+                "message": r.message,
+            }))
+        }
+                        "sols_import" => {
+            let from = args
+                .get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim_start_matches('/');
+            if from.is_empty() || from.contains("..") {
+                bail!("`from` must be a path inside imports/");
+            }
+            let src = crate::util::safe_join(&st.root.join("imports"), from)
+                .ok_or_else(|| anyhow::anyhow!("bad path: {from}"))?;
+            if !src.is_file() {
+                bail!("imports/{from} does not exist; ask the operator to drop it there");
+            }
+            let size = std::fs::metadata(&src)?.len();
+            if size > 20 * 1024 * 1024 {
+                bail!("imports/{from} is {size} bytes; the limit is 20 MB");
+            }
+            let name = src
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let to = args
+                .get("to")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("assets-raw/{name}"));
+            let dest = site_path(&site.dir, &to)?;
+            if let Some(parent) = dest.parent() {
+                super::ensure_dir(parent)?;
+            }
+            std::fs::copy(&src, &dest)?;
+            Ok(json!({
+                "ok": true,
+                "path": to,
+                "bytes": size,
+                "next": "If this is a source image, add an images pipeline step in sitebox.toml and run sitebox_build.",
+            }))
+        }
+        "sitebox_build" => {
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let steps = crate::pipeline::apply(&site.manifest, &st.root, force, None)?;
+            let failed: Vec<String> = steps
+                .iter()
+                .filter(|s| s.status == "fail" || s.status == "blocked")
+                .map(|s| format!("{} ({})", s.name, s.status))
+                .collect();
+            Ok(json!({
+                "ok": failed.is_empty(),
+                "steps": steps.iter().map(|s| json!({"name": s.name, "status": s.status, "ms": s.ms, "detail": s.detail})).collect::<Vec<_>>(),
+                "failed": failed,
+            }))
+        }
+                                                        "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
         "sitebox_propose_patch" => propose(st, site, thread_id, args, auto_apply).await,
         other => bail!("unknown tool `{other}`"),
     }
