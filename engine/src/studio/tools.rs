@@ -1557,6 +1557,7 @@ pub async fn execute(
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(st, args).await,
         "sols_youtube" => youtube(args).await,
+        "sols_steam" => steam(args).await,
         "sitebox_grep" => {
             let query = args
                 .get("query")

@@ -494,9 +494,12 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
                 json!({"type":"tool_start","name":name,"args":args,"call_id":call_id}),
             );
             let t_tool = std::time::Instant::now();
+            // Only page/content writes count as "the work started". A download
+            // is preparation: measuring a turn by it let a build spend twenty
+            // rounds fetching assets and never write the page.
             if matches!(
                 name,
-                "sitebox_propose_patch" | "sols_create_site" | "sols_asset" | "sitebox_build"
+                "sitebox_propose_patch" | "sols_create_site" | "sitebox_new_page" | "sitebox_build"
             ) {
                 mutated += 1;
             }
