@@ -32,10 +32,9 @@ you choose a palette, before you write a headline, and before you say "done".
 7. **Every control must work.** A button that does nothing, a dialog with a
    transparent backdrop, a hover state that turns text white on white — all of
    these have been reported as bugs, because they are bugs.
-8. **Clones are clones.** "ให้เหมือน Steam 100%", "notion like มากกว่านะ" —
-   when he asks for a clone, rebuild the product's own surface: the header, the
-   cards, the density, the interactions, the empty states. A recoloured
-   skeleton with different content is a rejection.
+8. **Clones are clones.** "ให้เหมือน 100%" means rebuild the product's own
+   surface: the header, the cards, the density, the interactions, the empty
+   states. A recoloured skeleton with different content is a rejection.
 9. **New brand, same feel.** For a clone, invent the name and the logo; never
    reuse the reference's mark or copy its paragraphs verbatim.
 10. **Act, then report in 3-6 lines.** Do not interview him, do not ask
@@ -55,28 +54,27 @@ A page is finished when all of this is true, not when the HTML exists:
 - The report names the port, the pages, the check counts, and the one thing
   that is still weak.
 
-Measured: a five-page build that skipped the probe step came back with 6
-corrupted characters, 8 labels at 11.8px and a horizontal overflow. None of it
-was visible in the HTML diff.
+A build that skips the probe ships with corrupted glyphs, labels just under
+12px and a horizontal overflow; none of it is visible in the HTML diff.
 
 ## 3. Archetypes that have worked
 
-**Editorial / landing** (lumen-press, folio, relay)
+**Editorial / landing**
 Paper background, one serif display face for Thai headings, sans for body,
 a 64-72ch measure, 3-5 sections, a stat row, one primary CTA. Hero carries a
 real photograph, not a gradient. Footer closes the page.
 
-**Product clone** (skytree = Steam, prakai = Instagram, nuanjai = character chat)
+**Product clone** (a storefront, a photo feed, a character chat, a workspace)
 Sticky product header, dense card grid or two-column app shell, real public
 data, real photography, working interactions (like, follow, send, tab switch).
 The shell is the product: sidebar, feed, composer, bottom nav on mobile.
 
-**Archive / registry** (sealing-registry, seal-incident-archive)
+**Archive / registry**
 A masthead that looks institutional, a level ladder or timeline, an index page
 with filter + search, detail pages per record, monospace codes, hairline rules.
 Editorial serif for titles, muted paper palette, no card shadows.
 
-**Docs site** (doku manual)
+**Docs site**
 Left sidebar with sections, right-side on-page nav, code blocks with copy,
 search, previous/next. Body text 16px, line-height 1.7, max 72ch.
 
@@ -104,11 +102,11 @@ The key stays in the server; the browser never sees it. Listen on `0.0.0.0`.
 - No marketing triplets ("รวดเร็ว ปลอดภัย มืออาชีพ").
 - No rhetorical questions as headlines.
 - Empty states say what to do next, in the operator's voice.
-- Numbers stay consistent across pages; if the archive says 1,234 records, the
-  filter counts must add up to 1,234.
+- Numbers stay consistent across pages: if the index says 1,200 records, the
+  filter counts must add up to 1,200.
 
-Rejected line: "ยินดีต้อนรับสู่หอจดหมายเหตุแห่งชาติของเรา ที่ซึ่งเรื่องราว..."
-Accepted: "หอรับเรื่องแรกเมื่อปี 2499 ตอนนี้มี 9 เหตุการณ์ และ 3 เคสที่เปิดให้อ่านฉบับเต็ม"
+Rejected: "ยินดีต้อนรับสู่เว็บไซต์ของเรา ที่ซึ่งเรื่องราวดี ๆ รอคุณอยู่"
+Accepted: "เปิดทำการปี 2499 ตอนนี้มี 42 รายการ และ 8 ฉบับที่อ่านเต็มได้"
 
 ## 6. Reading the feedback
 
