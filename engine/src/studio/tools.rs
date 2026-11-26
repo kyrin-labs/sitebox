@@ -318,6 +318,37 @@ pub fn definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "sitebox_new_page",
+                "description": "Create a new HTML page by copying the shell (head, header/nav, footer, stylesheet links) of an existing page in the same site, then filling it with the sections you supply. Use this instead of writing a whole page in one patch: the call carries only the content, and the page already matches the site. Afterwards patch the details (classes, imagery).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "new file path, e.g. public/cases/ubong-2531.html"},
+                        "title": {"type": "string", "description": "page title and h1"},
+                        "description": {"type": "string", "description": "meta description, one sentence"},
+                        "template": {"type": "string", "description": "existing page to copy the shell from; default: index.html in the same folder, else public/index.html"},
+                        "back": {"type": "object", "properties": {"href": {"type": "string"}, "text": {"type": "string"}}, "description": "optional link before the footer, e.g. {href: '../index.html', text: '← กลับสารบัญ'}"},
+                        "sections": {
+                            "type": "array",
+                            "description": "page content in order; each becomes a section with an h2",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "heading": {"type": "string"},
+                                    "body": {"type": "string", "description": "one paragraph of real copy"},
+                                    "items": {"type": "array", "items": {"type": "string"}, "description": "optional bullet list"}
+                                },
+                                "required": ["heading", "body"]
+                            }
+                        }
+                    },
+                    "required": ["path", "title", "sections"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sitebox_propose_patch",
                 "description": "Propose exact-substring edits. Each `old` must occur exactly `count` times in its file or the server refuses. Pass `path/old/new` for one, or `patches` for up to 12 in one call. The server stages each patch in a copy, runs the static checks, and queues it for the operator (or applies it during site creation).",
                 "parameters": {
@@ -1681,9 +1712,246 @@ pub async fn execute(
             }
             shot::capture(st, &site.id, site.manifest.site.port, width, height, route).await
         }
+        "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
         "sitebox_propose_patch" => propose(st, site, thread_id, args, auto_apply).await,
         other => bail!("unknown tool `{other}`"),
     }
+}
+
+
+/// HTML-escape model text before it becomes markup.
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn replace_between(text: &str, open: &str, close: &str, with: &str) -> String {
+    match (text.find(open), text.find(close)) {
+        (Some(a), Some(b)) if b > a => format!(
+            "{}{}{}",
+            &text[..a + open.len()],
+            with,
+            &text[b..]
+        ),
+        _ => text.to_string(),
+    }
+}
+
+/// Build a page from an existing page's shell and the content the model sent.
+/// Pure so it can be tested without a site.
+fn render_page(
+    shell: &str,
+    title: &str,
+    description: &str,
+    sections: &[(String, String, Vec<String>)],
+    back: Option<(String, String)>,
+) -> Result<String> {
+    let body_at = shell
+        .find("<body")
+        .ok_or_else(|| anyhow::anyhow!("the template has no <body>"))?;
+    let header_end = shell[body_at..]
+        .find("</header>")
+        .map(|i| body_at + i + "</header>".len())
+        .or_else(|| shell[body_at..].find('>').map(|i| body_at + i + 1))
+        .unwrap_or(body_at);
+    let mut prefix = shell[..header_end].to_string();
+    if !title.trim().is_empty() {
+        prefix = replace_between(
+            &prefix,
+            "<title>",
+            "</title>",
+            &esc_html(title),
+        );
+    }
+    if !description.trim().is_empty()
+        && prefix.contains("name=\"description\"")
+    {
+        // Cheap attribute replace: the generator only needs the new sentence.
+        if let Some(start) = prefix.find("name=\"description\"") {
+            if let Some(cstart) = prefix[start..].find("content=\"") {
+                let abs = start + cstart + "content=\"".len();
+                if let Some(cend) = prefix[abs..].find('"') {
+                    prefix = format!(
+                        "{}{}{}",
+                        &prefix[..abs],
+                        esc_html(description),
+                        &prefix[abs + cend..]
+                    );
+                }
+            }
+        }
+    }
+
+    let main_at = shell[header_end..].find("<main").map(|i| header_end + i);
+    let main_open = main_at
+        .and_then(|a| shell[a..].find('>').map(|j| shell[a..a + j + 1].to_string()))
+        .unwrap_or_else(|| "<main>".to_string());
+
+    let footer_at = shell.rfind("<footer").or_else(|| shell.rfind("</main>"));
+    let suffix = footer_at
+        .map(|i| shell[i..].to_string())
+        .unwrap_or_else(|| "</main>\n</body>\n</html>\n".to_string());
+    let suffix = suffix
+        .strip_prefix("</main>")
+        .map(|s| s.to_string())
+        .unwrap_or(suffix);
+
+    let mut out = String::with_capacity(shell.len());
+    out.push_str(&prefix);
+    out.push('\n');
+    out.push_str(&main_open);
+    out.push('\n');
+    out.push_str(&format!("<h1>{}</h1>\n", esc_html(title)));
+    for (heading, body, items) in sections {
+        out.push_str("<section class=\"page-section\">\n");
+        out.push_str(&format!("  <h2>{}</h2>\n", esc_html(heading)));
+        out.push_str(&format!("  <p>{}</p>\n", esc_html(body)));
+        if !items.is_empty() {
+            out.push_str("  <ul>\n");
+            for it in items {
+                out.push_str(&format!("    <li>{}</li>\n", esc_html(it)));
+            }
+            out.push_str("  </ul>\n");
+        }
+        out.push_str("</section>\n");
+    }
+    if let Some((href, text)) = back {
+        out.push_str(&format!(
+            "<p class=\"back\"><a href=\"{}\">{}</a></p>\n",
+            esc_html(&href),
+            esc_html(&text)
+        ));
+    }
+    out.push_str("</main>\n");
+    out.push_str(&suffix);
+    Ok(out)
+}
+
+async fn new_page(
+    st: &StudioState,
+    site: &SiteRef,
+    thread_id: &str,
+    args: &Value,
+    auto_apply: bool,
+) -> Result<Value> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if !path.ends_with(".html") {
+        bail!("path must end in .html");
+    }
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if title.is_empty() {
+        bail!("title is required");
+    }
+    if site_path(&site.dir, path)?.exists() {
+        bail!("{path} already exists; use sitebox_propose_patch to edit it");
+    }
+    let description = args
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let sections: Vec<(String, String, Vec<String>)> = args
+        .get("sections")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .take(12)
+                .filter_map(|s| {
+                    let heading = s.get("heading").and_then(|v| v.as_str())?.trim().to_string();
+                    let body = s.get("body").and_then(|v| v.as_str())?.trim().to_string();
+                    if heading.is_empty() || body.is_empty() {
+                        return None;
+                    }
+                    let items = s
+                        .get("items")
+                        .and_then(|v| v.as_array())
+                        .map(|l| {
+                            l.iter()
+                                .take(12)
+                                .filter_map(|i| i.as_str().map(|x| x.trim().to_string()))
+                                .filter(|x| !x.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some((heading, body, items))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if sections.is_empty() {
+        bail!("sections need at least one heading + body");
+    }
+    let back = args.get("back").and_then(|b| {
+        let href = b.get("href").and_then(|v| v.as_str())?.trim();
+        let text = b.get("text").and_then(|v| v.as_str())?.trim();
+        if href.is_empty() || text.is_empty() {
+            None
+        } else {
+            Some((href.to_string(), text.to_string()))
+        }
+    });
+
+    // Template: explicit, else index.html beside the target, else public/index.html.
+    let target_dir = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(t) = args.get("template").and_then(|v| v.as_str()) {
+        candidates.push(t.trim().to_string());
+    }
+    if !target_dir.is_empty() {
+        candidates.push(format!("{target_dir}/index.html"));
+    }
+    candidates.push("public/index.html".to_string());
+    let mut shell = String::new();
+    let mut template = String::new();
+    for c in &candidates {
+        if c.is_empty() || c == path {
+            continue;
+        }
+        if let Ok(p) = site_path(&site.dir, c) {
+            if p.is_file() {
+                if let Ok(t) = std::fs::read_to_string(&p) {
+                    if t.contains("<body") {
+                        shell = t;
+                        template = c.clone();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if shell.is_empty() {
+        bail!("no template page found; create one first or pass `template`");
+    }
+
+    let html = render_page(&shell, title, description, &sections, back)?;
+    if html.len() > 120 * 1024 {
+        bail!("the generated page is {} bytes; keep it under 120 KB", html.len());
+    }
+    let reason = format!("new page from template {template}");
+    let res = propose(
+        st,
+        site,
+        thread_id,
+        &json!({"path": path, "create": true, "old": "", "new": html, "reason": reason}),
+        auto_apply,
+    )
+    .await?;
+    Ok(json!({
+        "ok": res.get("ok").cloned().unwrap_or(json!(true)),
+        "template": template,
+        "bytes": html.len(),
+        "result": res,
+        "next": "The page exists with the site shell. Patch its classes, imagery and copy details.",
+    }))
 }
 
 async fn propose(
@@ -1899,7 +2167,7 @@ Work the way SiteBox's own agent does: read the skill that owns the task, plan i
 3. Call `sols_plan` with 3-5 steps before the first action when the job has several parts, then update it as steps move between pending, doing and done. Every clause in the request is a deliverable: finish them all, and do not end with a question the site can answer.
 4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Do not interview the operator when the request is already clear: make the reasonable choice, say it in one line, and build. Choose `id` and `name` yourself and say what you chose.
 5. `sols_create_site` writes the folder, manifest, starter page and registry entry, picks a free port, starts the site and binds this conversation to it. It already starts the site: do not call `sitebox_site_start` afterwards. A static site serves files from disk, so a patch needs no restart either.
-6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. Photography: `sols_asset` downloads a photo into `public/assets` while you are creating (prefer `https://picsum.photos/seed/<word>/800/800` for placeholder shots). Never hotlink an image; always set width/height on `<img>`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
+6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. For each additional page use `sitebox_new_page` (title + sections) — it copies the starter's shell and writes the page, so you only send content. Photography: `sols_asset` downloads a photo into `public/assets` while you are creating (prefer `https://picsum.photos/seed/<word>/800/800` for placeholder shots). Never hotlink an image; always set width/height on `<img>`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
 
 ## Skills (bundled, read on demand)
 {skill_index}
@@ -2025,6 +2293,7 @@ You cannot write files. You have `sitebox_propose_patch`, which stages an exact-
 - Read at most three regions before you either propose a patch or ask one question. If which page or which wording is unclear, ask — do not tour the site.
 
 ## How to edit
+0. A **new page** starts with `sitebox_new_page`: pass the path, title and sections with real copy. It copies the site's head, header/nav and footer, writes the file, and runs the checks; then patch the classes and imagery. Do not write a whole page as a create patch.
 1. `sitebox_outline` (no path) to see the shape, then `sitebox_read` the exact region.
 2. Quote `old` exactly as it appears, including indentation. State `count` as the exact number of occurrences.
 3. Keep one patch to one coherent change. Split unrelated edits.
@@ -2167,5 +2436,44 @@ mod probe_tests {
         let escaped = r#"<pre id="__sols_probe">{&quot;viewport&quot;:375}</pre>"#;
         assert_eq!(extract_probe(escaped).unwrap()["viewport"], 375);
         assert!(extract_probe("<html></html>").is_none());
+    }
+}
+
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+
+    const SHELL: &str = r#"<!doctype html><html lang="th"><head><title>old</title>
+<meta name="description" content="old desc"><link rel="stylesheet" href="style.css"></head>
+<body><header><nav>menu</nav></header><main class="wrap"><p>body</p></main>
+<footer>foot</footer></body></html>"#;
+
+    #[test]
+    fn page_inherits_the_shell_and_fills_sections() {
+        let sections = vec![(
+            "หัวข้อหนึ่ง".to_string(),
+            "เนื้อความ".to_string(),
+            vec!["ข้อ ก".to_string()],
+        )];
+        let out = render_page(SHELL, "หน้าใหม่", "คำอธิบายใหม่", &sections, None).unwrap();
+        assert!(out.contains("<title>หน้าใหม่</title>"), "{out}");
+        assert!(out.contains("content=\"คำอธิบายใหม่\""), "{out}");
+        assert!(out.contains("<header><nav>menu</nav></header>"), "{out}");
+        assert!(out.contains("<h1>หน้าใหม่</h1>"), "{out}");
+        assert!(out.contains("<h2>หัวข้อหนึ่ง</h2>"), "{out}");
+        assert!(out.contains("<li>ข้อ ก</li>"), "{out}");
+        assert!(out.contains("<footer>foot</footer>"), "{out}");
+        assert_eq!(out.matches("<main").count(), 1, "{out}");
+        assert_eq!(out.matches("</main>").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn page_escapes_model_text() {
+        let sections = vec![("a<b".to_string(), "x & y".to_string(), vec![])];
+        let out = render_page(SHELL, "t", "", &sections, Some(("<x>".into(), "กลับ".into()))).unwrap();
+        assert!(out.contains("a&lt;b"), "{out}");
+        assert!(out.contains("x &amp; y"), "{out}");
+        assert!(out.contains("href=\"&lt;x&gt;\""), "{out}");
     }
 }
