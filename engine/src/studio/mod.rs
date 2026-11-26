@@ -287,7 +287,9 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
     // A turn that starts with no site is the one that creates it; its patches
     // are applied as they pass the checks. Later turns go through review. The
     // flag is per turn, so a request that arrives mid-cleanup cannot inherit it.
-    let auto_apply = store::get(st, thread_id)?.site_id.trim().is_empty();
+    let thread = store::get(st, thread_id)?;
+    // Creation always applies; afterwards the conversation's mode decides.
+    let auto_apply = thread.site_id.trim().is_empty() || thread.mode == "all";
     {
         let mut r = st.reads.lock().await;
         let prefix = format!("{thread_id}:");

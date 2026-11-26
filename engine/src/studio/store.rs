@@ -12,6 +12,10 @@ use std::path::PathBuf;
 use super::{new_id, StudioState};
 use crate::util;
 
+fn ask_mode() -> String {
+    "ask".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
     pub text: String,
@@ -33,6 +37,10 @@ pub struct Thread {
     /// Last page the operator was looking at when talking to this thread.
     #[serde(default)]
     pub page: Option<String>,
+    /// "ask" queues patches for the operator; "all" applies them as they pass
+    /// the checks. Creation turns always apply.
+    #[serde(default = "ask_mode")]
+    pub mode: String,
     /// The visible plan for the current piece of work.
     #[serde(default)]
     pub plan: Vec<PlanStep>,
@@ -119,6 +127,7 @@ pub fn create(st: &StudioState, site_id: &str, title: &str) -> Result<Thread> {
         site_id: site_id.to_string(),
         title: title.trim().to_string(),
         page: None,
+        mode: ask_mode(),
         plan: Vec::new(),
         created: now.clone(),
         updated: now,
@@ -165,6 +174,18 @@ pub fn set_page(st: &StudioState, id: &str, page: &str) -> Result<()> {
 pub fn set_site(st: &StudioState, id: &str, site_id: &str) -> Result<()> {
     let mut t = get(st, id)?;
     t.site_id = site_id.to_string();
+    t.updated = util::now_iso();
+    let p = thread_dir(st, id).join("meta.json");
+    super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())
+}
+
+pub fn set_mode(st: &StudioState, id: &str, mode: &str) -> Result<()> {
+    let mode = match mode {
+        "all" => "all",
+        _ => "ask",
+    };
+    let mut t = get(st, id)?;
+    t.mode = mode.to_string();
     t.updated = util::now_iso();
     let p = thread_dir(st, id).join("meta.json");
     super::atomic_write(&p, serde_json::to_string_pretty(&t)?.as_bytes())

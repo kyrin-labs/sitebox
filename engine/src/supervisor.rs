@@ -45,6 +45,8 @@ pub struct StartResult {
 enum Kind {
     Task(JoinHandle<()>),
     Child(tokio::process::Child),
+    /// A node site: the process on a private port, the proxy on the public one.
+    Node(tokio::process::Child, JoinHandle<()>),
 }
 
 struct Running {
@@ -78,6 +80,7 @@ impl Supervisor {
                 .map(|r| match &r.kind {
                     Kind::Task(h) => !h.is_finished(),
                     Kind::Child(c) => c.id().is_some(),
+                    Kind::Node(c, h) => c.id().is_some() && !h.is_finished(),
                 })
                 .unwrap_or(false)
         }
@@ -89,6 +92,7 @@ impl Supervisor {
             .filter(|(_, r)| match &r.kind {
                 Kind::Task(h) => !h.is_finished(),
                 Kind::Child(c) => c.id().is_some(),
+                Kind::Node(c, h) => c.id().is_some() && !h.is_finished(),
             })
             .map(|(k, _)| k.clone())
             .collect()
@@ -271,10 +275,16 @@ impl Supervisor {
                         logs: vec![],
                     });
                 }
+                // Node listens on a private port; the public port belongs to
+                // the proxy, which is the only place the launcher can be added.
+                let internal = (4900u16..5900)
+                    .find(|p| *p != m.site.port && !crate::util::port_bound(*p))
+                    .unwrap_or(m.site.port);
                 let mut cmd = tokio::process::Command::new("node");
                 cmd.arg(&server)
                     .current_dir(&site_dir)
-                    .env("PORT", m.site.port.to_string());
+                    .env("PORT", internal.to_string())
+                    .env("HOST", "127.0.0.1");
                 // The gateway lives in the engine's .env, not in the dashboard
                 // process environment. Pass it to node sites explicitly so a
                 // server.js can call the provider without a key in public/.
@@ -301,10 +311,25 @@ impl Supervisor {
                 if let Some(err) = child.stderr.take() {
                     self.pump(id, "err", err).await;
                 }
+                let proxy_id = id.clone();
+                let public_port = m.site.port;
+                let proxy = tokio::spawn(async move {
+                    let upstream = format!("http://127.0.0.1:{internal}");
+                    if let Err(e) = serve::serve_proxy(
+                        public_port,
+                        upstream,
+                        proxy_id.clone(),
+                        serve::sols_config(),
+                    )
+                    .await
+                    {
+                        eprintln!("{proxy_id} proxy stopped: {e:#}");
+                    }
+                });
                 self.inner.lock().await.insert(
                     id.clone(),
                     Running {
-                        kind: Kind::Child(child),
+                        kind: Kind::Node(child, proxy),
                     },
                 );
                 match self.wait_ready(m.site.port, 6_000).await {
@@ -400,6 +425,25 @@ impl Supervisor {
                         h.abort();
                         self.append_log(id, "sys", "stopped (static listener)")
                             .await;
+                    }
+                    Kind::Node(c, h) => {
+                        h.abort();
+                        if let Some(pid) = c.id() {
+                            unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                        }
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_millis(2500);
+                        loop {
+                            match c.try_wait() {
+                                Ok(Some(_)) => break,
+                                _ if std::time::Instant::now() >= deadline => {
+                                    let _ = c.start_kill();
+                                    break;
+                                }
+                                _ => tokio::time::sleep(std::time::Duration::from_millis(80)).await,
+                            }
+                        }
+                        self.append_log(id, "sys", "stopped (node + proxy)").await;
                     }
                     Kind::Child(c) => {
                         if let Some(pid) = c.id() {

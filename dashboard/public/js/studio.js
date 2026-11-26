@@ -149,6 +149,10 @@
       <div class="st-bar">
         <select id="st-site" class="st-select"></select>
         <select id="st-thread" class="st-select st-select--thread"></select>
+        <select id="st-mode" class="st-select st-select--mode" title="Ask: propose patches for approval. All-in: apply immediately.">
+          <option value="ask">Ask</option>
+          <option value="all">All-in</option>
+        </select>
         <button class="st-btn st-btn--ghost" id="st-newsite" title="Start a new site in a conversation">+ Site</button>
         <button class="st-btn st-btn--ghost" id="st-undo" title="Restore the last snapshot">Undo</button>
       </div>
@@ -191,6 +195,16 @@
     $('#st-thread').addEventListener('change', (e) => selectThread(e.target.value));
     $('#st-new').addEventListener('click', () => newThread());
     $('#st-newsite').addEventListener('click', () => newSiteThread());
+    $('#st-mode').addEventListener('change', async (e) => {
+      if (!state.thread) return;
+      try {
+        const t = await api(`/api/studio/threads/${encodeURIComponent(state.thread)}/mode`, {
+          method: 'POST', body: JSON.stringify({ mode: e.target.value }),
+        });
+        state.mode = t.mode || 'ask';
+        toast(state.mode === 'all' ? 'All-in: patches จะถูกใช้ทันที' : 'Ask: ให้กด Apply เอง');
+      } catch (err) { toast(err.message); }
+    });
     $('#st-settings').addEventListener('click', () => {
       const p = $('#st-settings-panel');
       p.hidden = !p.hidden;
@@ -361,6 +375,8 @@
     state.patchEls.clear();
     try {
       const d = await api(`/api/studio/threads/${encodeURIComponent(id)}/messages`);
+      state.mode = (d.thread && d.thread.mode) || 'ask';
+      $('#st-mode').value = state.mode;
       (d.messages || []).forEach(renderStored);
       renderPlan(d.thread && d.thread.plan);
     } catch (_) { /* a fresh thread has no messages file yet */ }

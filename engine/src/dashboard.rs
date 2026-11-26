@@ -60,6 +60,7 @@ pub fn router(state: DashState) -> Router {
             "/api/studio/threads/{id}/messages",
             get(studio_thread_messages),
         )
+        .route("/api/studio/threads/{id}/mode", post(studio_thread_mode))
         .route("/api/studio/events", get(studio_events))
         .route("/api/studio/chat", post(studio_chat))
         .route("/api/studio/abort", post(studio_abort))
@@ -728,6 +729,29 @@ async fn studio_threads(
 ) -> Response {
     let list = studio::store::list(&st.studio, q.get("site").map(|s| s.as_str()));
     Json(list).into_response()
+}
+
+async fn studio_thread_mode(
+    State(st): State<DashState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let mode = body.get("mode").and_then(|v| v.as_str()).unwrap_or("ask");
+    match studio::store::set_mode(&st.studio, &id, mode) {
+        Ok(()) => match studio::store::get(&st.studio, &id) {
+            Ok(t) => Json(t).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("{e:#}")})),
+            )
+                .into_response(),
+        },
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
 }
 
 async fn studio_thread_create(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
