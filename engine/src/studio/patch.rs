@@ -30,7 +30,28 @@ fn one() -> usize {
 }
 
 /// Reject a patch before it reaches the filesystem.
+/// U+FFFD is what a decoder writes when bytes were not valid UTF-8. It is
+/// never text the operator wants; it is damage that lands in the page and shows
+/// as a box. Refuse it at the gate so the model re-sends the phrase.
+fn check_replacement_chars(spec: &PatchSpec) -> Result<()> {
+    // `old` may legitimately quote existing damage so it can be removed; only
+    // the replacement text must be clean.
+    for (field, text) in [("new", &spec.new)] {
+        if let Some(i) = text.find('\u{FFFD}') {
+            let from = i.saturating_sub(30);
+            let to = (i + 30).min(text.len());
+            let around = &text[from..to];
+            bail!(
+                "`{field}` contains U+FFFD (encoding damage) near: {around:?}. \
+                 Re-send that sentence with valid UTF-8; nothing was written."
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn validate(spec: &PatchSpec, site_kind: &str) -> Result<()> {
+    check_replacement_chars(spec)?;
     if spec.create {
         if !spec.old.is_empty() {
             bail!("a creating patch takes no `old`; send the whole file in `new`");
@@ -180,6 +201,34 @@ mod tests {
     fn count_mismatch_writes_nothing() {
         let err = apply_text("<p>a</p><p>a</p>", "<p>a</p>", "<p>b</p>", 1).unwrap_err();
         assert!(err.to_string().contains("occurs 2 time(s)"));
+    }
+
+    #[test]
+    fn replacement_char_in_new_is_refused() {
+        let spec = PatchSpec {
+            create: false,
+            path: "public/index.html".into(),
+            old: "<p>a</p>".into(),
+            new: "<p>a\u{FFFD}b</p>".into(),
+            count: 1,
+            reason: "test".into(),
+        };
+        let err = validate(&spec, "hand-authored").unwrap_err();
+        assert!(err.to_string().contains("U+FFFD"), "{err}");
+    }
+
+    #[test]
+    fn replacement_char_in_old_is_allowed() {
+        // Quoting existing damage is how the model removes it.
+        let spec = PatchSpec {
+            create: false,
+            path: "public/index.html".into(),
+            old: "<p>a\u{FFFD}b</p>".into(),
+            new: "<p>ab</p>".into(),
+            count: 1,
+            reason: "test".into(),
+        };
+        assert!(validate(&spec, "hand-authored").is_ok());
     }
 
     #[test]

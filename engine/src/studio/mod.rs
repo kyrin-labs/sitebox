@@ -332,7 +332,9 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
     // Creating a site is a bigger piece of work than one edit (scaffold, read,
     // several patches, checks, screenshot), so that turn gets a higher ceiling.
     let base = settings.max_rounds.unwrap_or(16);
-    let max_rounds = if auto_apply { base.max(20) } else { base }.clamp(1, 24);
+    // A build that touches five pages needs more than an edit: measured runs
+    // used 20 rounds and still had to stop before probing.
+    let max_rounds = if auto_apply { base.max(26) } else { base }.clamp(1, 32);
     let tools = tools::definitions();
     let mut tokens_in: u64 = 0;
     let mut tokens_out: u64 = 0;

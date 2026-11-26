@@ -345,7 +345,7 @@ pub fn definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "sols_bee",
-                "description": "Send worker bees (1-4) to do independent work in parallel, then get their reports. A bee reads, greps, searches and fetches; it cannot edit files, apply patches or restart the site, and it does not see this conversation. Use for big jobs: research across several sources, a multi-page build, a clone that needs structure plus copy plus facts. After the reports come back, make the edits yourself.",
+                "description": "Send worker bees (1-4) to do independent work in parallel, then get their reports. A bee reads, greps, searches and fetches; it cannot edit files, apply patches or restart the site, and it does not see this conversation. Use for big jobs: research across several sources, a multi-page build, a clone that needs structure plus copy plus facts. Before a site exists it can still research the web and the skills (no site files). After the reports come back, make the edits yourself.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -536,6 +536,31 @@ pub async fn execute_unbound(
         "sols_create_site" => create_site(st, thread_id, args).await,
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(st, args).await,
+        "sols_bee" => {
+            // Research before the build: web and doctrine only, no site tools.
+            let raw = args
+                .get("tasks")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let briefs: Vec<super::bee::Brief> = raw
+                .iter()
+                .take(super::bee::MAX_TASKS)
+                .filter_map(|t| {
+                    let title = t.get("title").and_then(|v| v.as_str())?.trim().to_string();
+                    let brief = t.get("brief").and_then(|v| v.as_str())?.trim().to_string();
+                    if title.is_empty() || brief.chars().count() < 10 {
+                        return None;
+                    }
+                    Some(super::bee::Brief { title, brief })
+                })
+                .collect();
+            if briefs.is_empty() {
+                bail!("sols_bee needs at least one task with a title and a brief of 10+ characters");
+            }
+            let reports = super::bee::run(st, None, thread_id, briefs).await;
+            Ok(super::bee::as_json(&reports))
+        }
         other => bail!(
             "`{other}` needs a site, and this conversation has none yet. \
              Call sols_create_site first."
@@ -1102,7 +1127,7 @@ pub async fn execute(
             if briefs.is_empty() {
                 bail!("sols_bee needs at least one task with a title and a brief of 10+ characters");
             }
-            let reports = super::bee::run(st, site, thread_id, briefs).await;
+            let reports = super::bee::run(st, Some(site), thread_id, briefs).await;
             Ok(super::bee::as_json(&reports))
         }
         "sols_board" => {

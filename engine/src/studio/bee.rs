@@ -35,6 +35,9 @@ const ALLOWED: &[&str] = &[
     "sols_skill",
 ];
 
+/// Before a site exists a bee can still research: web and doctrine only.
+const ALLOWED_PRE_SITE: &[&str] = &["sols_search", "sols_fetch", "sols_skills", "sols_skill"];
+
 /// One line on the shared scratchpad. Bees of the same wave can read each
 /// other's notes; that is the whole extent of bee-to-bee communication.
 #[derive(Clone, serde::Serialize)]
@@ -95,7 +98,8 @@ pub struct Report {
     pub tokens_out: u64,
 }
 
-fn bee_tools() -> Value {
+fn bee_tools(has_site: bool) -> Value {
+    let allowed: &[&str] = if has_site { ALLOWED } else { ALLOWED_PRE_SITE };
     let mut list: Vec<Value> = tools::definitions()
         .as_array()
         .cloned()
@@ -105,7 +109,7 @@ fn bee_tools() -> Value {
             t.get("function")
                 .and_then(|f| f.get("name"))
                 .and_then(|v| v.as_str())
-                .map(|n| ALLOWED.contains(&n))
+                .map(|n| allowed.contains(&n))
                 .unwrap_or(false)
         })
         .collect();
@@ -148,7 +152,7 @@ fn bee_tools() -> Value {
     Value::Array(list)
 }
 
-fn prompt(site: &SiteRef, title: &str, brief: &str) -> String {
+fn prompt(site: Option<&SiteRef>, title: &str, brief: &str) -> String {
     format!(
         r#"You are Bee, a worker sent by Sols, the editing agent inside SiteBox. You have one assignment. Nobody is reading along: your only output is the report you return.
 
@@ -170,26 +174,34 @@ You can read and search, not write. `sitebox_grep` finds text, `sitebox_read` op
 - Facts need their source URL. Never invent a number, a name or a quote; if the web gives you nothing, say so in one line.
 - The report is for Sols, not for the operator: dense, structured, no preamble, no "here is what I found".
 - Reply in the language of the brief and only that language. A Chinese or Japanese character inside a Thai sentence is a bug.
-- Write for the site `{id}` at port {port}.
-
-## The site as it stands
-kind: {kind}, serve: {serve}
-{files}"#,
-        id = site.id,
-        port = site.manifest.site.port,
-        kind = site.kind,
-        serve = site.manifest.site.serve,
-        files = site
-            .manifest
-            .pipeline
-            .iter()
-            .map(|s| format!("- {}", s.name))
-            .collect::<Vec<_>>()
-            .join("\n"),
+{where}"#,
+        where = match site {
+            Some(s) => format!(
+                "- Write for the site `{}` at port {}.\n\n## The site as it stands\nkind: {}, serve: {}\n{}",
+                s.id,
+                s.manifest.site.port,
+                s.kind,
+                s.manifest.site.serve,
+                s.manifest
+                    .pipeline
+                    .iter()
+                    .map(|st| format!("- {}", st.name))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            None => "- No site exists yet: this is research before the build. You cannot read a site folder."
+                .to_string(),
+        },
     )
 }
 
-async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: usize) -> Report {
+async fn one(
+    st: &StudioState,
+    site: Option<&SiteRef>,
+    parent: &str,
+    brief: &Brief,
+    id: usize,
+) -> Report {
     let mut out = Report {
         title: brief.title.clone(),
         ok: false,
@@ -204,7 +216,7 @@ async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: 
         out.report = "the agent is not configured".into();
         return out;
     }
-    let defs = bee_tools();
+    let defs = bee_tools(site.is_some());
     let mut messages = vec![
         json!({"role": "system", "content": prompt(site, &brief.title, &brief.brief)}),
         json!({"role": "user", "content": brief.brief}),
@@ -312,16 +324,19 @@ async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: 
                 }));
                 continue;
             }
-            if !ALLOWED.contains(&name) {
+            let allowed: &[&str] = if site.is_some() { ALLOWED } else { ALLOWED_PRE_SITE };
+            if !allowed.contains(&name) {
                 messages.push(json!({
                     "role": "tool", "tool_call_id": call_id, "name": name,
                     "content": format!("`{name}` is not available to a bee. Use the read-only tools and bee_report.")
                 }));
                 continue;
             }
-            let result = tools::execute(st, site, "__bee", name, &args, false)
-                .await
-                .unwrap_or_else(|e| json!({"ok": false, "error": format!("{e:#}")}));
+            let result = match site {
+                Some(s) => tools::execute(st, s, "__bee", name, &args, false).await,
+                None => tools::execute_unbound(st, "__bee", name, &args).await,
+            }
+            .unwrap_or_else(|e| json!({"ok": false, "error": format!("{e:#}")}));
             let text = result.to_string();
             let clipped: String = text.chars().take(5000).collect();
             messages.push(json!({
@@ -356,7 +371,12 @@ async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: 
 
 /// Run every brief at once and wait for all of them. A bee that fails returns
 /// its error in place, so one dead worker does not cancel the swarm.
-pub async fn run(st: &StudioState, site: &SiteRef, parent: &str, briefs: Vec<Brief>) -> Vec<Report> {
+pub async fn run(
+    st: &StudioState,
+    site: Option<&SiteRef>,
+    parent: &str,
+    briefs: Vec<Brief>,
+) -> Vec<Report> {
     let mut briefs = briefs;
     briefs.truncate(MAX_TASKS);
     let futures = briefs

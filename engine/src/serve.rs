@@ -188,7 +188,9 @@ async fn file_response(
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        // Nanoseconds, not seconds: two edits in one second with the same byte
+        // size produced the same ETag, and the browser kept the old page.
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     let etag = format!("\"{size:x}-{mtime:x}\"");
     let mime_raw = mime_guess::from_path(fp)
@@ -405,7 +407,8 @@ fn sols_html(
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        // Nanoseconds: a same-size edit inside one second must not answer 304.
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     let etag = format!(
         "\"{size:x}-{mtime:x}-sols1{}\"",
