@@ -345,6 +345,27 @@ a:hover { text-decoration: underline; }
 }
 .studio-launcher:hover { filter: brightness(1.08); }
 
+/* Dashboard header button: Sols takes the primary slot, Add Site steps back
+   to an icon so the header keeps one clear action. */
+.st-launch {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.5rem 0.85rem; border-radius: 8px; font: inherit; font-size: 0.82rem;
+  font-weight: 600; cursor: pointer; color: #fff;
+  background: var(--accent); border: 1px solid var(--accent);
+}
+.st-launch:hover { filter: brightness(1.06); }
+.st-launch svg { display: block; }
+body.sols-ready #btn-add {
+  width: 34px; height: 34px; padding: 0; font-size: 0; gap: 0;
+  justify-content: center; background: transparent; color: var(--text-2);
+  border: 1px solid var(--border);
+}
+body.sols-ready #btn-add:hover { background: var(--surface); }
+@media (max-width: 640px) {
+  .st-launch span { display: none; }
+  .st-launch { padding: 0.5rem; }
+}
+
 .studio-panel {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 950;
   width: min(460px, 100vw);
@@ -353,6 +374,9 @@ a:hover { text-decoration: underline; }
   box-shadow: -12px 0 40px rgba(0,0,0,.18);
 }
 .studio-panel.is-open { display: flex; }
+
+/* Closed wins over the wide grid: the panel keeps its size for next time. */
+.studio-panel:not(.is-open) { display: none !important; }
 
 .st-head {
   display: flex; align-items: center; justify-content: space-between;

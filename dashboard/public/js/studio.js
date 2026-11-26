@@ -125,12 +125,21 @@
   function mount() {
     if ($('#studio-launcher')) return;
 
-    const btn = el('button', 'studio-launcher');
+    const embed = document.body.classList.contains('sols-embed');
+    const btn = el('button', embed ? 'studio-launcher' : 'st-launch');
     btn.id = 'studio-launcher';
     btn.title = 'Sols';
-    btn.innerHTML = `${solsMark(20)}<span>Sols</span>`;
+    btn.innerHTML = `${solsMark(18)}<span>Sols</span>`;
     btn.addEventListener('click', () => toggle(true));
-    document.body.appendChild(btn);
+    if (embed) {
+      document.body.appendChild(btn);
+    } else {
+      // On the dashboard Sols belongs in the header, where the primary action
+      // lives; a floating pill duplicates it and covers the grid.
+      const actions = document.querySelector('.header__actions');
+      if (actions) actions.appendChild(btn); else document.body.appendChild(btn);
+      document.body.classList.add('sols-ready');
+    }
 
     const panel = el('aside', 'studio-panel');
     panel.id = 'studio-panel';
