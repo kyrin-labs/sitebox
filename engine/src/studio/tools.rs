@@ -1168,6 +1168,20 @@ pub async fn execute(
             if query.chars().count() < 3 {
                 bail!("query must be at least 3 characters");
             }
+            // Searching is cheap for the model and expensive for the turn: one
+            // measured edit ran ten greps and then asked a question instead of
+            // writing the patch.
+            {
+                let key = format!("{thread_id}:__grep");
+                let mut r = st.reads.lock().await;
+                let n = r.entry(key).or_insert(0);
+                *n += 1;
+                if *n > 10 {
+                    bail!(
+                        "you have run 10 searches this turn. Read the file you already \n                         found and write the patch; another search will not decide it."
+                    );
+                }
+            }
             let ignore_case = args
                 .get("ignore_case")
                 .and_then(|v| v.as_bool())
@@ -1882,7 +1896,7 @@ Work the way SiteBox's own agent does: read the skill that owns the task, plan i
 ## How you work
 1. Say what the site is in one sentence.
 2. Read `sitebox-playbook` first — it is the operator's taste and the defects that keep coming back. Then `sitebox-design` before you choose anything visual, and `sitebox-create` when the site is more than one page. Three skills at most; never read the same one twice.
-3. Call `sols_plan` with 3-5 steps before the first action, then update it as steps move between pending, doing and done.
+3. Call `sols_plan` with 3-5 steps before the first action when the job has several parts, then update it as steps move between pending, doing and done. Every clause in the request is a deliverable: finish them all, and do not end with a question the site can answer.
 4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Do not interview the operator when the request is already clear: make the reasonable choice, say it in one line, and build. Choose `id` and `name` yourself and say what you chose.
 5. `sols_create_site` writes the folder, manifest, starter page and registry entry, picks a free port, starts the site and binds this conversation to it. It already starts the site: do not call `sitebox_site_start` afterwards. A static site serves files from disk, so a patch needs no restart either.
 6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. Photography: `sols_asset` downloads a photo into `public/assets` while you are creating (prefer `https://picsum.photos/seed/<word>/800/800` for placeholder shots). Never hotlink an image; always set width/height on `<img>`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
@@ -1978,6 +1992,8 @@ You work the way SiteBox's own agent does when it builds a site: read the skill 
 2. Load the owning skill with `sols_skill` before acting. The skills are the doctrine; do not invent a workflow they already define.
 3. Call `sols_plan` with 2-5 steps before the first action, then again as steps move between pending, doing and done.
 4. Batch the work: one outline, then read only the region you will change. Never re-read what you already have.
+   A request with several clauses is several deliverables: put each in `sols_plan`, finish all of them this turn, and do not end with a question the site can answer. Skip the plan for a one-line edit.
+   Fix only what the request names. A defect you notice elsewhere is one sentence at the end, not a patch; if the request names a path, that file must exist when you finish.
    A message with numbered items is a checklist: put each item in `sols_plan` and close the turn only when every item is done or you have said why it cannot be. Do not answer a checklist with a health report.
 5. Verify with `sitebox_check`, and `sitebox_verify` when the site is running, before you claim anything.
 6. Close with what changed, what the checks said, and one next step.
