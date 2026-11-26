@@ -53,6 +53,21 @@ pub fn definitions() -> Value {
                 }
             }
         },
+        json!({
+            "type": "function",
+            "function": {
+                "name": "sols_rename_site",
+                "description": "Rename the site everywhere SiteBox shows it: the dashboard card (registry) and the site manifest. Use whenever the operator asks to change the app or site name — editing only the page <title> is not a rename.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "New display name"},
+                        "description": {"type": "string", "description": "Optional new one-line description"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        }),
         {
             "type": "function",
             "function": {
@@ -460,6 +475,63 @@ pub fn definitions() -> Value {
             }
         }
     ])
+}
+
+/// Rename is an identity change, not a copy edit: the dashboard reads the
+/// registry, so a page `<title>` alone leaves the card showing the old name.
+async fn rename_site(st: &StudioState, site: &SiteRef, args: &Value) -> Result<Value> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        bail!("`name` is required");
+    }
+    if name.chars().count() > 60 {
+        bail!("`name` is longer than 60 characters");
+    }
+    let description = args
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty());
+
+    let mut manifest = crate::manifest::Manifest::load(&site.dir)?;
+    let old = manifest.site.name.clone();
+    manifest.site.name = name.clone();
+    if let Some(d) = &description {
+        manifest.site.description = d.clone();
+    }
+    manifest.save(&site.dir)?;
+
+    let mut cfg = crate::registry::SiteConfig::read(&st.root)?;
+    let mut found = false;
+    for entry in cfg.sites.iter_mut().filter(|s| s.id == site.id) {
+        entry.name = name.clone();
+        if let Some(d) = &description {
+            entry.description = d.clone();
+        }
+        found = true;
+    }
+    if found {
+        cfg.write(&st.root)?;
+    }
+
+    super::emit(
+        &st.events,
+        "",
+        json!({"type":"site_renamed","site":site.id,"name":name,"old":old,"dashboard":found}),
+    );
+    Ok(json!({
+        "ok": true,
+        "site": site.id,
+        "old_name": old,
+        "name": name,
+        "dashboard_updated": found,
+        "note": if found { "The dashboard card reads the new name on its next load." } else { "No registry entry matched this site; only the manifest changed." }
+    }))
 }
 
 async fn create_site(st: &StudioState, thread_id: &str, args: &Value) -> Result<Value> {
@@ -2127,7 +2199,8 @@ pub async fn execute(
                 "failed": failed,
             }))
         }
-                                                        "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
+                                                        "sols_rename_site" => rename_site(st, site, args).await,
+        "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
         "sitebox_propose_patch" => propose(st, site, thread_id, args, auto_apply).await,
         other => bail!("unknown tool `{other}`"),
     }
@@ -2581,7 +2654,7 @@ Work the way SiteBox's own agent does: read the skill that owns the task, plan i
 2. Read `sitebox-playbook` first — it is the operator's taste and the defects that keep coming back. Then `sitebox-design` before you choose anything visual, and `sitebox-create` when the site is more than one page. Three skills at most; never read the same one twice.
 3. Before you choose a look, call `sols_design_index`. Pick five axes (archetype, palette, type pairing, layout, signature element) that no recent site used, and record them with `sols_design`. Two sites that look alike is a defect unless the brief asks for it.
 4. Call `sols_plan` with 3-5 steps before the first action when the job has several parts, then update it as steps move between pending, doing and done. Every clause in the request is a deliverable: finish them all, and do not end with a question the site can answer.
-4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Do not interview the operator when the request is already clear: make the reasonable choice, say it in one line, and build. Choose `id` and `name` yourself and say what you chose.
+4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Do not interview the operator when the request is already clear: make the reasonable choice, say it in one line, and build. Choose `id` and `name` yourself and say what you chose. When the operator does not name it: short, international, brandable — Latin letters, one or two words that sound like a product (Drift, Halcyon, Relay, Northwind). Never a Thai common noun as the display name, even when the copy is Thai; `id` is lowercase latin with hyphens.
 5. `sols_create_site` writes the folder, manifest, starter page and registry entry, picks a free port, starts the site and binds this conversation to it. It already starts the site: do not call `sitebox_site_start` afterwards. A static site serves files from disk, so a patch needs no restart either.
 6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. For each additional page use `sitebox_new_page` (title + sections) — it copies the starter's shell and writes the page, so you only send content. Photography: `sols_asset` downloads a photo into `public/assets` while you are creating (prefer `https://picsum.photos/seed/<word>/800/800` for placeholder shots). Never hotlink an image; always set width/height on `<img>`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
 
@@ -2679,8 +2752,9 @@ You work the way SiteBox's own agent does when it builds a site: read the skill 
    A request with several clauses is several deliverables: put each in `sols_plan`, finish all of them this turn, and do not end with a question the site can answer. Skip the plan for a one-line edit.
    Fix only what the request names. A defect you notice elsewhere is one sentence at the end, not a patch; if the request names a path, that file must exist when you finish.
    A message with numbered items is a checklist: put each item in `sols_plan` and close the turn only when every item is done or you have said why it cannot be. Do not answer a checklist with a health report.
-5. Verify with `sitebox_check`, and `sitebox_verify` when the site is running, before you claim anything.
-6. Close with what changed, what the checks said, and one next step.
+5. If the operator renames the app, call `sols_rename_site`: it updates the manifest and the dashboard card. A `<title>` edit alone leaves SiteBox showing the old name.
+6. Verify with `sitebox_check`, and `sitebox_verify` when the site is running, before you claim anything.
+7. Close with what changed, what the checks said, and one next step.
 
 ## Where the operator is
 {where_}
