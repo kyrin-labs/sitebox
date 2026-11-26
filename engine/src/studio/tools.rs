@@ -608,25 +608,46 @@ fn tool_plan(st: &StudioState, thread_id: &str, args: &Value) -> Result<Value> {
 }
 
 /// Tools that work before a site exists.
-pub async fn execute_unbound(
+
+/// Capability that does not need a site folder: doctrine, design memory,
+/// search, real-data readers, the board and bees. Both the unbound turn and the
+/// site-bound turn cross this seam, so a tool can no longer exist in one
+/// dispatcher and be missing from the other — that drift made `sols_steam`
+/// answer "unknown tool" on a site conversation while its schema was advertised.
+pub async fn shared_tool(
     st: &StudioState,
     thread_id: &str,
+    site: Option<&SiteRef>,
     name: &str,
     args: &Value,
-) -> Result<Value> {
-    match name {
+) -> Option<Result<Value>> {
+    Some(match name {
         "sols_design_index" => Ok(super::design::list(st)),
         "sols_design" => super::design::record(st, args),
         "sols_skills" => tool_skills(),
         "sols_skill" => tool_skill(args),
         "sols_plan" => tool_plan(st, thread_id, args),
-        "sols_create_site" => create_site(st, thread_id, args).await,
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(st, args).await,
         "sols_youtube" => youtube(args).await,
         "sols_steam" => steam(args).await,
+        "sols_board" => {
+            let notes = super::bee::notes(st, thread_id).await;
+            Ok(json!({
+                "ok": true,
+                "notes": notes,
+                "note": "Findings the bees left for each other this turn."
+            }))
+        }
+        "sols_asset" => match site {
+            Some(site) => add_asset(st, site, args).await,
+            None => return None,
+        },
+        "sols_create_site" => match site {
+            None => create_site(st, thread_id, args).await,
+            Some(_) => return None,
+        },
         "sols_bee" => {
-            // Research before the build: web and doctrine only, no site tools.
             let raw = args
                 .get("tasks")
                 .and_then(|v| v.as_array())
@@ -653,16 +674,30 @@ pub async fn execute_unbound(
                 })
                 .collect();
             if briefs.is_empty() {
-                bail!("sols_bee needs at least one task with a title and a brief of 10+ characters");
+                return Some(Err(anyhow::anyhow!(
+                    "sols_bee needs at least one task with a title and a brief of 10+ characters"
+                )));
             }
-            let reports = super::bee::run(st, None, thread_id, briefs).await;
+            let reports = super::bee::run(st, site, thread_id, briefs).await;
             Ok(super::bee::as_json(&reports))
         }
-        other => bail!(
-            "`{other}` needs a site, and this conversation has none yet. \
-             Call sols_create_site first."
-        ),
+        _ => return None,
+    })
+}
+
+pub async fn execute_unbound(
+    st: &StudioState,
+    thread_id: &str,
+    name: &str,
+    args: &Value,
+) -> Result<Value> {
+    if let Some(r) = shared_tool(st, thread_id, None, name, args).await {
+        return r;
     }
+    bail!(
+        "`{name}` needs a site, and this conversation has none yet. \
+         Call sols_create_site first."
+    )
 }
 
 /// Web search through the operator's SearXNG. Configured with `SEARXNG_URL`
@@ -1512,52 +1547,10 @@ pub async fn execute(
     args: &Value,
     auto_apply: bool,
 ) -> Result<Value> {
+    if let Some(r) = shared_tool(st, thread_id, Some(site), name, args).await {
+        return r;
+    }
     match name {
-        "sols_bee" => {
-            let raw = args
-                .get("tasks")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let briefs: Vec<super::bee::Brief> = raw
-                .iter()
-                .take(super::bee::MAX_TASKS)
-                .filter_map(|t| {
-                    let title = t.get("title").and_then(|v| v.as_str())?.trim().to_string();
-                    let brief = t.get("brief").and_then(|v| v.as_str())?.trim().to_string();
-                    if title.is_empty() || brief.chars().count() < 10 {
-                        return None;
-                    }
-                    let effort = match t.get("effort").and_then(|v| v.as_str()) {
-                        Some("quick") => "quick",
-                        _ => "deep",
-                    };
-                    Some(super::bee::Brief {
-                        title,
-                        brief,
-                        effort: effort.to_string(),
-                    })
-                })
-                .collect();
-            if briefs.is_empty() {
-                bail!("sols_bee needs at least one task with a title and a brief of 10+ characters");
-            }
-            let reports = super::bee::run(st, Some(site), thread_id, briefs).await;
-            Ok(super::bee::as_json(&reports))
-        }
-        "sols_board" => {
-            let notes = super::bee::notes(st, thread_id).await;
-            Ok(json!({
-                "ok": true,
-                "notes": notes,
-                "note": "Findings the bees left for each other this turn."
-            }))
-        }
-        "sols_asset" => add_asset(st, site, args).await,
-        "sols_search" => web_search(st, args).await,
-        "sols_fetch" => web_fetch(st, args).await,
-        "sols_youtube" => youtube(args).await,
-        "sols_steam" => steam(args).await,
         "sitebox_grep" => {
             let query = args
                 .get("query")
@@ -1641,10 +1634,7 @@ pub async fn execute(
                 "truncated": truncated,
             }))
         }
-        "sols_skills" => tool_skills(),
-        "sols_skill" => tool_skill(args),
-        "sols_plan" => tool_plan(st, thread_id, args),
-        "sitebox_site_kind" => Ok(json!({
+                                "sitebox_site_kind" => Ok(json!({
             "ok": true,
             "site": site.id,
             "kind": site.kind,
@@ -2080,9 +2070,7 @@ pub async fn execute(
             }
             shot::capture(st, &site.id, site.manifest.site.port, width, height, route).await
         }
-        "sols_design_index" => Ok(super::design::list(st)),
-        "sols_design" => super::design::record(st, args),
-        "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
+                        "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
         "sitebox_propose_patch" => propose(st, site, thread_id, args, auto_apply).await,
         other => bail!("unknown tool `{other}`"),
     }
