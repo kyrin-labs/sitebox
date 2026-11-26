@@ -737,7 +737,20 @@ async fn studio_threads(
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     let list = studio::store::list(&st.studio, q.get("site").map(|s| s.as_str()));
-    Json(list).into_response()
+    // The panel opens the newest conversation by default, but a turn that is
+    // still running may live in an older one. Say which is alive so a reload
+    // lands on the work instead of an empty thread.
+    let turns = st.studio.turns.lock().await;
+    let out: Vec<Value> = list
+        .into_iter()
+        .map(|t| {
+            let running = turns.get(&t.id).map(|h| !h.is_finished()).unwrap_or(false);
+            let mut v = json!(t);
+            v["running"] = json!(running);
+            v
+        })
+        .collect();
+    Json(out).into_response()
 }
 
 async fn studio_thread_mode(

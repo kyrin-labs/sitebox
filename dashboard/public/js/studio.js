@@ -19,6 +19,7 @@
     // time, but a turn on site A must not lock the composer for site B.
     running: new Set(),
     creating: false,
+    sending: false,
     es: null,
     watch: null,
     prepTimer: null,
@@ -376,8 +377,10 @@
       return;
     }
     const sel = $('#st-thread');
-    sel.innerHTML = threads.map((t) => `<option value="${esc(t.id)}">${esc(t.title || '(new conversation)')}</option>`).join('');
-    selectThread(threads[0].id);
+    sel.innerHTML = threads.map((t) => `<option value="${esc(t.id)}">${t.running ? '● ' : ''}${esc(t.title || '(new conversation)')}</option>`).join('');
+    // A turn that is still running wins over "newest": it is the thing the
+    // operator is waiting for.
+    selectThread((threads.find((t) => t.running) || threads[0]).id);
   }
 
   async function newSiteThread() {
@@ -432,6 +435,10 @@
 
   async function selectThread(id) {
     if (!id) return;
+    // A send owns the panel for its duration: a slower loadThreads answer that
+    // lands mid-send used to select another conversation, so the answer
+    // streamed into a thread the operator was not looking at.
+    if (state.sending && id !== state.thread) return;
     state.thread = id;
     $('#st-thread').value = id;
     $('#st-log').innerHTML = '';
@@ -820,19 +827,22 @@
     // Lock before the first await: two entry points (Enter, submit) must not
     // both get past the guard while a new thread is being created.
     state.busy = true;
+    state.sending = true;
     setBusy(true);
     input.value = '';
+    let tid = state.thread;
     try {
-      if (!state.thread) {
+      if (!tid) {
         await newThread();
-        if (!state.thread) throw new Error('could not create a conversation');
+        tid = state.thread;
+        if (!tid) throw new Error('could not create a conversation');
       }
       addMsg('user', message);
-      markRunning(state.thread, true);
+      markRunning(tid, true);
       await api('/api/studio/chat', {
         method: 'POST',
         body: JSON.stringify({
-          thread_id: state.thread,
+          thread_id: tid,
           message,
           // A nonce makes a double submit a no-op on the server instead of a
           // second turn. Cheap insurance against a browser that fires both
@@ -849,8 +859,13 @@
         ? 'เว็บนี้มีเทิร์นกำลังทำงานอยู่ — สลับไปอีกเว็บหนึ่งแล้วสั่งพร้อมกันได้ หรือกด Stop ก่อน'
         : e.message);
       state.busy = false;
-      if (state.thread) state.running.delete(state.thread);
+      if (tid) state.running.delete(tid);
       setBusy(false);
+    } finally {
+      state.sending = false;
+      // If the panel drifted to another conversation while this one was being
+      // posted, come back to the thread that actually has the turn.
+      if (tid && state.thread !== tid) selectThread(tid);
     }
   }
 
