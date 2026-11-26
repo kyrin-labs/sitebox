@@ -784,7 +784,13 @@ def main():
         print("── P4: one submission cannot open two turns")
         s, th7, _ = req(base + "/api/studio/threads", "POST", {"site_id": "legacy"}, token=TOKEN)
         nonce = "dup-" + str(random.random())
-        s1, b1, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th7["id"], "message": "legacy change", "nonce": nonce}, token=TOKEN)
+        # The previous section may still hold the site lock; a 409 here is not
+        # what this check is about.
+        for _ in range(40):
+            s1, b1, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th7["id"], "message": "legacy change", "nonce": nonce}, token=TOKEN)
+            if s1 != 409:
+                break
+            time.sleep(0.3)
         s2, b2, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th7["id"], "message": "legacy change", "nonce": nonce}, token=TOKEN)
         check("duplicate nonce is accepted and ignored", s1 == 202 and s2 == 202 and b2.get("duplicate") is True, (s1, b1, s2, b2))
         time.sleep(3)
