@@ -50,6 +50,8 @@
       '.wrap{position:fixed;inset:0;display:flex;justify-content:flex-end;background:rgba(6,12,22,.5);' +
       'backdrop-filter:blur(2px);animation:solsIn .18s ease}' +
       '.panel{width:min(470px,100%);height:100%;border:0;background:#fff;box-shadow:-16px 0 48px rgba(0,0,0,.4)}' +
+      '.wrap.wide{justify-content:center;align-items:center;padding:4vh 3vw}' +
+      '.wrap.wide .panel{width:min(1040px,100%);height:100%;border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.45)}' +
       '@keyframes solsIn{from{opacity:0}to{opacity:1}}' +
       '@media(max-width:560px){.panel{width:100%}.btn span{display:none}}' +
       '</style>' +
@@ -75,18 +77,26 @@
     f.setAttribute('allow', 'clipboard-write');
     frameWrap.appendChild(f);
     root.appendChild(frameWrap);
+    var btn = root.querySelector('.btn');
+    if (btn) btn.style.display = 'none';
     open = true;
   }
 
   function close() {
     if (frameWrap && frameWrap.parentNode) frameWrap.parentNode.removeChild(frameWrap);
     frameWrap = null;
+    var btn = root && root.querySelector('.btn');
+    if (btn) btn.style.display = '';
     open = false;
   }
 
   function onMessage(e) {
     if (e.origin !== DASH || !e.data) return;
     if (e.data.type === 'sols-close') close();
+    // The panel cannot grow inside a 470px iframe; the host owns the size.
+    if (e.data.type === 'sols-expand' && frameWrap) {
+      frameWrap.classList.toggle('wide', !!e.data.wide);
+    }
   }
 
   // Gate: the dashboard answers 200 only when this browser already holds the

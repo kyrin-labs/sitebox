@@ -196,8 +196,15 @@
     $('#st-new').addEventListener('click', () => newThread());
     $('#st-expand').addEventListener('click', () => {
       const p = $('#studio-panel');
-      p.classList.toggle('is-wide');
-      $('#st-expand').setAttribute('aria-pressed', p.classList.contains('is-wide') ? 'true' : 'false');
+      const wide = p.classList.toggle('is-wide');
+      $('#st-expand').setAttribute('aria-pressed', wide ? 'true' : 'false');
+      $('#st-expand').textContent = wide ? '⤡' : '⤢';
+      $('#st-expand').title = wide ? 'Collapse' : 'Expand';
+      // In embed mode the iframe is only as wide as the drawer. The host page
+      // has to grow it; the class above then lays out the two columns.
+      if (document.body.classList.contains('sols-embed')) {
+        window.parent.postMessage({ type: 'sols-expand', wide }, '*');
+      }
     });
     $('#st-mode').addEventListener('change', async (e) => {
       if (!state.thread) return;
