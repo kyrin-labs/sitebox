@@ -183,9 +183,10 @@ itself blocks scraping:
 - **YouTube channels**: `sols_youtube(channel)` returns the real title, avatar,
   subscriber line and the latest uploads with ids, titles, view counts and
   thumbnail URLs. Download thumbnails with `sols_asset` (`i.ytimg.com/vi/<id>/...`).
-- **Steam games**: the store CDN serves `https://cdn.cloudflare.steamstatic.com/steam/apps/<appid>/header.jpg`
-  and `.../capsule_616x353.jpg`; `sols_search` finds the appid. Download them —
-  `SB002` refuses hotlinked third-party assets.
+- **Steam store**: `sols_steam` returns the real top sellers, new releases and
+  specials with names, baht prices and header image URLs; download the images
+  with `sols_asset`. Do not scrape the store HTML — it is a large page and the
+  API already has the facts.
 
 The reference's brand stays out: new name, new logo, own chrome. The data and
 the media are real; the identity is yours.

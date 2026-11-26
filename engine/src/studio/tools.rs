@@ -71,6 +71,16 @@ pub fn definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "sols_steam",
+                "description": "Read the real Steam store front (Thai region): top sellers, new releases and current specials, with game id, name, original/final price in baht, discount percent and header image URL. Use it instead of scraping the store pages, then download the images with sols_asset.",
+                "parameters": {"type": "object", "properties": {
+                    "limit": {"type": "integer", "description": "items per category, 4-10, default 8"}
+                }}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sols_search",
                 "description": "Search the web through the configured SearXNG instance. Use for facts outside the site (companies, places, people, prices, domains, news). Returns titles, URLs and snippets.",
                 "parameters": {
@@ -614,6 +624,7 @@ pub async fn execute_unbound(
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(st, args).await,
         "sols_youtube" => youtube(args).await,
+        "sols_steam" => steam(args).await,
         "sols_bee" => {
             // Research before the build: web and doctrine only, no site tools.
             let raw = args
@@ -886,6 +897,87 @@ async fn youtube(args: &Value) -> Result<Value> {
         "channel": {"id": external, "title": title, "avatar": avatar, "subscribers": subs, "url": url},
         "videos": videos,
         "note": "Real channel data. Download the avatar and thumbnails with sols_asset, keep titles and view counts as written, and do not invent uploads."
+    }))
+}
+
+
+/// The store front as data: prices arrive in satang, so they are converted once
+/// here instead of by a model that may drop a zero.
+async fn steam(args: &Value) -> Result<Value> {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(8)
+        .clamp(4, 10) as usize;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .user_agent("SiteBox-Sols/1.0")
+        .build()?;
+    let body: Value = client
+        .get("https://store.steampowered.com/api/featuredcategories?l=thai&cc=TH")
+        .send()
+        .await?
+        .json()
+        .await?;
+    let money = |c: &Value| -> String {
+        let n = (c.as_i64().unwrap_or(0) as f64 / 100.0).round() as i64;
+        let digits = n.to_string();
+        let mut grouped = String::new();
+        for (i, ch) in digits.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                grouped.push(',');
+            }
+            grouped.push(ch);
+        }
+        let pretty: String = grouped.chars().rev().collect();
+        format!("฿{pretty}")
+    };
+    let mut out = serde_json::Map::new();
+    for (key, label) in [
+        ("top_sellers", "ขายดี"),
+        ("new_releases", "มาใหม่"),
+        ("specials", "ลดราคา"),
+    ] {
+        let items: Vec<Value> = body
+            .get(key)
+            .and_then(|v| v.get("items"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .take(limit)
+                    .filter_map(|g| {
+                        let id = g.get("id").and_then(|v| v.as_u64())?;
+                        let name = g.get("name").and_then(|v| v.as_str())?.to_string();
+                        let img = g
+                            .get("header_image")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let discount = g
+                            .get("discount_percent")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let final_price = g.get("final_price").cloned().unwrap_or(json!(0));
+                        let original = g.get("original_price").cloned().unwrap_or(json!(0));
+                        Some(json!({
+                            "id": id,
+                            "name": name,
+                            "discount_percent": discount,
+                            "price": money(&final_price),
+                            "original_price": money(&original),
+                            "header_image": img,
+                            "url": format!("https://store.steampowered.com/app/{id}/")
+                        }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert(label.to_string(), json!(items));
+    }
+    Ok(json!({
+        "ok": true,
+        "categories": out,
+        "note": "Real store data in THB. Download each header_image with sols_asset and keep names and prices as written."
     }))
 }
 
