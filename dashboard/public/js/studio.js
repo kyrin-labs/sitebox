@@ -404,6 +404,11 @@
       state.mode = (d.thread && d.thread.mode) || 'ask';
       $('#st-mode').value = state.mode;
       (d.messages || []).forEach(renderStored);
+      if (!(d.messages || []).length) {
+        $('#st-log').innerHTML = `<div class="st-empty">${solsMark(30)}` +
+          `<p>คุยกับ Sols เรื่องเว็บนี้ได้เลย</p>` +
+          `<span>บอกว่าอยากแก้อะไร หรือให้สร้างหน้าใหม่ — Sols จะเสนอ patch ให้ดูก่อน</span></div>`;
+      }
       renderPlan(d.thread && d.thread.plan);
     } catch (_) { /* a fresh thread has no messages file yet */ }
     subscribe(id);
@@ -455,7 +460,8 @@
     if (!box) return;
     if (!steps || !steps.length) {
       box.hidden = true;
-      box.innerHTML = '';
+      box.innerHTML = `<div class="st-plan__empty">${solsMark(20)}` +
+        `<p>ยังไม่มีแผน</p><span>แผนจะขึ้นที่นี่เมื่อ Sols เริ่มงาน</span></div>`;
       return;
     }
     const icon = { done: '●', doing: '◐', pending: '○' };

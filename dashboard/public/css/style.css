@@ -607,7 +607,7 @@ body.sols-embed .st-compose { width: 100%; max-width: 900px; margin-left: auto; 
     border-radius: 14px;
     box-shadow: 0 24px 80px rgba(0, 0, 0, .28);
     display: grid;
-    grid-template-columns: minmax(0, 1.45fr) minmax(0, .95fr);
+    grid-template-columns: minmax(0, 1fr) 312px;
     grid-template-rows: auto auto 1fr auto;
     grid-template-areas:
       "head head"
@@ -616,16 +616,25 @@ body.sols-embed .st-compose { width: 100%; max-width: 900px; margin-left: auto; 
       "form plan";
   }
   .studio-panel.is-wide .st-head { grid-area: head; border-bottom: 1px solid var(--border-l); }
-  .studio-panel.is-wide .st-bar { grid-area: bar; border-bottom: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-bar {
+    grid-area: bar; border-bottom: 1px solid var(--border-l);
+    padding: .55rem 1rem;
+  }
+  .studio-panel.is-wide .st-select:first-child { flex: 0 0 176px; }
+  .studio-panel.is-wide .st-select--thread { flex: 0 1 320px; }
+  .studio-panel.is-wide .st-select--mode { flex: 0 0 92px; margin-left: auto; }
+  .studio-panel.is-wide .st-log { padding: 1.1rem 1rem .5rem; }
+  .studio-panel.is-wide .st-compose { padding: .7rem 1rem .85rem; }
   .studio-panel.is-wide .st-log { grid-area: log; border-right: 1px solid var(--border-l); }
   .studio-panel.is-wide .st-plan {
     grid-area: plan;
+    display: flex; flex-direction: column;
     border-bottom: 0;
     overflow: auto;
     padding: .9rem 1rem;
     background: var(--surface);
   }
-  .studio-panel.is-wide .st-plan[hidden] { display: none; }
+  .studio-panel.is-wide .st-plan[hidden] { display: flex; }
   .studio-panel.is-wide .st-plan::before {
     content: "แผนงาน";
     display: block;
@@ -637,8 +646,22 @@ body.sols-embed .st-compose { width: 100%; max-width: 900px; margin-left: auto; 
 }
 
 /* Wide mode keeps the plan column meaningful even before a plan exists. */
-.studio-panel.is-wide .st-plan[hidden] { display: block; }
-.studio-panel.is-wide .st-plan:empty::after {
-  content: "ยังไม่มีแผน — แผนจะขึ้นที่นี่เมื่อ Sols เริ่มงาน";
-  display: block; color: var(--text-3); font-size: .78rem; line-height: 1.5;
+.studio-panel.is-wide .st-plan[hidden] { display: flex; }
+.st-plan__empty {
+  display: flex; flex-direction: column; align-items: center; gap: .3rem;
+  padding: 1rem .5rem; margin: auto 0; text-align: center; color: var(--text-3);
 }
+.st-plan__empty svg { opacity: .45; margin-bottom: .2rem; }
+.st-plan__empty p { margin: 0; font-size: .8rem; font-weight: 600; color: var(--text-2); }
+.st-plan__empty span { font-size: .72rem; line-height: 1.5; max-width: 24ch; }
+
+/* Nothing said yet: fill the pane instead of leaving a void above the composer. */
+.st-empty {
+  height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: .45rem; text-align: center; color: var(--text-3);
+}
+.st-empty svg { opacity: .55; margin-bottom: .3rem; }
+.st-empty p { margin: 0; font-size: .95rem; font-weight: 600; color: var(--text-2); }
+.st-empty span { font-size: .78rem; line-height: 1.55; max-width: 36ch; }
+
+body.sols-open .studio-launcher { display: none; }
