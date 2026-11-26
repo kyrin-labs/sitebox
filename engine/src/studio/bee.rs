@@ -18,7 +18,7 @@ const MAX_ROUNDS: usize = 8;
 const MAX_CALLS: usize = 14;
 /// A swarm that needs more than four workers needs a better plan.
 pub const MAX_TASKS: usize = 4;
-const MAX_REPORT: usize = 6000;
+const MAX_REPORT: usize = 10_000;
 
 /// What a bee is allowed to touch. Anything that writes is absent on purpose:
 /// the compiler cannot catch a bee that edits, so the tool list is the fence.
@@ -171,6 +171,7 @@ You can read and search, not write. `sitebox_grep` finds text, `sitebox_read` op
 
 ## How to work
 - Work the assignment, not the whole site. At most three reads before you either answer or say what is missing. You have 14 tool calls; if you reach them, report what you have.
+- A mechanical sweep is one call: one `sitebox_grep` covers every file. Opening files one by one to count something is how a bee runs out of rounds.
 - Facts need their source URL. Never invent a number, a name or a quote; if the web gives you nothing, say so in one line.
 - The report is for Sols, not for the operator: dense, structured, no preamble, no "here is what I found".
 - Reply in the language of the brief and only that language. A Chinese or Japanese character inside a Thai sentence is a bug.

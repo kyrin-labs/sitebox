@@ -256,6 +256,31 @@ fn patch_path(st: &StudioState, id: &str) -> PathBuf {
     st.data.join("patches").join(format!("{id}.json"))
 }
 
+/// Append one timing line. A turn is a long interaction and the operator asks
+/// where the minutes went; the answer has to survive the process.
+pub fn append_timing(st: &StudioState, thread_id: &str, line: &serde_json::Value) -> Result<()> {
+    use std::io::Write;
+    let dir = thread_dir(st, thread_id);
+    std::fs::create_dir_all(&dir)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("timings.jsonl"))?;
+    writeln!(f, "{line}")?;
+    Ok(())
+}
+
+pub fn timings(st: &StudioState, thread_id: &str) -> Vec<serde_json::Value> {
+    let path = thread_dir(st, thread_id).join("timings.jsonl");
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn put_patch(st: &StudioState, p: &PatchRec) -> Result<()> {
     super::atomic_write(
         &patch_path(st, &p.id),

@@ -61,6 +61,10 @@ pub fn router(state: DashState) -> Router {
             get(studio_thread_messages),
         )
         .route("/api/studio/threads/{id}/mode", post(studio_thread_mode))
+        .route(
+            "/api/studio/threads/{id}/timings",
+            get(studio_thread_timings),
+        )
         .route("/api/studio/events", get(studio_events))
         .route("/api/studio/chat", post(studio_chat))
         .route("/api/studio/abort", post(studio_abort))
@@ -757,6 +761,21 @@ async fn studio_thread_mode(
         )
             .into_response(),
     }
+}
+
+async fn studio_thread_timings(
+    State(st): State<DashState>,
+    Path(id): Path<String>,
+) -> Response {
+    if studio::store::get(&st.studio, &id).is_err() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no such thread"})),
+        )
+            .into_response();
+    }
+    Json(json!({"thread_id": id, "timings": studio::store::timings(&st.studio, &id)}))
+        .into_response()
 }
 
 async fn studio_thread_create(State(st): State<DashState>, Json(body): Json<Value>) -> Response {

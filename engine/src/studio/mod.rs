@@ -339,10 +339,20 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
     let mut tokens_in: u64 = 0;
     let mut tokens_out: u64 = 0;
     let mut patches_proposed = 0usize;
+    // Where the minutes went: one line per model round and per tool call, plus
+    // a summary the panel can show without reading the whole file.
+    let turn_no = store::messages(st, thread_id)?
+        .iter()
+        .filter(|m| m.role == "user")
+        .count() as u64;
+    let mut llm_ms: u128 = 0;
+    let mut tool_ms: u128 = 0;
+    let mut per_tool: std::collections::BTreeMap<String, u128> = Default::default();
 
     for round in 0..max_rounds {
         let site = current_site(st, thread_id)?;
         let messages = build_messages(st, thread_id, site.as_ref())?;
+        let t_llm = std::time::Instant::now();
         let out = llm::stream_chat(
             st,
             &settings,
@@ -352,6 +362,13 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
             !lang::has_cjk(user_msg),
         )
         .await?;
+        let took = t_llm.elapsed().as_millis();
+        llm_ms += took;
+        let _ = store::append_timing(
+            st,
+            thread_id,
+            &json!({"turn":turn_no,"kind":"llm","round":round+1,"ms":took}),
+        );
         tokens_in += out.tokens_in;
         tokens_out += out.tokens_out;
 
@@ -379,6 +396,7 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
                 thread_id,
                 json!({"type":"done","rounds":round+1,"tokens_in":tokens_in,"tokens_out":tokens_out}),
             );
+            dump_timing(st, thread_id, turn_no, llm_ms, tool_ms, &per_tool);
             return Ok(());
         }
 
@@ -400,10 +418,19 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
                 thread_id,
                 json!({"type":"tool_start","name":name,"args":args,"call_id":call_id}),
             );
+            let t_tool = std::time::Instant::now();
             let result = match site.as_ref() {
                 Some(s) => tools::execute(st, s, thread_id, name, &args, auto_apply).await,
                 None => tools::execute_unbound(st, thread_id, name, &args).await,
             };
+            let took = t_tool.elapsed().as_millis();
+            tool_ms += took;
+            *per_tool.entry(name.to_string()).or_insert(0) += took;
+            let _ = store::append_timing(
+                st,
+                thread_id,
+                &json!({"turn":turn_no,"kind":"tool","name":name,"ms":took}),
+            );
             let result = match result {
                 Ok(v) => v,
                 Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
@@ -440,6 +467,7 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
         }
     }
 
+    dump_timing(st, thread_id, turn_no, llm_ms, tool_ms, &per_tool);
     // Running out of rounds is a failure the operator has to be able to read.
     // Ending the turn with a stack of tool cards and no sentence looks like a
     // broken panel, not like "I could not decide".
@@ -473,6 +501,25 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
         json!({"type":"done","rounds":max_rounds,"tokens_in":tokens_in,"tokens_out":tokens_out,"note":"tool round limit reached","message":note}),
     );
     Ok(())
+}
+
+fn dump_timing(
+    st: &StudioState,
+    thread_id: &str,
+    turn: u64,
+    llm_ms: u128,
+    tool_ms: u128,
+    per_tool: &std::collections::BTreeMap<String, u128>,
+) {
+    let summary = json!({
+        "turn": turn,
+        "kind": "summary",
+        "llm_ms": llm_ms,
+        "tool_ms": tool_ms,
+        "tools": per_tool,
+    });
+    let _ = store::append_timing(st, thread_id, &summary);
+    emit(&st.events, thread_id, summary);
 }
 
 fn short(v: &Value) -> Value {
