@@ -29,7 +29,23 @@
     '<path d="M5.2 8.6l.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2L3.5 10.3l1.2-.5z" fill="#a9ecff" opacity=".7"/>' +
     '</svg>';
 
-  var host, root, frameWrap, open = false;
+  var host, root, frameWrap, open = false, prevMargin = null;
+
+  // Share the viewport instead of covering it: the page narrows by the drawer
+  // width, so the operator can read the site and talk to Sols at once. Wide
+  // mode is a modal and gives the space back.
+  function dock(on) {
+    if (!document.body) return;
+    var width = window.innerWidth <= 560 ? 0 : 470;
+    if (on && width) {
+      if (prevMargin === null) prevMargin = document.body.style.marginRight || '';
+      document.body.style.transition = 'margin-right .18s ease';
+      document.body.style.marginRight = width + 'px';
+    } else {
+      document.body.style.marginRight = prevMargin || '';
+      document.body.style.transition = '';
+    }
+  }
 
   function mount() {
     if (host) return;
@@ -47,10 +63,11 @@
       'border:1px solid rgba(89,194,255,.55);box-shadow:0 8px 28px rgba(20,90,180,.35),inset 0 1px 0 rgba(255,255,255,.08);' +
       'transition:transform .15s ease,box-shadow .15s ease}' +
       '.btn:hover{transform:translateY(-1px);box-shadow:0 12px 32px rgba(20,90,180,.45)}' +
-      '.wrap{position:fixed;inset:0;display:flex;justify-content:flex-end;background:rgba(6,12,22,.5);' +
-      'backdrop-filter:blur(2px);animation:solsIn .18s ease}' +
+      '.wrap{position:fixed;inset:0;display:flex;justify-content:flex-end;background:transparent;' +
+      'animation:solsIn .18s ease}' +
       '.panel{width:min(470px,100%);height:100%;border:0;background:#fff;box-shadow:-16px 0 48px rgba(0,0,0,.4)}' +
-      '.wrap.wide{justify-content:center;align-items:center;padding:4vh 3vw}' +
+      '.wrap.wide{justify-content:center;align-items:center;padding:4vh 3vw;' +
+      'background:rgba(6,12,22,.5);backdrop-filter:blur(2px)}' +
       '.wrap.wide .panel{width:min(1040px,100%);height:100%;border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.45)}' +
       '@keyframes solsIn{from{opacity:0}to{opacity:1}}' +
       '@media(max-width:560px){.panel{width:100%}.btn span{display:none}}' +
@@ -77,6 +94,7 @@
     f.setAttribute('allow', 'clipboard-write');
     frameWrap.appendChild(f);
     root.appendChild(frameWrap);
+    dock(true);
     var btn = root.querySelector('.btn');
     if (btn) btn.style.display = 'none';
     open = true;
@@ -85,6 +103,7 @@
   function close() {
     if (frameWrap && frameWrap.parentNode) frameWrap.parentNode.removeChild(frameWrap);
     frameWrap = null;
+    dock(false);
     var btn = root && root.querySelector('.btn');
     if (btn) btn.style.display = '';
     open = false;
@@ -95,7 +114,9 @@
     if (e.data.type === 'sols-close') close();
     // The panel cannot grow inside a 470px iframe; the host owns the size.
     if (e.data.type === 'sols-expand' && frameWrap) {
-      frameWrap.classList.toggle('wide', !!e.data.wide);
+      var wide = !!e.data.wide;
+      frameWrap.classList.toggle('wide', wide);
+      dock(!wide);
     }
   }
 
