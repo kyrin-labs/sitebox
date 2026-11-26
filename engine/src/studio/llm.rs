@@ -6,6 +6,33 @@
 //! do lives in [`super::tools`], not in the transport.
 
 use anyhow::{bail, Context, Result};
+
+/// One complete line from a raw byte buffer, decoded only at a line boundary.
+#[cfg(test)]
+mod tests {
+    use super::take_line;
+
+    #[test]
+    fn a_character_split_across_chunks_survives() {
+        // "ก" is E0 B8 81; the transport can end a chunk between any two bytes.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"data: {\"text\":\"\xe0");
+        assert_eq!(take_line(&mut buf), None);
+        buf.extend_from_slice(b"\xb8\x81\"}\n");
+        let line = take_line(&mut buf).unwrap();
+        assert!(line.contains('ก'), "line was {line:?}");
+        assert!(!line.contains('\u{FFFD}'));
+    }
+}
+
+fn take_line(buf: &mut Vec<u8>) -> Option<String> {
+    let nl = buf.iter().position(|b| *b == b'\n')?;
+    let line = String::from_utf8_lossy(&buf[..nl])
+        .trim_end_matches('\r')
+        .to_string();
+    buf.drain(..=nl);
+    Some(line)
+}
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -67,16 +94,23 @@ pub async fn stream_chat(
     let mut calls: BTreeMap<usize, Value> = BTreeMap::new();
     let mut usage = Value::Null;
     let mut finish = String::new();
-    let mut buf = String::new();
+    // Raw bytes, not a lossy String: a Thai character is three bytes and the
+    // transport can split it across two chunks. Decoding per chunk turned the
+    // halves into U+FFFD, which the patch guard then rejected — the model had
+    // to regenerate a 30 KB page because one word broke.
+    let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
+    let mut announced: std::collections::HashSet<usize> = Default::default();
+    let mut last_kb: std::collections::HashMap<usize, usize> = Default::default();
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read model stream")?;
-        buf.push_str(&String::from_utf8_lossy(&bytes));
+        buf.extend_from_slice(&bytes);
         loop {
-            let Some(nl) = buf.find('\n') else { break };
-            let line = buf[..nl].trim_end_matches('\r').to_string();
-            buf.drain(..=nl);
+            // Only decode a complete line. A newline is one byte and never
+            // appears inside a multi-byte character, so a line boundary is
+            // always a character boundary.
+            let Some(line) = take_line(&mut buf) else { break };
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -151,6 +185,17 @@ pub async fn stream_chat(
                         if let Some(name) = f.get("name").and_then(|v| v.as_str()) {
                             if !name.is_empty() {
                                 entry["function"]["name"] = json!(name);
+                                // A whole-page patch is tens of kilobytes of
+                                // JSON: the panel used to look frozen for a
+                                // minute before the tool card appeared. Say
+                                // what is being written, and how much.
+                                if announced.insert(idx) {
+                                    emit(
+                                        &st.events,
+                                        thread_id,
+                                        json!({"type":"tool_preparing","name":name,"index":idx}),
+                                    );
+                                }
                             }
                         }
                         if let Some(args) = f.get("arguments").and_then(|v| v.as_str()) {
@@ -159,6 +204,16 @@ pub async fn stream_chat(
                                 .unwrap_or("")
                                 .to_string();
                             acc.push_str(args);
+                            let kb = acc.len() / 1024;
+                            if last_kb.get(&idx).copied().unwrap_or(0) != kb {
+                                last_kb.insert(idx, kb);
+                                let name = entry["function"]["name"].as_str().unwrap_or("");
+                                emit(
+                                    &st.events,
+                                    thread_id,
+                                    json!({"type":"tool_progress","name":name,"index":idx,"chars":acc.len()}),
+                                );
+                            }
                             entry["function"]["arguments"] = json!(acc);
                         }
                     }

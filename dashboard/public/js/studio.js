@@ -17,6 +17,7 @@
     busy: false,
     es: null,
     watch: null,
+    prepTimer: null,
     streamEl: null,
     patchEls: new Map(),
   };
@@ -543,9 +544,38 @@
         scroll();
         break;
       }
+      case 'tool_preparing': {
+        document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
+        if (state.prepTimer) clearInterval(state.prepTimer);
+        const d = el('details', 'st-tool is-prep');
+        const name = String(ev.name || '').replace(/^sitebox_/, '');
+        d.innerHTML = `<summary><span class="st-tool__dot"></span>${esc(name)} ` +
+          `<span class="st-tool__state">กำลังเขียน…</span></summary>`;
+        $('#st-log').appendChild(d);
+        scroll();
+        // The model can spend a minute emitting a page; a counter proves the
+        // panel is alive even when the bytes arrive in one late chunk.
+        const t0 = Date.now();
+        state.prepTimer = setInterval(() => {
+          const st = document.querySelector('.st-tool.is-prep .st-tool__state');
+          if (!st) return;
+          if (!st.dataset.kb) st.textContent = `กำลังเขียน… ${Math.round((Date.now() - t0) / 1000)}s`;
+        }, 1000);
+        break;
+      }
+      case 'tool_progress': {
+        const d = document.querySelector('.st-tool.is-prep .st-tool__state');
+        if (d) {
+          d.dataset.kb = '1';
+          d.textContent = `กำลังเขียน… ${(Number(ev.chars || 0) / 1024).toFixed(1)} KB`;
+        }
+        break;
+      }
       case 'tool_start': {
         state.streamEl = null;
         state.streamText = '';
+        document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
+        if (state.prepTimer) { clearInterval(state.prepTimer); state.prepTimer = null; }
         const label = String(ev.name || '').replace(/^sitebox_/, '');
         const d = addToolLine(ev.name, JSON.stringify(ev.args || {}));
         d.dataset.running = '1';
@@ -597,6 +627,7 @@
       }
       case 'done':
         state.busy = false;
+        document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
         if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
         state.streamText = '';
@@ -604,6 +635,7 @@
         break;
       case 'error':
         state.busy = false;
+        document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
         if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
         state.streamText = '';
@@ -612,6 +644,7 @@
         break;
       case 'aborted':
         state.busy = false;
+        document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
         if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
         state.streamText = '';
