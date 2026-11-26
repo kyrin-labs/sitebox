@@ -18,6 +18,7 @@
     // Turns run on the server per site. The panel may only show one at a
     // time, but a turn on site A must not lock the composer for site B.
     running: new Set(),
+    creating: false,
     es: null,
     watch: null,
     prepTimer: null,
@@ -368,7 +369,10 @@
     // A slower answer for the site we just left must not replace the new one.
     if (state.site !== asked) return;
     if (!Array.isArray(threads) || threads.length === 0) {
-      await newThread();
+      // One attempt, not a loop: newThread -> loadThreads -> newThread used to
+      // recurse when the list stayed empty (an API hiccup), creating a row of
+      // blank conversations at the same second.
+      if (!state.creating) await newThread();
       return;
     }
     const sel = $('#st-thread');
@@ -396,13 +400,33 @@
   }
 
   async function newThread() {
-    if (!state.site) return;
+    // In the embed panel the site comes from the iframe URL, but a reload or a
+    // half-open panel can leave state empty while the select still knows it.
+    const site = state.site || ($('#st-site') && $('#st-site').value) || '';
+    if (!site) { toast('เลือกเว็บก่อนสร้างบทสนทนาใหม่'); return; }
+    if (state.creating) return;
+    state.creating = true;
     try {
-      const t = await api('/api/studio/threads', { method: 'POST', body: JSON.stringify({ site_id: state.site }) });
-      await loadThreads(false);
-      selectThread(t.id);
+      const t = await api('/api/studio/threads', { method: 'POST', body: JSON.stringify({ site_id: site }) });
+      state.site = site;
+      state.thread = t.id;
+      state.patchEls.clear();
+      $('#st-log').innerHTML = '';
+      renderPlan([]);
+      const sel = $('#st-thread');
+      if (sel) {
+        sel.insertAdjacentHTML('afterbegin', `<option value="${esc(t.id)}">(new conversation)</option>`);
+        sel.value = t.id;
+      }
+      addMsg('system', 'บทสนทนาใหม่ — บอกงานที่อยากให้ทำกับเว็บนี้ได้เลย');
+      subscribe(t.id);
+      state.busy = false;
+      setBusy(false);
+      $('#st-input').focus();
     } catch (e) {
-      toast(e.message);
+      toast(e.message || 'สร้างบทสนทนาไม่สำเร็จ');
+    } finally {
+      state.creating = false;
     }
   }
 
