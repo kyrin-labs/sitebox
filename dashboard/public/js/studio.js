@@ -16,6 +16,7 @@
     browser: null,
     busy: false,
     es: null,
+    watch: null,
     streamEl: null,
     patchEls: new Map(),
   };
@@ -419,12 +420,43 @@
           `<span>บอกว่าอยากแก้อะไร หรือให้สร้างหน้าใหม่ — Sols จะเสนอ patch ให้ดูก่อน</span></div>`;
       }
       renderPlan(d.thread && d.thread.plan);
+      // A turn keeps running across a reload. Without this the Stop button
+      // vanished while the harness was still writing patches.
+      state.busy = !!d.running;
+      setBusy(state.busy);
+      if (d.running) watch(id);
     } catch (_) { /* a fresh thread has no messages file yet */ }
     subscribe(id);
     $('#st-input').focus();
   }
 
+  // While a turn runs, reload the thread's stored messages on a timer. The SSE
+  // stream only carries what happens after it connects, so a page that was
+  // refreshed mid-turn would otherwise sit on a stale log and no Stop button.
+  function watch(threadId) {
+    if (state.watch) clearInterval(state.watch);
+    state.watch = setInterval(async () => {
+      if (state.thread !== threadId) { clearInterval(state.watch); state.watch = null; return; }
+      try {
+        const d = await api(`/api/studio/threads/${encodeURIComponent(threadId)}/messages`);
+        const atBottom = (() => { const l = $('#st-log'); return l.scrollHeight - l.scrollTop - l.clientHeight < 40; })();
+        if (state.thread === threadId) {
+          $('#st-log').innerHTML = '';
+          state.patchEls.clear();
+          (d.messages || []).forEach(renderStored);
+          renderPlan(d.thread && d.thread.plan);
+          if (atBottom) scroll();
+        }
+        if (!d.running) {
+          clearInterval(state.watch); state.watch = null;
+          state.busy = false; setBusy(false);
+        }
+      } catch (_) { /* keep watching; a transient error is not a stop */ }
+    }, 2500);
+  }
+
   function subscribe(threadId) {
+    if (state.watch) { clearInterval(state.watch); state.watch = null; }
     if (state.es) { state.es.close(); state.es = null; }
     state.es = new EventSource(`/api/studio/events?thread=${encodeURIComponent(threadId)}`);
     state.es.onmessage = (m) => {
@@ -565,12 +597,14 @@
       }
       case 'done':
         state.busy = false;
+        if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
         state.streamText = '';
         setBusy(false);
         break;
       case 'error':
         state.busy = false;
+        if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
         state.streamText = '';
         setBusy(false);
@@ -578,6 +612,7 @@
         break;
       case 'aborted':
         state.busy = false;
+        if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
         state.streamText = '';
         setBusy(false);

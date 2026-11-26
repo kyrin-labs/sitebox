@@ -810,7 +810,11 @@ async fn studio_thread_messages(State(st): State<DashState>, Path(id): Path<Stri
     match studio::store::get(&st.studio, &id) {
         Ok(t) => {
             let msgs = studio::store::messages(&st.studio, &id).unwrap_or_default();
-            Json(json!({"thread": t, "messages": msgs})).into_response()
+            // A reload drops the panel's local busy flag, but the turn is still
+            // running on the server. Say so, or the Stop button disappears
+            // while a patch is still being written.
+            let running = st.studio.turns.lock().await.contains_key(&id);
+            Json(json!({"thread": t, "messages": msgs, "running": running})).into_response()
         }
         Err(_) => (
             StatusCode::NOT_FOUND,

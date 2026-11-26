@@ -759,8 +759,13 @@ def main():
         req(base + "/api/studio/chat", "POST", {"thread_id": th4["id"], "message": "take your time"}, token=TOKEN)
         time.sleep(0.8)
         t0 = time.time()
+        runbox = req(base + f"/api/studio/threads/{th4['id']}/messages", token=TOKEN)[1]
+        check("a reload can see the turn is running", runbox.get("running") is True, runbox.get("running"))
         s, _, _ = req(base + "/api/studio/abort", "POST", {"thread_id": th4["id"]}, token=TOKEN)
         check("abort returns 200", s == 200, s)
+        time.sleep(0.6)
+        after = req(base + f"/api/studio/threads/{th4['id']}/messages", token=TOKEN)[1]
+        check("an aborted turn is not running", after.get("running") is False, after.get("running"))
         req(base + "/api/studio/config", "PUT", {"base_url": f"http://127.0.0.1:{MOCK}/v1", "model": "mock-1"}, token=TOKEN)
         s, _, _ = req(base + "/api/studio/chat", "POST", {"thread_id": th4["id"], "message": "rename the heading"}, token=TOKEN)
         check("site lock released after abort", s == 202, s)
