@@ -287,11 +287,19 @@ pub async fn run_turn(st: StudioState, thread_id: String, user_msg: String) {
         .await;
     match outcome {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => emit(
-            &st.events,
-            &thread_id,
-            json!({"type":"error","message":format!("{e:#}")}),
-        ),
+        Ok(Err(e)) => {
+            // A model/gateway error used to end the turn with only a toast:
+            // the transcript stopped on a tool card and a reload showed no
+            // reason. Persist it so the operator can see what happened.
+            let text = format!("เทิร์นหยุดกลางทาง: {}", clip(&format!("{e:#}"), 400));
+            let _ = store::append_msg(&st, &thread_id, &store::Message::new("assistant", &text));
+            emit(&st.events, &thread_id, json!({"type":"text_delta","text":text}));
+            emit(
+                &st.events,
+                &thread_id,
+                json!({"type":"error","message":format!("{e:#}")}),
+            );
+        }
         Err(_) => {
             let text = "เทิร์นนี้หยุดกลางทางเพราะข้อผิดพลาดภายใน — งานหลังจากจุดนั้นยังไม่ได้ทำ ส่งคำขออีกครั้งได้เลย";
             let _ = store::append_msg(&st, &thread_id, &store::Message::new("assistant", text));

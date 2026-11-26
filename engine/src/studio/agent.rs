@@ -85,7 +85,7 @@ pub async fn run<H: Host>(
         host.before_round(round, &mut messages).await?;
 
         let t0 = std::time::Instant::now();
-        let got = llm::stream_chat(
+        let mut got = llm::stream_chat(
             cfg.st,
             cfg.settings,
             messages.clone(),
@@ -93,7 +93,36 @@ pub async fn run<H: Host>(
             cfg.thread_id,
             cfg.strip_cjk,
         )
-        .await?;
+        .await;
+        // A long tool argument (a whole page, a catalog) can lose the stream
+        // mid-flight. Nothing has been executed at this point, so one retry is
+        // safe; without it the turn died and the plan stalled.
+        if let Err(e) = &got {
+            let msg = format!("{e:#}");
+            let transient = [
+                "error decoding response body",
+                "operation timed out",
+                "connection reset",
+                "connection closed",
+                "unexpected eof",
+                "temporarily unavailable",
+            ]
+            .iter()
+            .any(|k| msg.to_lowercase().contains(k));
+            if transient {
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                got = llm::stream_chat(
+                    cfg.st,
+                    cfg.settings,
+                    messages.clone(),
+                    tools.clone(),
+                    cfg.thread_id,
+                    cfg.strip_cjk,
+                )
+                .await;
+            }
+        }
+        let got = got?;
         out.round_ms.push(t0.elapsed().as_millis());
         out.tokens_in += got.tokens_in;
         out.tokens_out += got.tokens_out;

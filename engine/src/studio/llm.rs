@@ -70,7 +70,7 @@ pub async fn stream_chat(
     let mut req = st
         .client
         .post(settings.endpoint())
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(480))
         .header("content-type", "application/json")
         .json(&body);
     if let Some(key) = settings.key() {
@@ -80,7 +80,22 @@ pub async fn stream_chat(
         req = req.header(k.as_str(), v.as_str());
     }
 
-    let resp = req.send().await.context("POST chat/completions")?;
+    // One retry for a transient transport error. Safe: nothing is executed
+    // until the model answers, so retrying the call cannot double a patch.
+    // Keep one clone for the retry, send another (or the original).
+    let retry_req = req.try_clone();
+    let mut resp = match req.try_clone() {
+        Some(r) => r.send().await.context("POST chat/completions")?,
+        None => req.send().await.context("POST chat/completions")?,
+    };
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || resp.status().is_server_error()
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        if let Some(again) = retry_req {
+            resp = again.send().await.context("POST chat/completions (retry)")?;
+        }
+    }
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
