@@ -15,6 +15,9 @@
     settings: {},
     browser: null,
     busy: false,
+    // Turns run on the server per site. The panel may only show one at a
+    // time, but a turn on site A must not lock the composer for site B.
+    running: new Set(),
     es: null,
     watch: null,
     prepTimer: null,
@@ -423,7 +426,8 @@
       renderPlan(d.thread && d.thread.plan);
       // A turn keeps running across a reload. Without this the Stop button
       // vanished while the harness was still writing patches.
-      state.busy = !!d.running;
+      if (d.running) state.running.add(id);
+      state.busy = state.running.has(id) || !!d.running;
       setBusy(state.busy);
       if (d.running) watch(id);
     } catch (_) { /* a fresh thread has no messages file yet */ }
@@ -450,7 +454,8 @@
         }
         if (!d.running) {
           clearInterval(state.watch); state.watch = null;
-          state.busy = false; setBusy(false);
+          state.running.delete(threadId);
+          if (threadId === state.thread) { state.busy = false; setBusy(false); }
         }
       } catch (_) { /* keep watching; a transient error is not a stop */ }
     }, 2500);
@@ -627,6 +632,7 @@
       }
       case 'done':
         state.busy = false;
+        state.running.delete(state.thread);
         document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
         if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
@@ -635,6 +641,7 @@
         break;
       case 'error':
         state.busy = false;
+        state.running.delete(state.thread);
         document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
         if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
@@ -644,6 +651,7 @@
         break;
       case 'aborted':
         state.busy = false;
+        state.running.delete(state.thread);
         document.querySelectorAll('.st-tool.is-prep').forEach((n) => n.remove());
         if (state.watch) { clearInterval(state.watch); state.watch = null; }
         state.streamEl = null;
@@ -764,6 +772,12 @@
 
   /* ── sending ───────────────────────────────────────────────────────────── */
 
+  function markRunning(id, on) {
+    if (!id) return;
+    if (on) state.running.add(id); else state.running.delete(id);
+    if (id === state.thread) { state.busy = on; setBusy(on); }
+  }
+
   function setBusy(on) {
     $('#st-send').disabled = on || !state.settings.configured;
     $('#st-abort').hidden = !on;
@@ -778,7 +792,7 @@
   async function send() {
     const input = $('#st-input');
     const message = input.value.trim();
-    if (!message || state.busy) return;
+    if (!message || state.running.has(state.thread)) return;
     // Lock before the first await: two entry points (Enter, submit) must not
     // both get past the guard while a new thread is being created.
     state.busy = true;
@@ -790,6 +804,7 @@
         if (!state.thread) throw new Error('could not create a conversation');
       }
       addMsg('user', message);
+      markRunning(state.thread, true);
       await api('/api/studio/chat', {
         method: 'POST',
         body: JSON.stringify({
@@ -805,8 +820,12 @@
         }),
       });
     } catch (e) {
-      addMsg('error', e.message);
+      const busy = /already running/i.test(e.message || '');
+      addMsg('error', busy
+        ? 'เว็บนี้มีเทิร์นกำลังทำงานอยู่ — สลับไปอีกเว็บหนึ่งแล้วสั่งพร้อมกันได้ หรือกด Stop ก่อน'
+        : e.message);
       state.busy = false;
+      if (state.thread) state.running.delete(state.thread);
       setBusy(false);
     }
   }
