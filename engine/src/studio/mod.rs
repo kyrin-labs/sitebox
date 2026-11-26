@@ -76,7 +76,25 @@ impl StudioState {
             std::process::id(),
             SEQ.fetch_add(1, Ordering::SeqCst)
         );
-        let sid = util::sha256_bytes(seed.as_bytes())[..32].to_string();
+        // The session id outlives the process: the cookie is what lets the
+        // launcher on a site page reach the dashboard, and regenerating it on
+        // every restart quietly logged the operator out of both.
+        let sid_file = data.join("sid");
+        let sid = match std::fs::read_to_string(&sid_file) {
+            Ok(v) if v.trim().len() >= 16 => v.trim().to_string(),
+            _ => {
+                let fresh = util::sha256_bytes(seed.as_bytes())[..32].to_string();
+                let _ = ensure_dir(&data);
+                let _ = atomic_write(&sid_file, fresh.as_bytes());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&sid_file, std::fs::Permissions::from_mode(0o600));
+                }
+                fresh
+            }
+        };
         let token = std::env::var("STUDIO_TOKEN")
             .ok()
             .filter(|t| !t.trim().is_empty());

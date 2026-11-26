@@ -554,3 +554,91 @@ body.sols-embed .st-compose { width: 100%; max-width: 900px; margin-left: auto; 
 .st-plan__row.is-doing { color: var(--text); font-weight: 600; }
 .st-plan__dot { color: var(--accent); flex-shrink: 0; }
 .st-plan__row.is-done .st-plan__dot { color: var(--accent2); }
+
+/* ── Sols as a docked inspector (A) ─────────────────────────────────────────
+   On the dashboard the panel is a card in the layout, not an overlay: the app
+   makes room, the panel shares the card language (border, radius, no shadow),
+   and the toolbar reads as context pills instead of a row of raw selects. */
+@media (min-width: 1101px) {
+  body.sols-open .app { padding-right: 444px; }
+
+  .studio-panel {
+    top: 12px; right: 12px; bottom: 12px;
+    width: 420px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: none;
+    overflow: hidden;
+  }
+  body.sols-open .studio-launcher { opacity: 0; pointer-events: none; }
+}
+
+.studio-panel .st-head {
+  height: 54px; padding: 0 .75rem; gap: .5rem;
+  background: var(--bg);
+}
+.studio-panel .st-head__actions { gap: .1rem; }
+.studio-panel .st-icon {
+  width: 28px; height: 28px; border-radius: 6px; font-size: .82rem;
+  color: var(--text-3);
+}
+.studio-panel .st-icon:hover { background: var(--surface2); color: var(--text); }
+.studio-panel .st-status { font-size: .68rem; }
+
+.studio-panel .st-bar {
+  gap: .35rem; padding: .5rem .75rem;
+  background: var(--bg);
+}
+.studio-panel .st-select {
+  border-radius: 999px;
+  padding: .3rem .6rem;
+  font-size: .76rem;
+  background: var(--surface);
+  border-color: var(--border);
+}
+.studio-panel .st-select--mode { flex: 0 0 auto; font-weight: 600; }
+
+/* Wide mode (B): a workspace with the plan and the checks beside the thread. */
+@media (min-width: 900px) {
+  .studio-panel.is-wide {
+    top: 5vh; bottom: 5vh; left: 50%; right: auto;
+    transform: translateX(-50%);
+    width: min(1040px, 94vw);
+    border-radius: 14px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, .28);
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, .95fr);
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas:
+      "head head"
+      "bar  bar"
+      "log  plan"
+      "form plan";
+  }
+  .studio-panel.is-wide .st-head { grid-area: head; border-bottom: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-bar { grid-area: bar; border-bottom: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-log { grid-area: log; border-right: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-plan {
+    grid-area: plan;
+    border-bottom: 0;
+    overflow: auto;
+    padding: .9rem 1rem;
+    background: var(--surface);
+  }
+  .studio-panel.is-wide .st-plan[hidden] { display: none; }
+  .studio-panel.is-wide .st-plan::before {
+    content: "แผนงาน";
+    display: block;
+    font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-3); margin-bottom: .5rem;
+  }
+  .studio-panel.is-wide .st-compose { grid-area: form; border-top: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-settings { grid-area: 1 / 1 / -1 / -1; z-index: 5; background: var(--bg); }
+}
+
+/* Wide mode keeps the plan column meaningful even before a plan exists. */
+.studio-panel.is-wide .st-plan[hidden] { display: block; }
+.studio-panel.is-wide .st-plan:empty::after {
+  content: "ยังไม่มีแผน — แผนจะขึ้นที่นี่เมื่อ Sols เริ่มงาน";
+  display: block; color: var(--text-3); font-size: .78rem; line-height: 1.5;
+}

@@ -639,6 +639,18 @@ struct ProxyState {
 }
 
 async fn proxy_handler(State(st): State<Arc<ProxyState>>, req: Request) -> Response {
+    // The launcher script is ours, not the node server's: serve it here or the
+    // injected <script> 404s and the operator sees no button.
+    if req.uri().path() == "/__sols/widget.js" {
+        return (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/javascript; charset=utf-8"),
+            )],
+            SOLS_WIDGET,
+        )
+            .into_response();
+    }
     let method = req.method().clone();
     let uri = req
         .uri()

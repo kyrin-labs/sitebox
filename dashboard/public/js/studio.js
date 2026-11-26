@@ -141,7 +141,9 @@
           <span class="st-status" id="st-status">…</span>
         </div>
         <div class="st-head__actions">
+          <button class="st-icon" id="st-expand" title="Expand">⤢</button>
           <button class="st-icon" id="st-new" title="New conversation">＋</button>
+          <button class="st-icon" id="st-undo" title="Restore the last snapshot">↶</button>
           <button class="st-icon" id="st-settings" title="Settings">⚙</button>
           <button class="st-icon" id="st-close" title="Close">✕</button>
         </div>
@@ -153,8 +155,6 @@
           <option value="ask">Ask</option>
           <option value="all">All-in</option>
         </select>
-        <button class="st-btn st-btn--ghost" id="st-newsite" title="Start a new site in a conversation">+ Site</button>
-        <button class="st-btn st-btn--ghost" id="st-undo" title="Restore the last snapshot">Undo</button>
       </div>
       <div class="st-plan" id="st-plan" hidden></div>
       <div class="st-log" id="st-log"></div>
@@ -194,7 +194,11 @@
     });
     $('#st-thread').addEventListener('change', (e) => selectThread(e.target.value));
     $('#st-new').addEventListener('click', () => newThread());
-    $('#st-newsite').addEventListener('click', () => newSiteThread());
+    $('#st-expand').addEventListener('click', () => {
+      const p = $('#studio-panel');
+      p.classList.toggle('is-wide');
+      $('#st-expand').setAttribute('aria-pressed', p.classList.contains('is-wide') ? 'true' : 'false');
+    });
     $('#st-mode').addEventListener('change', async (e) => {
       if (!state.thread) return;
       try {
@@ -230,6 +234,11 @@
   function toggle(open) {
     const p = $('#studio-panel');
     p.classList.toggle('is-open', open);
+    // On the dashboard the panel is a dock, so the grid makes room for it.
+    // Inside an embed iframe it already owns the whole viewport.
+    if (!document.body.classList.contains('sols-embed')) {
+      document.body.classList.toggle('sols-open', open);
+    }
     if (open) {
       refreshStatus();
       $('#st-input').focus();

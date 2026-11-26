@@ -71,8 +71,8 @@ pub fn router(state: DashState) -> Router {
         .route("/api/studio/shots/{site}/{file}", get(studio_shot_file))
         .fallback(static_ui)
         .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024))
-        .layer(middleware::from_fn(cors))
         .layer(middleware::from_fn_with_state(state.clone(), studio_guard))
+        .layer(middleware::from_fn(cors))
         .with_state(state)
 }
 
@@ -649,6 +649,11 @@ fn attr(tag: &str, name: &str) -> Option<String> {
 /// can write a site answers without one of these.
 async fn studio_guard(State(st): State<DashState>, req: Request, next: Next) -> Response {
     if !req.uri().path().starts_with("/api/studio/") {
+        return next.run(req).await;
+    }
+    // The launcher probes this before it decides to appear, from a site origin
+    // with no session yet. It carries no secrets (model name, site names).
+    if req.uri().path() == "/api/studio/status" {
         return next.run(req).await;
     }
     let header_ok = st

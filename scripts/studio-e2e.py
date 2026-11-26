@@ -489,7 +489,9 @@ def main():
 
         print("── P0: auth, config, no key leak")
         s, _, _ = req(base + "/api/studio/status")
-        check("no token is 401", s == 401, s)
+        check("status is a public probe", s == 200, s)
+        s, _, _ = req(base + "/api/studio/threads")
+        check("threads without token is 401", s == 401, s)
         s, st0, _ = req(base + "/api/studio/status", token=TOKEN)
         check("status with token", s == 200, st0)
         check("unconfigured at boot", st0.get("settings", {}).get("configured") is False, st0)
