@@ -813,7 +813,14 @@ async fn studio_thread_messages(State(st): State<DashState>, Path(id): Path<Stri
             // A reload drops the panel's local busy flag, but the turn is still
             // running on the server. Say so, or the Stop button disappears
             // while a patch is still being written.
-            let running = st.studio.turns.lock().await.contains_key(&id);
+            let running = st
+                .studio
+                .turns
+                .lock()
+                .await
+                .get(&id)
+                .map(|h| !h.is_finished())
+                .unwrap_or(false);
             Json(json!({"thread": t, "messages": msgs, "running": running})).into_response()
         }
         Err(_) => (

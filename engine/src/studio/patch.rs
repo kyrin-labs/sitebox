@@ -187,10 +187,48 @@ pub fn diff_hunk(before: &str, after: &str) -> (String, Stat) {
         out.push_str(&format!(" {line}\n"));
     }
     if out.len() > 24_000 {
-        out.truncate(24_000);
+        // Byte 24_000 can land inside a Thai character. Truncating there used
+        // to panic, which killed the turn task and left the panel "running"
+        // forever with no message to explain it.
+        let mut cut = 24_000;
+        while cut > 0 && !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
         out.push_str("\n… diff truncated\n");
     }
     (out, Stat { added, removed })
+}
+
+/// Lines that share the most words with a missing anchor. A model that quotes
+/// text from memory misses by one attribute; showing the nearest real lines
+/// lets it correct in one round instead of re-reading the file.
+pub fn nearest_lines(haystack: &str, needle: &str, n: usize) -> Vec<String> {
+    let words: std::collections::HashSet<&str> = needle
+        .split(|c: char| c.is_whitespace() || "\"'<>=".contains(c))
+        .filter(|w| w.chars().count() >= 3)
+        .collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(usize, usize, &str)> = haystack
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let hits = words
+                .iter()
+                .filter(|w| line.contains(**w))
+                .count();
+            (hits, i, line)
+        })
+        .filter(|(hits, _, _)| *hits > 0)
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .take(n)
+        .map(|(hits, i, line)| format!("{}: {}", i + 1, line.trim()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -201,6 +239,18 @@ mod tests {
     fn count_mismatch_writes_nothing() {
         let err = apply_text("<p>a</p><p>a</p>", "<p>a</p>", "<p>b</p>", 1).unwrap_err();
         assert!(err.to_string().contains("occurs 2 time(s)"));
+    }
+
+    #[test]
+    fn a_long_thai_diff_truncates_on_a_char_boundary() {
+        // Lines long enough that the 80-line cap still exceeds 24 KB, and Thai
+        // throughout so byte 24_000 almost certainly lands mid-character.
+        let line = "บรรทัดที่ยาวมากสำหรับทดสอบการตัดข้อความภาษาไทย ".repeat(20);
+        let old: String = (0..40).map(|_| format!("{line}\n")).collect();
+        let new: String = (0..40).map(|_| format!("{line}แก้\n")).collect();
+        let (diff, _) = diff_hunk(&old, &new);
+        assert!(diff.len() < 24_100, "diff was {} bytes", diff.len());
+        assert!(diff.ends_with("… diff truncated\n"));
     }
 
     #[test]

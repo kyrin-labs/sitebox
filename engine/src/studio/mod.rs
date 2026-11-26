@@ -27,6 +27,7 @@ pub mod store;
 pub mod tools;
 
 use anyhow::{bail, Context, Result};
+use futures_util::FutureExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -277,12 +278,30 @@ pub async fn run_turn(st: StudioState, thread_id: String, user_msg: String) {
         }
     };
     let key = lock_key(&thread);
-    if let Err(e) = run_turn_inner(&st, &thread_id, &user_msg).await {
-        emit(
+    // A panic inside a turn (a bad byte slice was one) used to kill this task
+    // before the cleanup below: the busy key and the turn handle stayed set, so
+    // the panel showed a running turn with a Stop button that could never
+    // finish. Catch it, say so, and clean up anyway.
+    let outcome = std::panic::AssertUnwindSafe(run_turn_inner(&st, &thread_id, &user_msg))
+        .catch_unwind()
+        .await;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => emit(
             &st.events,
             &thread_id,
             json!({"type":"error","message":format!("{e:#}")}),
-        );
+        ),
+        Err(_) => {
+            let text = "เทิร์นนี้หยุดกลางทางเพราะข้อผิดพลาดภายใน — งานหลังจากจุดนั้นยังไม่ได้ทำ ส่งคำขออีกครั้งได้เลย";
+            let _ = store::append_msg(&st, &thread_id, &store::Message::new("assistant", text));
+            emit(&st.events, &thread_id, json!({"type":"text_delta","text":text}));
+            emit(
+                &st.events,
+                &thread_id,
+                json!({"type":"error","message":"the turn stopped on an internal error; nothing after this point ran. Send the request again."}),
+            )
+        }
     }
     st.busy.lock().await.remove(&key);
     st.turns.lock().await.remove(&thread_id);
@@ -639,5 +658,42 @@ fn build_messages(st: &StudioState, thread_id: &str, site: Option<&SiteRef>) -> 
         }
         out.push(obj);
     }
-    Ok(out)
+    // A turn that died between the assistant's tool_calls and the tool results
+    // leaves a call with no answer in the store. The model endpoint rejects the
+    // whole transcript for that, so every later turn on the thread would fail.
+    // Drop unanswered calls and their orphan results.
+    let mut clean: Vec<Value> = Vec::with_capacity(out.len());
+    for (i, msg) in out.iter().enumerate() {
+        match msg.get("role").and_then(|v| v.as_str()).unwrap_or("") {
+            "tool" => {
+                let id = msg.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+                let answered = clean
+                    .last()
+                    .and_then(|p| p.get("tool_calls").and_then(|c| c.as_array()))
+                    .map(|calls| calls.iter().any(|c| c.get("id").and_then(|v| v.as_str()) == Some(id)))
+                    .unwrap_or(false);
+                if answered {
+                    clean.push(msg.clone());
+                }
+            }
+            "assistant" => {
+                let ids: Vec<&str> = msg
+                    .get("tool_calls")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|c| c.get("id").and_then(|v| v.as_str())).collect())
+                    .unwrap_or_default();
+                let answered = ids.iter().all(|id| {
+                    out[i + 1..]
+                        .iter()
+                        .take_while(|m| m.get("role").and_then(|v| v.as_str()) == Some("tool"))
+                        .any(|m| m.get("tool_call_id").and_then(|v| v.as_str()) == Some(*id))
+                });
+                if answered {
+                    clean.push(msg.clone());
+                }
+            }
+            _ => clean.push(msg.clone()),
+        }
+    }
+    Ok(clean)
 }
