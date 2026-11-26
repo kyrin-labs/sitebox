@@ -40,6 +40,28 @@ you choose a palette, before you write a headline, and before you say "done".
 10. **Act, then report in 3-6 lines.** Do not interview him, do not ask
     permission in `all-in`, do not answer with a question after "ทำเลย".
 
+## 1b. Variety is part of the brief
+
+Speed without a memory converges on one look. Before choosing a design, call
+`sols_design_index` and pick five axes that no recent site used:
+
+1. **archetype** — editorial index, dense product feed, institutional archive,
+   docs shell, full-screen app, one-page manifesto...
+2. **palette** — the concrete family (paper + ink + rust, chalk + forest +
+   brass, clay + sand + charcoal), not just "light" or "dark".
+3. **type pairing** — display face + body face, and their sizes.
+4. **layout** — the skeleton: sticky rail + grid, centred 68ch column, split
+   hero + table, full-bleed bands.
+5. **signature** — one element that belongs to this site only: numbered margin
+   rules, a gauge ladder, a monospace stamp header, a diagonal band.
+
+Repeating one axis is fine. Repeating all five is a template, not a design.
+Record the choice with `sols_design` before the first patch. If the operator
+names a specific look, the brief wins; record it and say so.
+
+Consistency *inside* a site is different: every page of one site must share its
+shell, tokens and components.
+
 ## 2. What "finished" means
 
 A page is finished when all of this is true, not when the HTML exists:

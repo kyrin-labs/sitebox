@@ -12,6 +12,7 @@
 pub mod apply;
 pub mod bee;
 pub mod config;
+pub mod design;
 pub mod lang;
 pub mod llm;
 pub mod outline;

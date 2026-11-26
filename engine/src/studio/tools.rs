@@ -376,6 +376,33 @@ pub fn definitions() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "sols_design_index",
+                "description": "List the design combinations recent sites used (archetype, palette, type pairing, layout, signature). Call this before choosing a look, so a new site does not repeat the last one.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_design",
+                "description": "Record the five design axes you chose for this site. Do it before building. If another site already uses the same combination, vary at least one axis unless the brief asks for a repeat.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "site": {"type": "string", "description": "site id this design belongs to"},
+                        "archetype": {"type": "string", "description": "e.g. editorial index, dense product feed, institutional archive, docs shell, full-screen app"},
+                        "palette": {"type": "string", "description": "the concrete family, e.g. paper + ink + rust, chalk + forest + brass"},
+                        "type_pair": {"type": "string", "description": "display + body pairing, e.g. serif Thai display + sans body at 17px"},
+                        "layout": {"type": "string", "description": "skeleton, e.g. sticky rail + 3-col grid, centred 68ch column, split hero + table"},
+                        "signature": {"type": "string", "description": "one element unique to this site, e.g. numbered margin rules, gauge ladder, monospace stamp header"}
+                    },
+                    "required": ["site", "archetype", "palette", "type_pair", "layout", "signature"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "sols_bee",
                 "description": "Send worker bees (1-4) to do independent work in parallel, then get their reports. A bee reads, greps, searches and fetches; it cannot edit files, apply patches or restart the site, and it does not see this conversation. Use for big jobs: research across several sources, a multi-page build, a clone that needs structure plus copy plus facts. Before a site exists it can still research the web and the skills (no site files). After the reports come back, make the edits yourself.",
                 "parameters": {
@@ -563,6 +590,8 @@ pub async fn execute_unbound(
     args: &Value,
 ) -> Result<Value> {
     match name {
+        "sols_design_index" => Ok(super::design::list(st)),
+        "sols_design" => super::design::record(st, args),
         "sols_skills" => tool_skills(),
         "sols_skill" => tool_skill(args),
         "sols_plan" => tool_plan(st, thread_id, args),
@@ -1712,6 +1741,8 @@ pub async fn execute(
             }
             shot::capture(st, &site.id, site.manifest.site.port, width, height, route).await
         }
+        "sols_design_index" => Ok(super::design::list(st)),
+        "sols_design" => super::design::record(st, args),
         "sitebox_new_page" => new_page(st, site, thread_id, args, auto_apply).await,
         "sitebox_propose_patch" => propose(st, site, thread_id, args, auto_apply).await,
         other => bail!("unknown tool `{other}`"),
@@ -2164,7 +2195,8 @@ Work the way SiteBox's own agent does: read the skill that owns the task, plan i
 ## How you work
 1. Say what the site is in one sentence.
 2. Read `sitebox-playbook` first — it is the operator's taste and the defects that keep coming back. Then `sitebox-design` before you choose anything visual, and `sitebox-create` when the site is more than one page. Three skills at most; never read the same one twice.
-3. Call `sols_plan` with 3-5 steps before the first action when the job has several parts, then update it as steps move between pending, doing and done. Every clause in the request is a deliverable: finish them all, and do not end with a question the site can answer.
+3. Before you choose a look, call `sols_design_index`. Pick five axes (archetype, palette, type pairing, layout, signature element) that no recent site used, and record them with `sols_design`. Two sites that look alike is a defect unless the brief asks for it.
+4. Call `sols_plan` with 3-5 steps before the first action when the job has several parts, then update it as steps move between pending, doing and done. Every clause in the request is a deliverable: finish them all, and do not end with a question the site can answer.
 4. Ask only what you cannot infer: what the site is for, who reads it, and what content is real. Do not interview the operator when the request is already clear: make the reasonable choice, say it in one line, and build. Choose `id` and `name` yourself and say what you chose.
 5. `sols_create_site` writes the folder, manifest, starter page and registry entry, picks a free port, starts the site and binds this conversation to it. It already starts the site: do not call `sitebox_site_start` afterwards. A static site serves files from disk, so a patch needs no restart either.
 6. The starter is a blank canvas, not a finished site: read it, then improve it with `sitebox_propose_patch`. For each additional page use `sitebox_new_page` (title + sections) — it copies the starter's shell and writes the page, so you only send content. Photography: `sols_asset` downloads a photo into `public/assets` while you are creating (prefer `https://picsum.photos/seed/<word>/800/800` for placeholder shots). Never hotlink an image; always set width/height on `<img>`. While you are creating the site, your patches are applied immediately (snapshot, build and checks still run); after this turn they will wait for the operator's Apply.
