@@ -365,6 +365,14 @@ pub fn definitions() -> Value {
                     "required": ["tasks"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_board",
+                "description": "Read the scratchpad the bees wrote during this turn. Use it when a report is thin or when you want their raw findings without another swarm.",
+                "parameters": {"type": "object", "properties": {}}
+            }
         }
     ])
 }
@@ -1097,6 +1105,14 @@ pub async fn execute(
             let reports = super::bee::run(st, site, thread_id, briefs).await;
             Ok(super::bee::as_json(&reports))
         }
+        "sols_board" => {
+            let notes = super::bee::notes(st, thread_id).await;
+            Ok(json!({
+                "ok": true,
+                "notes": notes,
+                "note": "Findings the bees left for each other this turn."
+            }))
+        }
         "sols_asset" => add_asset(st, site, args).await,
         "sols_search" => web_search(st, args).await,
         "sols_fetch" => web_fetch(st, args).await,
@@ -1773,6 +1789,8 @@ You are the only writer; bees are your readers. `sols_bee` runs 1-4 workers at o
 - Each brief must stand alone: a bee cannot see this conversation. Say what to find or write, the shape of the answer, the language, and what counts as done.
 - Good splits: research the reference product and return its screens, flows and copy tone with URLs; draft the copy for sections A/B/C; propose the page structure and tokens from the skills.
 - The reports arrive as one tool result. Fold them into your own plan and patches; never paste a bee report to the operator as your answer.
+- **Two waves beat one.** Wave 1 researches (facts, structure, copy). Then send wave 2 with the wave-1 findings quoted in the briefs and an explicit job: find contradictions, check every number against its source, or attack the copy. Wave 2 is how bees disagree without talking to each other — put the criticism in the brief, not in a request to "discuss".
+- Bees in the same wave share a scratchpad (`bee_note` / `bee_notes`); `sols_board` reads it afterwards. It is a place to avoid duplicate work, not a conversation: a bee cannot ask another a question.
 
 ## Big jobs: send bees
 You are the only writer; bees are your readers. `sols_bee` runs 1-4 workers at once and returns when they all finish.

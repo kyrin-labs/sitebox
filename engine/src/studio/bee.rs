@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 use super::{config::Settings, emit, llm, tools, SiteRef, StudioState};
 
 /// Enough for one line of inquiry, not enough to tour a whole site.
-const MAX_ROUNDS: usize = 6;
+const MAX_ROUNDS: usize = 8;
+/// A bee that spends more calls than this is touring, not working.
+const MAX_CALLS: usize = 14;
 /// A swarm that needs more than four workers needs a better plan.
 pub const MAX_TASKS: usize = 4;
 const MAX_REPORT: usize = 6000;
@@ -32,6 +34,50 @@ const ALLOWED: &[&str] = &[
     "sols_skills",
     "sols_skill",
 ];
+
+/// One line on the shared scratchpad. Bees of the same wave can read each
+/// other's notes; that is the whole extent of bee-to-bee communication.
+#[derive(Clone, serde::Serialize)]
+pub struct Note {
+    pub bee: usize,
+    pub title: String,
+    pub text: String,
+}
+
+pub const MAX_NOTES: usize = 60;
+const MAX_NOTE_CHARS: usize = 1200;
+
+pub async fn add_note(
+    st: &StudioState,
+    thread: &str,
+    bee: usize,
+    title: &str,
+    text: &str,
+) -> usize {
+    let text: String = text.trim().chars().take(MAX_NOTE_CHARS).collect();
+    if text.is_empty() {
+        return 0;
+    }
+    let mut board = st.board.lock().await;
+    let list = board.entry(thread.to_string()).or_default();
+    if list.len() < MAX_NOTES {
+        list.push(Note {
+            bee,
+            title: title.to_string(),
+            text,
+        });
+    }
+    list.len()
+}
+
+pub async fn notes(st: &StudioState, thread: &str) -> Vec<Note> {
+    st.board
+        .lock()
+        .await
+        .get(thread)
+        .cloned()
+        .unwrap_or_default()
+}
 
 #[derive(Clone)]
 pub struct Brief {
@@ -66,6 +112,28 @@ fn bee_tools() -> Value {
     list.push(json!({
         "type": "function",
         "function": {
+            "name": "bee_note",
+            "description": "Write a finding on the shared scratchpad so the other bees in this wave can use it. Facts with their URL, a decision, or a gap. Not a chat message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "One compact finding (max ~1200 characters)."}
+                },
+                "required": ["text"]
+            }
+        }
+    }));
+    list.push(json!({
+        "type": "function",
+        "function": {
+            "name": "bee_notes",
+            "description": "Read the shared scratchpad: what the other bees have written so far in this wave.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    }));
+    list.push(json!({
+        "type": "function",
+        "function": {
             "name": "bee_report",
             "description": "Finish your assignment. Call this once you have the deliverable the brief asked for.",
             "parameters": {
@@ -88,11 +156,17 @@ fn prompt(site: &SiteRef, title: &str, brief: &str) -> String {
 Title: {title}
 {brief}
 
+## The board
+You share a scratchpad with the other bees sent in the same wave.
+- `bee_notes` reads what they have written so far. Check it once before you start and once before you report: another bee may already have the fact you need.
+- `bee_note` writes one compact finding (a fact with its URL, a decision, a gap). It is not a conversation: nobody answers it, and the operator never sees it.
+- Two bees writing at the same moment may not see each other's note. Your report is what Sols reads; the board is only to avoid duplicate work.
+
 ## What you can do
 You can read and search, not write. `sitebox_grep` finds text, `sitebox_read` opens a region, `sitebox_outline` shows the file shape, `sols_search` and `sols_fetch` reach the web, `sols_skill` reads SiteBox doctrine. When the deliverable is ready, call `bee_report` with it.
 
 ## How to work
-- Work the assignment, not the whole site. At most three reads before you either answer or say what is missing.
+- Work the assignment, not the whole site. At most three reads before you either answer or say what is missing. You have 14 tool calls; if you reach them, report what you have.
 - Facts need their source URL. Never invent a number, a name or a quote; if the web gives you nothing, say so in one line.
 - The report is for Sols, not for the operator: dense, structured, no preamble, no "here is what I found".
 - Reply in the language of the brief and only that language. A Chinese or Japanese character inside a Thai sentence is a bug.
@@ -144,6 +218,14 @@ async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: 
 
     for round in 0..MAX_ROUNDS {
         out.rounds = round + 1;
+        // Last chance: ask for the report instead of letting the bee burn its
+        // final round on another read and return nothing.
+        if round + 1 == MAX_ROUNDS {
+            messages.push(json!({
+                "role": "user",
+                "content": "This is your last round. Call bee_report now with what you have; a partial report beats no report."
+            }));
+        }
         let res = llm::stream_chat(st, &settings, messages.clone(), defs.clone(), "__bee", true).await;
         let got = match res {
             Ok(v) => v,
@@ -188,6 +270,30 @@ async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: 
             let call_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("call");
             out.calls += 1;
 
+            if name == "bee_note" {
+                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let n = add_note(st, parent, id, &brief.title, text).await;
+                messages.push(json!({
+                    "role": "tool", "tool_call_id": call_id, "name": name,
+                    "content": format!("noted ({n} on the board)")
+                }));
+                continue;
+            }
+            if name == "bee_notes" {
+                let list = notes(st, parent).await;
+                let body = if list.is_empty() {
+                    "the board is empty".to_string()
+                } else {
+                    list.iter()
+                        .map(|n| format!("[bee {} · {}] {}", n.bee, n.title, n.text))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                messages.push(json!({
+                    "role": "tool", "tool_call_id": call_id, "name": name, "content": body
+                }));
+                continue;
+            }
             if name == "bee_report" {
                 out.report = args
                     .get("report")
@@ -198,6 +304,13 @@ async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: 
                 out.ok = !out.report.is_empty();
                 finished = true;
                 break;
+            }
+            if out.calls > MAX_CALLS {
+                messages.push(json!({
+                    "role": "tool", "tool_call_id": call_id, "name": name,
+                    "content": "Your tool budget is spent. Call bee_report now with what you have."
+                }));
+                continue;
             }
             if !ALLOWED.contains(&name) {
                 messages.push(json!({
@@ -221,7 +334,15 @@ async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: 
     }
 
     if out.report.is_empty() {
-        out.report = "the bee ran out of rounds without a report".into();
+        // Keep the bee's own last words if it never called bee_report.
+        out.report = messages
+            .iter()
+            .rev()
+            .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("assistant"))
+            .and_then(|m| m.get("content").and_then(|v| v.as_str()))
+            .map(|t| format!("(no bee_report; last message)\n{t}"))
+            .unwrap_or_else(|| "the bee ran out of rounds without a report".into());
+        out.ok = !out.report.is_empty();
     }
     let clipped: String = out.report.chars().take(MAX_REPORT).collect();
     out.report = clipped;

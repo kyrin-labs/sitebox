@@ -61,6 +61,9 @@ pub struct StudioState {
     /// "thread:path" → reads this turn. A model that re-reads one 60 KB file a
     /// dozen times burns the budget without learning anything new.
     pub reads: Arc<Mutex<HashMap<String, u32>>>,
+    /// "thread" → notes the bees of one turn left for each other. Cleared when
+    /// the turn starts: the board is a scratchpad for one job, not memory.
+    pub board: Arc<Mutex<HashMap<String, Vec<bee::Note>>>>,
     pub events: broadcast::Sender<Value>,
 }
 
@@ -117,6 +120,7 @@ impl StudioState {
             turns: Default::default(),
             turn_log: Default::default(),
             reads: Default::default(),
+            board: Default::default(),
             nonces: Default::default(),
             events,
         }
@@ -314,6 +318,7 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
         let prefix = format!("{thread_id}:");
         r.retain(|k, _| !k.starts_with(&prefix));
     }
+    st.board.lock().await.remove(thread_id);
     store::append_msg(st, thread_id, &store::Message::new("user", user_msg))?;
     if store::get(st, thread_id)?.title.is_empty() {
         store::set_title(st, thread_id, user_msg)?;
