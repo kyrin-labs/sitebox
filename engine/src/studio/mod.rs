@@ -10,6 +10,7 @@
 //!    tool that accepts a root-relative or absolute path.
 
 pub mod apply;
+pub mod bee;
 pub mod config;
 pub mod lang;
 pub mod llm;
@@ -417,7 +418,12 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
                 thread_id,
                 &store::Message {
                     role: "tool".into(),
-                    content: clip(&result.to_string(), 6000),
+                    // A swarm returns several reports at once; clipping them to
+                    // the single-tool budget silently drops the later bees.
+                    content: clip(
+                        &result.to_string(),
+                        if name == "sols_bee" { 24_000 } else { 6_000 },
+                    ),
                     tool_calls: None,
                     tool_call_id: Some(call_id.to_string()),
                     name: Some(name.to_string()),

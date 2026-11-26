@@ -340,6 +340,31 @@ pub fn definitions() -> Value {
                     }
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sols_bee",
+                "description": "Send worker bees (1-4) to do independent work in parallel, then get their reports. A bee reads, greps, searches and fetches; it cannot edit files, apply patches or restart the site, and it does not see this conversation. Use for big jobs: research across several sources, a multi-page build, a clone that needs structure plus copy plus facts. After the reports come back, make the edits yourself.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "description": "One self-contained assignment per bee. Max 4.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string", "description": "3-6 words, shown in the UI"},
+                                    "brief": {"type": "string", "description": "The full assignment: what to find or write, the shape of the answer, the language, and what counts as done. The bee cannot see this chat."}
+                                },
+                                "required": ["title", "brief"]
+                            }
+                        }
+                    },
+                    "required": ["tasks"]
+                }
+            }
         }
     ])
 }
@@ -502,7 +527,7 @@ pub async fn execute_unbound(
         "sols_plan" => tool_plan(st, thread_id, args),
         "sols_create_site" => create_site(st, thread_id, args).await,
         "sols_search" => web_search(st, args).await,
-        "sols_fetch" => web_fetch(args).await,
+        "sols_fetch" => web_fetch(st, args).await,
         other => bail!(
             "`{other}` needs a site, and this conversation has none yet. \
              Call sols_create_site first."
@@ -545,7 +570,7 @@ async fn add_asset(st: &StudioState, site: &SiteRef, args: &Value) -> Result<Val
     let mut assets = Vec::new();
     let mut errors = Vec::new();
     for (url, name) in &items {
-        match fetch_one_asset(site, url, name).await {
+        match fetch_one_asset(&st.root, site, url, name).await {
             Ok(v) => assets.push(v),
             Err(e) => errors.push(json!({"url": url, "error": format!("{e:#}")})),
         }
@@ -558,8 +583,8 @@ async fn add_asset(st: &StudioState, site: &SiteRef, args: &Value) -> Result<Val
     }))
 }
 
-async fn fetch_one_asset(site: &SiteRef, raw: &str, wanted: &str) -> Result<Value> {
-    let url = safe_url(raw)?;
+async fn fetch_one_asset(root: &std::path::Path, site: &SiteRef, raw: &str, wanted: &str) -> Result<Value> {
+    let url = safe_url(root, raw)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent("SiteBox-Sols/1.0")
@@ -780,10 +805,32 @@ fn ip_is_public(ip: IpAddr) -> bool {
 
 /// Parse and vet a URL before any request leaves the box. Name lookups happen
 /// here so a DNS name that resolves to the LAN is refused too.
-fn safe_url(raw: &str) -> Result<reqwest::Url> {
+/// Internal hosts the operator explicitly allows, e.g. a reference site on the
+/// LAN for a study-and-rebuild job. `SOLS_FETCH_ALLOW=127.0.0.1:4610,192.168.1.5`
+/// keeps the SSRF guard intact while unblocking the one address the job needs.
+fn fetch_allowed(root: &std::path::Path, u: &reqwest::Url) -> bool {
+    let raw = config::env_or_file(root, "SOLS_FETCH_ALLOW").unwrap_or_default();
+    let host = u.host_str().unwrap_or("");
+    let port = u.port_or_known_default().unwrap_or(80);
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .any(|entry| {
+            let (h, p) = match entry.rsplit_once(':') {
+                Some((h, p)) => (h, p.parse::<u16>().ok()),
+                None => (entry, None),
+            };
+            h.eq_ignore_ascii_case(host) && (p.is_none() || p == Some(port))
+        })
+}
+
+fn safe_url(root: &std::path::Path, raw: &str) -> Result<reqwest::Url> {
     let u = reqwest::Url::parse(raw).with_context(|| format!("not a URL: {raw}"))?;
     if !matches!(u.scheme(), "http" | "https") {
         bail!("only http(s) URLs can be fetched");
+    }
+    if fetch_allowed(root, &u) {
+        return Ok(u);
     }
     let host = u.host_str().unwrap_or("");
     if !host_is_public(host) {
@@ -804,7 +851,7 @@ fn safe_url(raw: &str) -> Result<reqwest::Url> {
     Ok(u)
 }
 
-async fn web_fetch(args: &Value) -> Result<Value> {
+async fn web_fetch(st: &StudioState, args: &Value) -> Result<Value> {
     let raw = args
         .get("url")
         .and_then(|v| v.as_str())
@@ -813,7 +860,7 @@ async fn web_fetch(args: &Value) -> Result<Value> {
     if raw.is_empty() {
         bail!("url is required");
     }
-    let url = safe_url(raw)?;
+    let url = safe_url(&st.root, raw)?;
     let max = args
         .get("max_chars")
         .and_then(|v| v.as_u64())
@@ -864,7 +911,13 @@ async fn web_fetch(args: &Value) -> Result<Value> {
     }
     let body = String::from_utf8_lossy(&bytes);
     let is_html = ctype.contains("html");
-    let mut text = if is_html {
+    // Studying a design means reading its markup and its stylesheet, not the
+    // prose between the tags. `raw` returns the source.
+    let want_raw = args
+        .get("raw")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut text = if is_html && !want_raw {
         html_to_text(&body)
     } else {
         body.to_string()
@@ -1020,9 +1073,33 @@ pub async fn execute(
     auto_apply: bool,
 ) -> Result<Value> {
     match name {
+        "sols_bee" => {
+            let raw = args
+                .get("tasks")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let briefs: Vec<super::bee::Brief> = raw
+                .iter()
+                .take(super::bee::MAX_TASKS)
+                .filter_map(|t| {
+                    let title = t.get("title").and_then(|v| v.as_str())?.trim().to_string();
+                    let brief = t.get("brief").and_then(|v| v.as_str())?.trim().to_string();
+                    if title.is_empty() || brief.chars().count() < 10 {
+                        return None;
+                    }
+                    Some(super::bee::Brief { title, brief })
+                })
+                .collect();
+            if briefs.is_empty() {
+                bail!("sols_bee needs at least one task with a title and a brief of 10+ characters");
+            }
+            let reports = super::bee::run(st, site, thread_id, briefs).await;
+            Ok(super::bee::as_json(&reports))
+        }
         "sols_asset" => add_asset(st, site, args).await,
         "sols_search" => web_search(st, args).await,
-        "sols_fetch" => web_fetch(args).await,
+        "sols_fetch" => web_fetch(st, args).await,
         "sitebox_grep" => {
             let query = args
                 .get("query")
@@ -1690,6 +1767,20 @@ Routing: look, layout, copy, tokens -> sitebox-design; real content, numbers, so
 ## Rules that do not change
 You cannot write files except through `sols_create_site` (once, before a site exists) and `sitebox_propose_patch`. During creation a patch is applied as soon as the checks pass, so you may say it is live — only after the tool says `applied`. After the creation turn, patches are queued and you must not call them live. Verify with `sitebox_check` and `sitebox_verify` before you claim anything.
 
+## Big jobs: send bees
+You are the only writer; bees are your readers. `sols_bee` runs 1-4 workers at once and returns when they all finish.
+- Send bees when a job needs three or more independent lookups, or covers several pages at once (a clone, a multi-page build, a fact sweep). A single edit does not need one.
+- Each brief must stand alone: a bee cannot see this conversation. Say what to find or write, the shape of the answer, the language, and what counts as done.
+- Good splits: research the reference product and return its screens, flows and copy tone with URLs; draft the copy for sections A/B/C; propose the page structure and tokens from the skills.
+- The reports arrive as one tool result. Fold them into your own plan and patches; never paste a bee report to the operator as your answer.
+
+## Big jobs: send bees
+You are the only writer; bees are your readers. `sols_bee` runs 1-4 workers at once and returns when they all finish.
+- Send bees when a job needs three or more independent lookups, or covers several pages at once (a clone, a multi-page build, a fact sweep). A single edit does not need one.
+- Each brief must stand alone: a bee cannot see this conversation. Say what to find or write, the shape of the answer, the language, and what counts as done.
+- Good splits: research the reference product and return its screens, flows and copy tone with URLs; draft the copy for sections A/B/C; propose the page structure and tokens from the skills.
+- The reports arrive as one tool result. Fold them into your own plan and patches; never paste a bee report to the operator as your answer.
+
 ## Looking things up
 - `sols_search` is a real web search through SearXNG. Use it for facts you cannot read from the site: a company, product, place, person, price, domain, or a current event.
 - Cite the result URL you used. Snippets are search results, not verified facts; if the search returns nothing, say so in one line instead of guessing.
@@ -1755,6 +1846,7 @@ You work the way SiteBox's own agent does when it builds a site: read the skill 
 2. Load the owning skill with `sols_skill` before acting. The skills are the doctrine; do not invent a workflow they already define.
 3. Call `sols_plan` with 2-5 steps before the first action, then again as steps move between pending, doing and done.
 4. Batch the work: one outline, then read only the region you will change. Never re-read what you already have.
+   A message with numbered items is a checklist: put each item in `sols_plan` and close the turn only when every item is done or you have said why it cannot be. Do not answer a checklist with a health report.
 5. Verify with `sitebox_check`, and `sitebox_verify` when the site is running, before you claim anything.
 6. Close with what changed, what the checks said, and one next step.
 

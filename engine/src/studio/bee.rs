@@ -1,0 +1,267 @@
+//! Bees: short-lived worker agents that Sols sends out for the parts of a job
+//! that can be done in parallel.
+//!
+//! A bee is deliberately less capable than Sols. It has no `propose_patch`, no
+//! lifecycle tools and no memory of the conversation: it reads, searches and
+//! reports. Everything it learns comes back as text in the tool result, and
+//! Sols stays the only thing that edits the site. That keeps one writer on the
+//! files, so a swarm cannot race itself.
+
+use futures_util::future::join_all;
+use serde_json::{json, Value};
+
+use super::{config::Settings, emit, llm, tools, SiteRef, StudioState};
+
+/// Enough for one line of inquiry, not enough to tour a whole site.
+const MAX_ROUNDS: usize = 6;
+/// A swarm that needs more than four workers needs a better plan.
+pub const MAX_TASKS: usize = 4;
+const MAX_REPORT: usize = 6000;
+
+/// What a bee is allowed to touch. Anything that writes is absent on purpose:
+/// the compiler cannot catch a bee that edits, so the tool list is the fence.
+const ALLOWED: &[&str] = &[
+    "sitebox_read",
+    "sitebox_ls",
+    "sitebox_grep",
+    "sitebox_outline",
+    "sitebox_check",
+    "sitebox_http",
+    "sols_search",
+    "sols_fetch",
+    "sols_skills",
+    "sols_skill",
+];
+
+#[derive(Clone)]
+pub struct Brief {
+    pub title: String,
+    pub brief: String,
+}
+
+pub struct Report {
+    pub title: String,
+    pub ok: bool,
+    pub report: String,
+    pub rounds: usize,
+    pub calls: usize,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+}
+
+fn bee_tools() -> Value {
+    let mut list: Vec<Value> = tools::definitions()
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| {
+            t.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())
+                .map(|n| ALLOWED.contains(&n))
+                .unwrap_or(false)
+        })
+        .collect();
+    list.push(json!({
+        "type": "function",
+        "function": {
+            "name": "bee_report",
+            "description": "Finish your assignment. Call this once you have the deliverable the brief asked for.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "report": {"type": "string", "description": "The deliverable itself, in the shape the brief asked for. Facts must carry their URLs."}
+                },
+                "required": ["report"]
+            }
+        }
+    }));
+    Value::Array(list)
+}
+
+fn prompt(site: &SiteRef, title: &str, brief: &str) -> String {
+    format!(
+        r#"You are Bee, a worker sent by Sols, the editing agent inside SiteBox. You have one assignment. Nobody is reading along: your only output is the report you return.
+
+## Assignment
+Title: {title}
+{brief}
+
+## What you can do
+You can read and search, not write. `sitebox_grep` finds text, `sitebox_read` opens a region, `sitebox_outline` shows the file shape, `sols_search` and `sols_fetch` reach the web, `sols_skill` reads SiteBox doctrine. When the deliverable is ready, call `bee_report` with it.
+
+## How to work
+- Work the assignment, not the whole site. At most three reads before you either answer or say what is missing.
+- Facts need their source URL. Never invent a number, a name or a quote; if the web gives you nothing, say so in one line.
+- The report is for Sols, not for the operator: dense, structured, no preamble, no "here is what I found".
+- Reply in the language of the brief and only that language. A Chinese or Japanese character inside a Thai sentence is a bug.
+- Write for the site `{id}` at port {port}.
+
+## The site as it stands
+kind: {kind}, serve: {serve}
+{files}"#,
+        id = site.id,
+        port = site.manifest.site.port,
+        kind = site.kind,
+        serve = site.manifest.site.serve,
+        files = site
+            .manifest
+            .pipeline
+            .iter()
+            .map(|s| format!("- {}", s.name))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+async fn one(st: &StudioState, site: &SiteRef, parent: &str, brief: &Brief, id: usize) -> Report {
+    let mut out = Report {
+        title: brief.title.clone(),
+        ok: false,
+        report: String::new(),
+        rounds: 0,
+        calls: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+    };
+    let settings = Settings::load(&st.root);
+    if !settings.configured() {
+        out.report = "the agent is not configured".into();
+        return out;
+    }
+    let defs = bee_tools();
+    let mut messages = vec![
+        json!({"role": "system", "content": prompt(site, &brief.title, &brief.brief)}),
+        json!({"role": "user", "content": brief.brief}),
+    ];
+
+    emit(
+        &st.events,
+        parent,
+        json!({"type":"bee","id":id,"title":brief.title,"status":"start"}),
+    );
+
+    for round in 0..MAX_ROUNDS {
+        out.rounds = round + 1;
+        let res = llm::stream_chat(st, &settings, messages.clone(), defs.clone(), "__bee", true).await;
+        let got = match res {
+            Ok(v) => v,
+            Err(e) => {
+                out.report = format!("bee failed: {e:#}");
+                emit(
+                    &st.events,
+                    parent,
+                    json!({"type":"bee","id":id,"title":brief.title,"status":"error"}),
+                );
+                return out;
+            }
+        };
+        out.tokens_in += got.tokens_in;
+        out.tokens_out += got.tokens_out;
+
+        if got.tool_calls.is_empty() {
+            out.report = got.text.trim().to_string();
+            out.ok = !out.report.is_empty();
+            break;
+        }
+
+        messages.push(json!({
+            "role": "assistant",
+            "content": got.text,
+            "tool_calls": got.tool_calls,
+        }));
+
+        let mut finished = false;
+        for call in &got.tool_calls {
+            let name = call
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let raw = call
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("{}");
+            let args: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!({}));
+            let call_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("call");
+            out.calls += 1;
+
+            if name == "bee_report" {
+                out.report = args
+                    .get("report")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                out.ok = !out.report.is_empty();
+                finished = true;
+                break;
+            }
+            if !ALLOWED.contains(&name) {
+                messages.push(json!({
+                    "role": "tool", "tool_call_id": call_id, "name": name,
+                    "content": format!("`{name}` is not available to a bee. Use the read-only tools and bee_report.")
+                }));
+                continue;
+            }
+            let result = tools::execute(st, site, "__bee", name, &args, false)
+                .await
+                .unwrap_or_else(|e| json!({"ok": false, "error": format!("{e:#}")}));
+            let text = result.to_string();
+            let clipped: String = text.chars().take(5000).collect();
+            messages.push(json!({
+                "role": "tool", "tool_call_id": call_id, "name": name, "content": clipped
+            }));
+        }
+        if finished {
+            break;
+        }
+    }
+
+    if out.report.is_empty() {
+        out.report = "the bee ran out of rounds without a report".into();
+    }
+    let clipped: String = out.report.chars().take(MAX_REPORT).collect();
+    out.report = clipped;
+    emit(
+        &st.events,
+        parent,
+        json!({"type":"bee","id":id,"title":brief.title,"status":if out.ok {"done"} else {"error"}}),
+    );
+    out
+}
+
+/// Run every brief at once and wait for all of them. A bee that fails returns
+/// its error in place, so one dead worker does not cancel the swarm.
+pub async fn run(st: &StudioState, site: &SiteRef, parent: &str, briefs: Vec<Brief>) -> Vec<Report> {
+    let mut briefs = briefs;
+    briefs.truncate(MAX_TASKS);
+    let futures = briefs
+        .iter()
+        .enumerate()
+        .map(|(i, b)| one(st, site, parent, b, i + 1));
+    join_all(futures).await
+}
+
+/// The tool result Sols sees: the reports, not the bees' transcripts.
+pub fn as_json(reports: &[Report]) -> Value {
+    let items: Vec<Value> = reports
+        .iter()
+        .map(|r| {
+            json!({
+                "title": r.title,
+                "ok": r.ok,
+                "report": r.report,
+                "rounds": r.rounds,
+                "tool_calls": r.calls,
+            })
+        })
+        .collect();
+    json!({
+        "ok": reports.iter().any(|r| r.ok),
+        "bees": items,
+        "note": "These are worker reports, not edits. Decide what to use and make the changes yourself with sitebox_propose_patch."
+    })
+}

@@ -582,6 +582,22 @@
         state.streamText = '';
         setBusy(false);
         break;
+      case 'bee': {
+        // A bee is a worker, not a chat message: one line that names it and
+        // then updates in place, so a swarm of four stays readable.
+        const id = 'bee-' + (ev.id || 0);
+        let row = document.getElementById(id);
+        if (!row) {
+          row = el('div', 'st-msg st-msg--system');
+          row.id = id;
+          $('#st-log').appendChild(row);
+        }
+        const mark = ev.status === 'start' ? '◐' : ev.status === 'done' ? '●' : '✕';
+        row.textContent = `${mark} Bee ${ev.id || ''} · ${ev.title || ''}`;
+        row.style.opacity = ev.status === 'start' ? '.75' : '1';
+        $('#st-log').scrollTop = $('#st-log').scrollHeight;
+        break;
+      }
       case 'turn_start':
         state.busy = true;
         setBusy(true);

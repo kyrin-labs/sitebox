@@ -339,6 +339,10 @@ const PROBE_JS: &str = r#"
     // bugs teaches the agent to break accessibility.
     var cls = (el.className || '').toString();
     if (/(^|\s)(sr-only|visually-hidden|screen-reader-text)(\s|$)/.test(cls)) continue;
+    // A skip link parked at left:-9999px is clipped on purpose; only the
+    // focused state is meant to be visible. Right of the viewport is a bug,
+    // left of it is a technique.
+    if (r.right <= 1) continue;
     if ((r.right > vw + 1 || r.left < -1) && out.overflow.length < 12) {
       out.overflow.push({el: path(el), left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width)});
     }
