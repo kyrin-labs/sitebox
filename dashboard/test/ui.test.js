@@ -1,12 +1,12 @@
 'use strict';
 /**
- * The keys pane and the site card are static files, so the only honest guard is one
- * that reads the shipped artifact. Each test here pins a decision that was made
- * because its absence cost a session:
+ * The dashboard is static files, so the only honest guard is one that reads the
+ * shipped artifact. Each test here pins a decision that was made because its
+ * absence cost a session:
  *
- *   - the Keys button is an icon with an accessible name, not icon + the same word;
- *   - the default key scope is the one an MCP client needs, and the labels say that
- *     write includes read instead of implying a choice that does not exist;
+ *   - there is no key/token UI: the Rust dashboard has no token store, and a
+ *     button that calls a missing endpoint is worse than no button;
+ *   - buttons use one Lucide line set, not emoji;
  *   - the URL logic is loaded and used, so no template re-introduces a hostname guess.
  */
 const { test } = require('node:test');
@@ -17,35 +17,22 @@ const path = require('path');
 const PUB = path.join(__dirname, '..', 'public');
 const html = fs.readFileSync(path.join(PUB, 'index.html'), 'utf8');
 const main = fs.readFileSync(path.join(PUB, 'js', 'main.js'), 'utf8');
+const studio = fs.readFileSync(path.join(PUB, 'js', 'studio.js'), 'utf8');
 
-test('the Keys button is icon-only and still has a name a screen reader can say', () => {
-  const btn = html.match(/<button id="btn-keys"[\s\S]*?<\/button>/);
-  assert.ok(btn, 'the keys button must exist');
-  assert.match(btn[0], /aria-label="[^"]+"/, 'an icon-only button needs an accessible name');
-  assert.match(btn[0], /title="[^"]+"/, 'and a visible tooltip');
-  const inner = btn[0].slice(btn[0].indexOf('>') + 1, btn[0].lastIndexOf('</button>'));
-  const text = inner.replace(/<svg[\s\S]*?<\/svg>/g, '').replace(/<!--[\s\S]*?-->/g, '').trim();
-  assert.equal(text, '', 'the word "Keys" beside a key icon is duplication, not a label');
+test('the dead key and audit UI is gone', () => {
+  assert.ok(!html.includes('btn-keys'), 'no keys button');
+  assert.ok(!html.includes('keys-modal'), 'no keys modal');
+  assert.ok(!main.includes('/api/tokens'), 'no token endpoint call');
+  assert.ok(!main.includes('/api/me'), 'no capability endpoint call');
+  assert.ok(!main.includes('/api/audit'), 'no dashboard audit call');
 });
 
-test('the default key scope is read + write, because the pane exists for MCP clients', () => {
-  const select = html.match(/<select id="key-scope"[\s\S]*?<\/select>/);
-  assert.ok(select, 'the scope control must exist');
-  assert.match(select[0], /<option value="write" selected>/, 'MCP needs write; read-only as the default produces a 403 on the first create');
-  assert.doesNotMatch(select[0], /<option value="read" selected>/);
-  assert.match(select[0], /read \+ write/, 'the write label must say it includes read');
-  assert.match(select[0], /read only/);
-  assert.match(html, /write includes read/, 'the pane must explain that one key covers both');
-});
-
-test('the dashboard does not nag a LAN visitor with a policy banner', () => {
-  assert.ok(!html.includes('remote-note'), 'the banner element is gone');
-  assert.ok(!main.includes('no per-device permissions'), 'and so is its copy');
-  assert.ok(!main.includes('SITEBOX_BIND=127.0.0.1'), 'the UI must not tell the operator how to bind the server');
-  // The page mints its own session, so the controls are shown by default and the
-  // server stays the authority. A failed /api/me must not hide Add Site.
-  assert.match(main, /let ME = \{ canManage: true/);
-  assert.match(main, /ME\.canManage === false \? 'none'/);
+test('buttons use Lucide geometry, not emoji', () => {
+  const emoji = /[\u{1F300}-\u{1FAFF}\u2700-\u27BF\uFF0B]/u;
+  assert.doesNotMatch(main, emoji, 'main.js must not use emoji as an icon');
+  assert.doesNotMatch(studio, emoji, 'studio.js must not use emoji as an icon');
+  assert.match(studio, /function icon\(name/, 'the panel renders icons through one helper');
+  assert.match(main, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/, 'cards use inline SVG');
 });
 
 test('the page loads the URL decision before the code that renders it', () => {

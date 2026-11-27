@@ -1,6 +1,6 @@
 # SiteBox
 
-SiteBox ไว้โฮสต์เว็บสแตติกหลาย ๆ เว็บบนเครื่องเดียว มันรวมแดชบอร์ดกับเอนจินไว้ในไบนารี Rust ตัวเดียว แต่ละเว็บมี manifest ของตัวเองหนึ่งไฟล์ ไม่ต้องมี `node_modules` แยกให้รกเครื่อง
+SiteBox เก็บเว็บสแตติกหลาย ๆ ไว้บนเครื่องเดียว แดชบอร์ดกับเอนจินรวมอยู่ในไบนารี Rust ตัวเดียว แต่ละเว็บมี `sitebox.toml` ไฟล์เดียว ไม่ต้องมี `node_modules` แยกทีละเว็บ
 
 [Read this in English](README.md)
 
@@ -51,37 +51,39 @@ engine/
 ├── assets/sols-widget.js ← ปุ่ม Sols ที่ฉีดเข้าไปในหน้าที่เสิร์ฟ
 └── src/bin/          ← sitebox (CLI), siteboxd (แดชบอร์ด), sitebox-mcp (MCP)
 
-dashboard/public/     ← UI
-dashboard/data/       ← registry ตอนรัน (ไม่ commit)
+dashboard/public/     ← UI รวมแผง Sols
+dashboard/data/       ← registry และข้อมูลตอนรันของ Sols
 ```
 
 เว็บสแตติกเสิร์ฟจากโปรเซสเดียวกัน เว็บละ listener ไม่ต้องมี Node ลูก ส่วนเว็บที่อยากได้ API ของตัวเองให้ประกาศ `serve = "node"` supervisor จะ spawn ให้ ตรวจพอร์ตและเก็บ log ไว้ให้ ส่วน `serve = "proxy"` เสิร์ฟไฟล์แล้วส่ง `/api/*` ต่อไป upstream
 
-## สิ่งที่ได้
+## ทำอะไรได้บ้าง
 
-- เซิร์ฟเวอร์ร่วมตัวเดียว: กัน path traversal, ETag/304, gzip, Range, security headers และ 404 จริง เหมือนกันทุกเว็บ
+- เซิร์ฟเวอร์ร่วมตัวเดียว: กัน path traversal, ETag/304, gzip, Range และ security headers ทุกเว็บที่เอนจินเสิร์ฟได้ 404 จริง
 - `sitebox.toml` อ่านด้วยเครื่องได้ มี JSON Schema (`sitebox schema`)
 - ชุดตรวจที่ id คงที่ (`SB001` ถึง `SB107`) พร้อม `self-test` ที่พิสูจน์ว่าทุก guard ล้มได้จริง
 - `ok:true` ตอน start ออกให้ก็ต่อเมื่อพอร์ตเปิดอยู่จริง
 - log 500 บรรทัดล่าสุดในหน่วยความจำ และเก็บลง `logs/<id>.jsonl`
 - pipeline จำ fingerprint ขั้นตอนที่ไม่เปลี่ยนจะไม่รันซ้ำ
-- รูปถูกแปลงเป็น WebP แบบลดขนาดเท่านั้น ไม่ครอป และ `dims.json` เขียนจากไฟล์จริง
+- รูปถูกแปลงเป็น WebP ครั้งเดียว ลดขนาดเท่านั้น ไม่มีการครอป `dims.json` เขียนจากไฟล์ที่ส่งจริง
 - deploy แบบ mirror: คัดลอก ลบไฟล์เกิน แล้วเทียบ sha256
 - MCP server 15 tools สำหรับ agent
-- Sols เอเจนต์ที่แก้เว็บให้ได้จากในแดชบอร์ด
+- Sols เอเจนต์ที่แก้เว็บในแดชบอร์ด พร้อมแผงแชทที่แนบภาพได้
+- วางโฟลเดอร์ที่มี `sitebox.toml` (หรือ `server.js` แบบเก่า) ลงใน `sites/` แล้วระบบเจอเอง
+- ธีมสว่าง-มืด สีไอคอน favicon ที่ตรวจเจอเอง และช่องค้นหา/กรอง
 
 ## Sols: เอเจนต์ที่แก้เว็บให้
 
-Sols คือ panel ที่อยู่ในแดชบอร์ด และปุ่มลอยที่อยู่ในทุกหน้าเว็บ คุยเป็นภาษาธรรมดาแล้วมันจะอ่าน skill ของโปรเจกต์ วางแผนให้เห็น แก้ไฟล์ผ่าน patch แล้วพิสูจน์ผลด้วย checks กับ screenshot
+Sols อยู่ในแผงแชทของแดชบอร์ด และมีปุ่มลอยบนหน้าที่เอนจินเสิร์ฟ บอกเป็นภาษาไทยว่าอยากได้อะไร มันจะอ่าน skill ของเว็บ เสนอ patch รัน checks แล้วส่ง screenshot มาให้ดู
 
 มันไม่ได้เขียนไฟล์ตรง ๆ ทุกการแก้คือ patch ที่ระบุข้อความเดิมกับข้อความใหม่ ชัดเจนว่าแทนตรงไหนกี่ครั้ง ตัวเอนจินเอา patch ไปทดลองในสำเนาก่อน รัน checks แล้วเทียบว่ามีอะไรพังเพิ่ม จากนั้นค่อย apply พร้อม snapshot เผื่ออยากย้อน
 
 ### เปิดใช้
 
 ```bash
-export STUDIO_TOKEN=$(openssl rand -hex 16)   # panel จะถามครั้งเดียวต่อเบราว์เซอร์
+export STUDIO_TOKEN=$(openssl rand -hex 16)   # ไม่ใส่ก็ได้ ใส่เพื่อให้สคริปต์ส่ง x-studio-token
 export CHROME=/path/to/chrome                # ไม่ใส่ก็ได้ แต่จะไม่มี screenshot/probe
-export SEARXNG_URL=http://127.0.0.1:8888     # ไม่ใส่ก็ได้ ถ้าอยากให้ค้นเว็บได้
+export SEARXNG_URL=http://127.0.0.1:8899     # ไม่ใส่ก็ได้ ถ้าอยากให้ค้นเว็บได้
 export SOLS_FETCH_ALLOW=127.0.0.1:4610       # เปิด host ใน LAN ให้ fetch ได้
 export SOLS_WIDGET=0                          # ซ่อนปุ่มในหน้าเว็บ
 ```
@@ -94,12 +96,19 @@ export SOLS_WIDGET=0                          # ซ่อนปุ่มใน�
 |------|--------|
 | `sitebox_propose_patch` | แก้ข้อความแบบ exact match หรือสร้างไฟล์ใหม่ พร้อมจำนวนครั้งที่ต้องเจอ |
 | `sitebox_new_page` | สร้างหน้าจาก shell เดิมของเว็บ ใส่แค่เนื้อหา |
-| `sitebox_probe` | เรนเดอร์สูงสุด 6 route ที่ 500/760/1440 แล้วบอกว่ามีอะไรล้นจอ ข้อความถูกตัด หรือตัวอักษรเล็กเกิน |
+| `sitebox_probe` | เรนเดอร์สูงสุด 6 route ที่ความกว้างเดียวต่อการเรียก (ค่าตั้งต้น 375 px เพดาน 1440) แล้วบอกว่ามีอะไรล้นจอ ข้อความถูกตัด หรือตัวอักษรเล็กเกิน |
 | `sitebox_shot` `sitebox_check` `sitebox_verify` | screenshot, checks แบบ static, checks แบบ HTTP |
 | `sols_create_site` `sols_rename_site` | สร้างเว็บจากบทสนทนา และเปลี่ยนชื่อทั้ง manifest กับการ์ดในแดชบอร์ด |
 | `sols_bee` | ผึ้งงาน (bee) 1 ถึง 4 ตัว อ่านอย่างเดียว มี brief ของตัวเอง และใช้ board ร่วมกัน |
 | `sols_search` `sols_fetch` `sols_youtube` `sols_steam` `sols_asset` | ค้นเว็บ ดึงหน้าเว็บ อ่านช่อง YouTube ข้อมูลร้าน Steam และโหลดรูป |
-| `sols_skill` `sols_skills` | อ่านคู่มือของ SiteBox ตามต้องการ |
+| `sols_plan` `sols_design` `sols_import` | วางแผนงาน จำ design ของแต่ละเว็บ และดึงหน้าเว็บเดิมเข้ามา |
+| `sols_skill` `sols_skills` | อ่านคู่มือของ SiteBox รวม `sitebox-playbook` ตามต้องการ |
+
+### แนบภาพ
+
+หนึ่งข้อความแนบได้สูงสุด 4 ภาพ กดปุ่ม paperclip เพื่อเลือกไฟล์ หรือวางภาพจาก clipboard ได้เลย ภาพละไม่เกิน 8 MB และต้องเป็น png, jpeg, webp หรือ gif โดยตรวจ magic bytes ไม่ใช่แค่นามสกุล
+
+ภาพถูกเก็บใต้ `dashboard/data/studio/uploads/<thread>/` แล้วส่งให้โมเดลเป็น image part คู่กับข้อความ ถ้าโมเดลที่ตั้งไว้อ่านภาพไม่ได้ ระบบจะปฏิเสธก่อนเริ่มเทิร์น: `400 vision_unsupported` พร้อมชื่อโมเดล หรือ `503 vision_unknown` เมื่อตรวจไม่ได้ คำตอบถูก cache ต่อ endpoint + model ใน `vision.json`
 
 ### ความปลอดภัย
 
@@ -116,10 +125,11 @@ patch ทุกอันถูกทดลองในสำเนาแบบ h
 ### ข้อจำกัด
 
 - หนึ่งเทิร์นคือคำขอหนึ่งครั้งจากคุณ หนึ่งรอบคือรอบของ agent loop ภายในเทิร์นนั้น
-- เทิร์นแก้ไขจะเสนอ patch ให้กด apply เอง ส่วนเทิร์นที่สร้างเว็บจะ apply ให้เมื่อผ่าน checks
+- เทิร์นแก้ไขจะเสนอ patch ให้กด apply เอง เว้นแต่สลับบทสนทนาเป็น **All-in** (`POST /api/studio/threads/:id/mode`) ซึ่ง apply ให้ทันทีที่ผ่าน checks ส่วนเทิร์นที่สร้างเว็บ apply ให้เองเสมอ
 - หนึ่งเทิร์นต่อหนึ่งเว็บ คนละเว็บรันพร้อมกันได้ แต่สองบทสนทนาบนเว็บเดียวกันจะรันทีละอัน เพราะเขียนไฟล์ชุดเดียวกัน
 - 16 รอบต่อเทิร์นการแก้ (`max_rounds` ใน settings), 26 รอบต่อเทิร์นสร้างเว็บ, เพดาน 32
 - patch ใหญ่สุด 200 KB, ไฟล์ใหญ่สุด 2 MB, 12 patch ต่อครั้ง
+- ข้อความยาวสุด 8,000 ตัวอักษร, 60 เทิร์นต่อเว็บต่อชั่วโมง, หน้าที่ generate ได้ใหญ่สุด 120 KB
 - ปิดเบราว์เซอร์แล้วเทิร์นยังทำต่อ จะหยุดเมื่อกด Stop, โมเดล error หรือเอนจินรีสตาร์ท เปิด panel กลับมาจะเห็น transcript และปุ่ม Stop ถ้ายังรันอยู่
 
 ### Studio API
@@ -133,10 +143,13 @@ patch ทุกอันถูกทดลองในสำเนาแบบ h
 | `POST` | `/api/studio/chat` | เริ่มเทิร์น (202, หนึ่งต่อหนึ่งเว็บ) |
 | `POST` | `/api/studio/abort` | หยุดเทิร์น |
 | `GET` | `/api/studio/events?thread=` | SSE: ข้อความ, tool start/end, plan, bees |
+| `POST` | `/api/studio/threads/:id/mode` | สลับโหมด ask/all-in |
+| `GET` | `/api/studio/threads/:id/timings` | เวลาต่อรอบของบทสนทนา |
+| `GET` | `/api/studio/uploads/:thread/:file` | เสิร์ฟภาพที่แนบกลับให้แผง |
 | `POST` | `/api/studio/patches/:id/apply` | apply patch |
 | `POST` | `/api/studio/sites/:id/undo` | ย้อนกลับ snapshot ล่าสุด |
 
-ข้อมูลตอนรันอยู่ใน `dashboard/data/studio/` มี `threads/`, `patches/`, `snapshots/`, `shots/`, `stage/`, `skills/` และ `settings.json`
+ข้อมูลตอนรันอยู่ใน `dashboard/data/studio/` มี `threads/`, `patches/`, `snapshots/`, `shots/`, `stage/`, `uploads/` และไฟล์ `settings.json`, `vision.json`, `design.json`, `audit.jsonl`
 
 ## เพิ่มเว็บ
 
@@ -184,7 +197,7 @@ curl -X DELETE http://localhost:4445/api/sites/my-site
 curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"   # เอาแค่ entry
 ```
 
-โฟลเดอร์จะถูกลบก็ต่อเมื่อ path ที่ resolve ได้อยู่ใต้ `sites/` เท่านั้น ถ้าลบแบบ purge บทสนทนาของ Sols, patch ที่ค้าง, snapshot และ screenshot ของเว็บนั้นจะถูกลบไปด้วย ถ้าใช้ `?keep=1` ทั้งโฟลเดอร์และบทสนทนายังอยู่
+จะลบโฟลเดอร์ก็ต่อเมื่อ path ที่ได้ออกมาอยู่ใต้ `sites/` เท่านั้น ถ้าลบแบบ purge บทสนทนาของ Sols, patch ที่ค้าง, snapshot และ screenshot ของเว็บนั้นจะถูกลบไปด้วย ถ้าใช้ `?keep=1` ทั้งโฟลเดอร์และบทสนทนายังอยู่
 
 ## Dashboard API
 
@@ -233,12 +246,9 @@ node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
 
 ## ข้อมูลเว็บกับ git
 
-สองอย่างนี้ไม่ถูก commit ลง repository
+`dashboard/data/sites.json` ถูก track ไว้และเก็บแค่เว็บตัวอย่าง ตอนรันเอนจินเขียนไฟล์นี้ใหม่ เลยเห็น diff ในเครื่องได้ปกติ
 
-1. `dashboard/data/sites.json` ถูกเขียนใหม่ตอนรัน ไฟล์ที่ commit เก็บแค่เว็บตัวอย่าง
-2. เว็บส่วนตัวทุกอันใต้ `sites/` ยกเว้น `example-notes` กับ `example-clock`
-
-`.gitignore` กันไว้ทั้งสองอย่าง และ `.githooks/pre-commit` กันอีกชั้นแม้จะสั่ง force
+เว็บส่วนตัวทุกอันใต้ `sites/` ยกเว้น `example-notes` กับ `example-clock` ไม่เข้า repository และ `.githooks/pre-commit` กันไว้อีกชั้นแม้จะสั่ง force
 
 เปิด hook ครั้งเดียวต่อ clone:
 
@@ -266,30 +276,25 @@ chmod +x .githooks/pre-commit
 
 ```bash
 cd engine
-cargo test                 # 40 unit tests ไม่ต้องใช้เน็ตหรือโมเดล
+cargo test                 # 41 unit tests ไม่ต้องใช้เน็ตหรือโมเดล
 python3 ../scripts/studio-e2e.py   # 90 checks กับโมเดลจำลองที่พอร์ต 4811
 sitebox self-test          # negative control: ทุก check ต้องล้มบน fixture ที่พัง
 ```
 
-## รูปแบบความปลอดภัย
+## ความปลอดภัย
 
-แดชบอร์ดไม่มีระบบล็อกอินและไม่มีสิทธิ์แยกต่ออุปกรณ์ ใครโหลดหน้าแดชบอร์ดได้ก็สร้าง ลบ หรือออกคีย์ได้หมด นี่เป็น выборโดยตั้งใจ: ด่านจริงคือขอบเขตเครือข่าย ไม่ใช่หน้าล็อกอิน
+แดชบอร์ดไม่มีระบบล็อกอินและไม่มีสิทธิ์แยกต่ออุปกรณ์ ใครโหลดหน้าแดชบอร์ดได้ก็สร้าง ลบ หรือจัดลำดับเว็บได้หมด เราตั้งใจให้เป็นแบบนี้ ด่านจริงคือเครือข่าย ไม่ใช่หน้าล็อกอิน
 
 | ชั้น | ทำอะไร |
 |------|--------|
-| ขอบเขตเครือข่าย | `SITEBOX_BIND=127.0.0.1` ทำให้แดชบอร์ดอยู่แค่เครื่องนี้ ถ้าจะใช้จากข้างนอกให้เข้าผ่าน tailscale หรือ SSH tunnel |
-| Bearer token | ใช้กับ MCP และสคริปต์ ไม่ได้กันเบราว์เซอร์ คีย์ write อ่านได้ด้วยเพราะ write รวม read ส่วนคีย์ read ดูได้อย่างเดียว |
-| ตรวจ origin | ปฏิเสธ write ที่มาจาก origin อื่นเมื่อยืนยันตัวด้วย cookie (กัน CSRF) |
-| Audit log | `dashboard/data/audit.log` เขียนบรรทัด JSONL ต่อการเขียนหนึ่งครั้ง: เวลา ผู้กระทำ method path และ address ไม่เก็บค่าคีย์หรือ cookie หมุนที่ 1MB ห้าชุด |
-| Delete brake | ตอนลบต้องพิมพ์ id ของเว็บ กันกดพลาด ไม่ได้กันการลบจริง |
+| ขอบเขตเครือข่าย | แดชบอร์ดฟังที่ `0.0.0.0:4445` ไม่มีตัวแปรให้เปลี่ยน bind ถ้าจะให้เข้าถึงได้แค่เครื่องนี้ต้องกันที่ไฟร์วอลล์ หรือวางไว้หลัง tailscale / SSH tunnel |
+| Studio token | เฉพาะ `/api/studio/*` ที่ตรวจ `x-studio-token` (สำหรับสคริปต์) หรือ cookie `studio_sid` ที่เบราว์เซอร์ได้ตอนโหลด ส่วน API จัดการเว็บไม่มี auth |
+| Origin | CORS ตอบ origin ของผู้เรียกให้ปุ่ม Sols เท่านั้น ไม่ใช่ตัวกัน write เพราะ write ไม่ได้แนบ credential อะไรมาอยู่แล้ว |
+| Apply audit | `dashboard/data/studio/audit.jsonl` บรรทัดละครั้งต่อ patch ที่ apply หรือ undo การเขียนอื่นในแดชบอร์ดไม่ถูกบันทึก |
+| Delete brake | ตอนลบต้องพิมพ์ id ของเว็บ กันกดพลาด ไม่ได้กันสคริปต์ในเครือข่ายเดียวกัน |
 
-เรื่องที่ควรรู้:
+ผลที่ตามมา:
 
-- คีย์ write ลบเว็บได้ และออกคีย์จากมือถือได้ ถ้ามีใครอยู่ใน LAN เดียวกัน เขาก็ทำได้เท่าที่คุณทำได้ วางเครือข่ายให้เหมาะ
-- process ของเว็บผูก `127.0.0.1` เป็นค่าตั้งต้น เว้นแต่ manifest จะระบุ `host = "0.0.0.0"`
-- ถ้าเขียน audit log ไม่ได้ การลบจะถูกปฏิเสธ (503) ส่วน write อื่นยังผ่านแต่ไม่ถูกบันทึก
-- request body จำกัด 64KB เกินกว่านั้นได้ 413 เพราะทุกเว็บใช้โปรเซสเดียวกับแดชบอร์ด ถ้าไม่มีเพดาน POST ก้อนเดียวก็น็อกแดชบอร์ดและทุกเว็บได้
-
-## สัญญาอนุญาต
-
-MIT ไอคอนที่ฝังมาเป็นรูปทรง Lucide SVG (ISC License)
+- ใครอยู่ใน LAN เดียวกันทำได้เท่าที่คุณทำได้ วางเครือข่ายให้เหมาะ
+- เว็บ `serve = "node"` ผูก `127.0.0.1` แล้วออกผ่าน proxy ของเอนจิน ส่วน `static` กับ `proxy` ผูก `0.0.0.0` ตามพอร์ตใน manifest
+- request body จำกัด 4 MB ยกเว้น `/api/studio/chat` ที่ 48 MB เพื่อให้ภาพ 8 MB สี่ภาพใส่ base64 ได้ ถ้าไม่มีเพดาน POST ก้อนเดียวก็น็อกแดชบอร์ดและทุกเว็บได้

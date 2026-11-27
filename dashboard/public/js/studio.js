@@ -739,7 +739,7 @@
           row.id = id;
           $('#st-log').appendChild(row);
         }
-        const mark = ev.status === 'start' ? '◐' : ev.status === 'done' ? '●' : '✕';
+        const mark = ev.status === 'start' ? '…' : ev.status === 'done' ? '●' : 'x';
         row.textContent = `${mark} Bee ${ev.id || ''} · ${ev.title || ''}`;
         row.style.opacity = ev.status === 'start' ? '.75' : '1';
         $('#st-log').scrollTop = $('#st-log').scrollHeight;

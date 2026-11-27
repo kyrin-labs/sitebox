@@ -6,31 +6,6 @@ let activeFilter = 'all';
 let lastSig = '';
 let lastCats = '';
 
-/* ── What this browser may do ──
- * The UI is the operator's surface: the page mints a session for itself, so the
- * destructive controls are shown and the server stays the authority (a refused write
- * is a 403, not a hidden button). Start optimistic and let /api/me narrow it only when
- * the answer actually arrives — a failed status fetch must not quietly remove Add Site.
- */
-let ME = { canManage: true, canAdminTokens: true, loopback: false };
-
-async function loadMe() {
-  try {
-    const res = await fetch(`${API}/api/me`, { cache: 'no-store' });
-    if (res.ok) ME = await res.json();
-  } catch (e) {
-    // Keep the optimistic defaults: the dashboard is still usable, and every write is
-    // checked by the server anyway.
-  }
-  const add = document.getElementById('btn-add');
-  const keys = document.getElementById('btn-keys');
-  if (add) add.style.display = ME.canManage === false ? 'none' : '';
-  // Keys are dashboard business, not machine business: any device that can open the
-  // dashboard can manage them.
-  if (keys) keys.style.display = ME.canAdminTokens === false ? 'none' : '';
-}
-
-
 /* ── Icon mapping (Lucide SVGs) ── */
 const ICONS = {
   globe:    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>',
@@ -153,14 +128,10 @@ function render() {
     const openUrl = SiteUrl.displayUrl(s, window.location.hostname);
     const urlHint = SiteUrl.urlHint(s);
     // Destructive controls exist only where the server will accept them.
-    const dragHandle = ME.canManage
-      ? `<div class="site-card__drag" title="Drag to reorder"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg></div>`
-      : '';
-    const manageButtons = ME.canManage
-      ? `<button class="btn btn--ghost btn--sm" onclick="editSite('${s.id}')" title="Edit"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></button><button class="btn btn--ghost btn--sm" onclick="deleteSite('${s.id}')" title="Delete site and its files"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>`
-      : '';
+    const dragHandle = `<div class="site-card__drag" title="Drag to reorder"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg></div>`;
+    const manageButtons = `<button class="btn btn--ghost btn--sm" onclick="editSite('${s.id}')" title="Edit"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></button><button class="btn btn--ghost btn--sm" onclick="deleteSite('${s.id}')" title="Delete site and its files"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>`;
     return `
-    <div class="site-card" data-id="${s.id}" ${ME.canManage ? 'draggable="true"' : ''}>
+    <div class="site-card" data-id="${s.id}" draggable="true">
       ${dragHandle}
         <div class="site-card__header">
         <div class="site-card__icon" ${iconStyle}>${iconHtml}</div>
@@ -512,92 +483,5 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ── API keys: minted here, used by clients (MCP, scripts) ── */
-function openKeys() {
-  document.getElementById('keys-modal').style.display = 'flex';
-  document.getElementById('key-new').style.display = 'none';
-  loadKeys();
-}
-function closeKeys() { document.getElementById('keys-modal').style.display = 'none'; }
-
-async function loadKeys() {
-  const body = document.getElementById('keys-body');
-  body.innerHTML = '<tr><td colspan="5">Loading…</td></tr>';
-  try {
-    const res = await fetch(`${API}/api/tokens`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || res.status);
-    const rows = data.tokens || [];
-    body.innerHTML = rows.length
-      ? rows.map((t) => `
-      <tr>
-        <td><code>${esc(t.label)}</code></td>
-        <td>${esc(t.scope)}</td>
-        <td>${esc(String(t.created || '').slice(0, 10))}</td>
-        <td>${t.lastUsed ? esc(String(t.lastUsed).slice(0, 16).replace('T', ' ')) : '—'}</td>
-        <td><button class="btn btn--ghost btn--sm" data-revoke="${esc(t.label)}">Revoke</button></td>
-      </tr>`).join('')
-      : '<tr><td colspan="5">No keys yet — generate one for your MCP client.</td></tr>';
-  } catch (e) {
-    body.innerHTML = `<tr><td colspan="5">Cannot read keys: ${esc(String(e.message || e))}</td></tr>`;
-  }
-  loadAuditTail();
-}
-
-/* The audit log is the only record of who changed what, so it belongs next to the keys
- * that name those actors — otherwise the answer lives in a file you can only read over SSH. */
-async function loadAuditTail() {
-  const out = document.getElementById('audit-lines');
-  if (!out) return;
-  try {
-    const res = await fetch(`${API}/api/audit?lines=5`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || res.status);
-    const lines = data.lines || [];
-    out.textContent = lines.length
-      ? lines.map((l) => `${String(l.time || '').slice(0, 16).replace('T', ' ')}  ${l.status == null ? '---' : String(l.status).padEnd(3)}  ${l.actor}  ${l.method} ${l.path}`).join('\n')
-      : 'No activity recorded yet.';
-  } catch (e) {
-    out.textContent = 'Cannot read the audit log: ' + String(e.message || e);
-  }
-}
-
-async function createKey() {
-  const label = document.getElementById('key-label').value.trim();
-  const scope = document.getElementById('key-scope').value;
-  const out = document.getElementById('key-new');
-  out.style.display = 'block';
-  if (!/^[a-z0-9][a-z0-9-]{1,31}$/.test(label)) {
-    out.textContent = 'Label must be kebab-case, 2–32 characters (letters, digits, single hyphens).';
-    return;
-  }
-  const res = await fetch(`${API}/api/tokens`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, scope }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) { out.textContent = `Failed: ${data.error || res.status}`; return; }
-  out.textContent = `${data.key}\n\nCopy it now — only its hash is stored, so it cannot be shown again.`;
-  document.getElementById('key-label').value = '';
-  loadKeys();
-}
-
-async function revokeKey(label) {
-  if (!confirm(`Revoke "${label}"? Every client using that key stops working immediately. This does not log you out of the dashboard.`)) return;
-  const res = await fetch(`${API}/api/tokens/${encodeURIComponent(label)}`, { method: 'DELETE' });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) { alert(`Failed: ${data.error || res.status}`); return; }
-  loadKeys();
-}
-
-document.getElementById('btn-keys').addEventListener('click', openKeys);
-document.getElementById('keys-close').addEventListener('click', closeKeys);
-document.getElementById('keys-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeKeys(); });
-document.getElementById('key-create').addEventListener('click', createKey);
-document.getElementById('keys-body').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-revoke]');
-  if (b) revokeKey(b.getAttribute('data-revoke'));
-});
-
-/* ── Init ── */
-loadMe().then(() => loadSites());
+loadSites();
 if (!document.hidden) startPolling();

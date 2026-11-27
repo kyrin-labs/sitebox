@@ -29,7 +29,7 @@ LOG="${DEST_ROOT}/baseline.log"
 mkdir -p "${DEST_ROOT}"
 log() { printf '%s %s\n' "$(date -Is)" "$*" | tee -a "${LOG}"; }
 
-if ! curl -sf -m 5 ${AUTH[@]+"${AUTH[@]}"} "${API}/api/sites" -o /tmp/sitebox-baseline-sites.json; then
+if ! curl -sf -m 5 "${API}/api/sites" -o /tmp/sitebox-baseline-sites.json; then
   log "FAIL cannot read ${API}/api/sites (dashboard down, or the token is missing/stale)"
   exit 1
 fi

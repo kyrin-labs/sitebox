@@ -70,7 +70,10 @@ pub fn router(state: DashState) -> Router {
             get(studio_upload),
         )
         .route("/api/studio/events", get(studio_events))
-        .route("/api/studio/chat", post(studio_chat))
+        .route(
+            "/api/studio/chat",
+            post(studio_chat).layer(axum::extract::DefaultBodyLimit::max(48 * 1024 * 1024)),
+        )
         .route("/api/studio/abort", post(studio_abort))
         .route("/api/studio/sites/{id}/outline", get(studio_outline))
         .route("/api/studio/sites/{id}/history", get(studio_history))

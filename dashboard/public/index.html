@@ -28,11 +28,6 @@
           <button id="btn-refresh" class="btn btn--ghost" title="Refresh">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
           </button>
-          <!-- Icon only: the key mark is the label. aria-label keeps the name a screen
-               reader needs; the title is the hover tooltip. -->
-          <button id="btn-keys" class="btn btn--ghost" title="API keys for clients (MCP)" aria-label="API keys">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg>
-          </button>
           <button id="btn-add" class="btn btn--primary">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
             Add Site
@@ -40,38 +35,6 @@
         </div>
       </div>
     </header>
-
-    <!-- API keys: for clients (MCP, scripts). The browser does not need one. -->
-    <div class="modal-overlay" id="keys-modal" style="display:none">
-      <div class="modal modal--wide">
-        <div class="modal__header">
-          <h2>API keys</h2>
-          <button id="keys-close" class="btn btn--ghost" title="Close" aria-label="Close">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </div>
-        <div class="modal__body">
-          <p class="keys-note">Keys are for clients — MCP and scripts. This dashboard does not need one: the browser is let in by itself. A <strong>read + write</strong> key can also read: write includes read, so one key is enough for a full agent. Only a hash is stored, so a new key is shown exactly once.</p>
-          <div class="keys-form">
-            <input id="key-label" type="text" placeholder="label (e.g. mcp-laptop)" autocomplete="off" />
-            <select id="key-scope" aria-label="Key permissions">
-              <option value="write" selected>read + write</option>
-              <option value="read">read only</option>
-            </select>
-            <button id="key-create" class="btn btn--primary">Generate</button>
-          </div>
-          <pre id="key-new" class="key-reveal" style="display:none"></pre>
-          <table class="keys-table">
-            <thead><tr><th>label</th><th>scope</th><th>created</th><th>last used</th><th></th></tr></thead>
-            <tbody id="keys-body"></tbody>
-          </table>
-          <details class="audit-panel" id="audit-panel">
-            <summary>Recent activity</summary>
-            <pre id="audit-lines" class="audit-lines">Loading…</pre>
-          </details>
-        </div>
-      </div>
-    </div>
 
     <!-- Toolbar -->
     <div class="toolbar">

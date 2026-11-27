@@ -2,8 +2,8 @@
 # SiteBox — nightly backup of the two things that cannot be regenerated.
 #
 #   sites/            every site folder (426MB today; uploads and media live here)
-#   dashboard/data/   sites.json (the registry), tokens.json (who may connect),
-#                     audit.log (who did what), sessions.json
+#   dashboard/data/   sites.json (the registry) and studio/ (conversations,
+#                     patches, snapshots, uploads, shots, settings)
 #
 # `--rollback` protects the *code*. This protects the *data*: delete_site removes a
 # folder for real, and nothing else on this host can bring it back.
@@ -32,12 +32,10 @@ log() { printf '%s %s\n' "$(date -Is)" "$*" | tee -a "${LOG}"; }
 log "=== sitebox backup ${STAMP} start ==="
 
 # --- 0. refuse to snapshot a live-mutating tree without saying so ---------------
-# The dashboard writes sites.json and audit.log continuously. That is fine for a
-# file-level snapshot (each file is replaced atomically by the app), but a half-written
-# audit line is possible, so the verification below tolerates trailing garbage and
-# reports it instead of failing the run.
-if ! curl -sf -m 3 http://127.0.0.1:4445/api/health >/dev/null; then
-  log "WARN dashboard is not answering /api/health — snapshotting anyway"
+# The dashboard writes sites.json and the studio transcript continuously. That is fine
+# for a file-level snapshot: each file is replaced atomically by the app.
+if ! curl -sf -m 3 http://127.0.0.1:4445/api/sites >/dev/null; then
+  log "WARN dashboard is not answering /api/sites — snapshotting anyway"
 fi
 
 # --- 1. previous snapshot to hardlink against -----------------------------------
@@ -57,9 +55,6 @@ else
 fi
 
 # --- 3. dashboard/data ---------------------------------------------------------
-# tokens.json is hashes only, so it is safe in plaintext — and without it every client
-# that was connected stops authenticating after a restore, which reads as "the restore
-# failed". Restore this before starting the service.
 mkdir -p "${DEST}/dashboard-data"
 if cp -a "${SRC_ROOT}/dashboard/data/." "${DEST}/dashboard-data/" 2>>"${LOG}"; then
   log "data: $(ls -1 "${DEST}/dashboard-data" | wc -l) files ($(du -sh "${DEST}/dashboard-data" | cut -f1))"
@@ -97,11 +92,9 @@ if [ -f "${SITES_JSON}" ]; then
     log "FAIL sites.json in the snapshot does not parse"; ERRORS=$((ERRORS+1))
   fi
 fi
-for f in tokens.json audit.log; do
-  if [ -f "${DEST}/dashboard-data/${f}" ]; then
-    log "${f}: $(stat -c '%s bytes, mode %a' "${DEST}/dashboard-data/${f}")"
-  fi
-done
+if [ -d "${DEST}/dashboard-data/studio" ]; then
+  log "studio: $(find "${DEST}/dashboard-data/studio" -type f | wc -l) files"
+fi
 
 # --- 5. manifest + total ------------------------------------------------------
 ( cd "${DEST}" && find sites dashboard-data -type f -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256 2>/dev/null ) || true
