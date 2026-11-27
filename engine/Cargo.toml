@@ -1,6 +1,6 @@
 [package]
 name = "sitebox-rs"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "SiteBox engine — manifests, checks, static serve, supervisor, dashboard API, MCP"
 license = "MIT"
