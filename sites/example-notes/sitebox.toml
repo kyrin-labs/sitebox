@@ -1,0 +1,14 @@
+schema = 1
+
+[site]
+id = "example-notes"
+name = "Notes"
+description = "Markdown notes viewer — simple static site example"
+port = 4451
+category = "tools"
+icon = "notebook-pen"
+icon_color = "#ff0000"
+path = "sites/example-notes"
+public_dir = "public"
+serve = "static"
+created = "2026-09-21"

@@ -65,9 +65,11 @@ Anti-patterns: 5+ weights, italics you never use, a display font loaded for one 
 - Event delegation for lists instead of a listener per item.
 - Guard optional APIs (`Intl`, `IntersectionObserver`) or provide a fallback — the site may be opened in an old browser.
 
-## Server (server.js)
+## Serving
 
-The canonical template in `sitebox-create` is intentionally minimal. Two cheap wins when a site grows:
+Every static site is served by the shared engine (`sitebox serve` / `siteboxd`),
+which already sends ETag/304, gzip and `no-cache`; there is no per-site server
+to tune. Two things still matter when a site grows:
 
 - **Caching for static assets** — `Cache-Control: no-cache` plus `ETag`/304. "No-cache" does not mean
   "do not cache"; it means "revalidate first". On localhost that gives you both: an edit shows

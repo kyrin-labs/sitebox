@@ -1,0 +1,14 @@
+schema = 1
+
+[site]
+id = "example-clock"
+name = "Clock"
+description = "Live world clock — minimal static site example"
+port = 4452
+category = "widgets"
+icon = "clock"
+icon_color = "#f97316"
+path = "sites/example-clock"
+public_dir = "public"
+serve = "static"
+created = "2026-09-21"

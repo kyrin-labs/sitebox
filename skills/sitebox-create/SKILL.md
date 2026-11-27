@@ -1,10 +1,10 @@
 ---
 name: sitebox-create
-description: "Build, verify, redesign, and debug static sites for SiteBox. Use when creating a new site under sites/, scaffolding a site's server.js and public/ files, redesigning or improving an existing SiteBox site, registering a site in the dashboard, or when a SiteBox site fails to start, shows a blank page, renders half-styled, 404s, serves a stale or wrong image, has images missing on the server after a partial deploy, or needs a quality pass (performance, accessibility, copy). Covers the full loop: brief, design, build, register, start, verify, deploy, debug. Not for editing the SiteBox skills themselves (sitebox-skill-maintainer), and not for judging a design on its own (sitebox-design)."
+description: "Build, verify, redesign, and debug static sites for SiteBox. Use when creating a new site under sites/, declaring a site's sitebox.toml and public/ files, redesigning or improving an existing SiteBox site, registering a site in the dashboard, or when a SiteBox site fails to start, shows a blank page, renders half-styled, 404s, serves a stale or wrong image, has images missing on the server after a partial deploy, or needs a quality pass (performance, accessibility, copy). Covers the full loop: brief, design, build, register, start, verify, deploy, debug. Not for editing the SiteBox skills themselves (sitebox-skill-maintainer), and not for judging a design on its own (sitebox-design)."
 metadata:
   author: sitebox
-  version: "3.0.1"
-  updated: "2026-09-24"
+  version: "4.0.0"
+  updated: "2026-11-23"
 ---
 
 # Create / Redesign a Site (SiteBox)
@@ -74,72 +74,46 @@ Rules: id is kebab-case (`^[a-z0-9]+(-[a-z0-9]+)*$`), port must be unique in `si
 ### 5. Scaffold
 
 ```bash
-mkdir -p sites/<id>/public
+# Preferred: the engine writes the manifest and registers the site.
+sitebox --root ~/sitebox new <id> --name "<Name>" --port <port> --description "<one line>"
 ```
 
-Every site = `sites/<id>/server.js` + `sites/<id>/public/`.
+Every site = `sites/<id>/sitebox.toml` + `sites/<id>/public/`. There is no
+per-site server file: one engine process serves every static site.
 
-### 6. Write server.js (canonical template)
+### 6. Declare `sitebox.toml` — do not write a server
 
-Copy this exactly for multi-page sites. Single-page sites may copy the simpler `sites/example-notes/server.js` instead. Do not invent a third variant.
+The engine already owns the traversal guard, ETag/304, gzip, Range and a real
+404 for every site. The manifest states what the site is:
 
-```js
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const PORT = process.env.PORT || PORT_NUMBER;
-const PUBLIC = path.join(__dirname, 'public');
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png', '.jpg': 'image/jpeg',
-  '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-};
+```toml
+schema = 1
 
-http.createServer((req, res) => {
-  let file = req.url.split('?')[0];
-  if (file === '/') file = '/index.html';
-  const fp = path.join(PUBLIC, file);
-  if (!fp.startsWith(PUBLIC)) { res.writeHead(403); res.end('Forbidden'); return; }
-  if (fs.existsSync(fp) && fs.statSync(fp).isFile()) {
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'text/plain' });
-    fs.createReadStream(fp).pipe(res);
-  } else if (!path.extname(file)) {
-    const html = path.join(PUBLIC, file + '.html');
-    if (fs.existsSync(html)) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); fs.createReadStream(html).pipe(res); }
-    else { const idx = path.join(PUBLIC, file, 'index.html'); if (fs.existsSync(idx)) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); fs.createReadStream(idx).pipe(res); } else { res.writeHead(404); res.end('Not Found'); } }
-  } else { res.writeHead(404); res.end('Not Found'); }
-}).listen(PORT, '0.0.0.0', () => console.log(`Running at http://localhost:${PORT}`));
+[site]
+id = "<id>"
+name = "<Name>"
+description = "<real one-liner>"
+port = <port>
+category = "<category>"
+icon = "globe"
+icon_color = "#4E5C6E"
+path = "sites/<id>"
+public_dir = "public"
+serve = "static"        # "node" only for a site that owns an /api/
+created = "<YYYY-MM-DD>"
+
+[[pipeline]]
+name = "assets"
+kind = "images"
+inputs = ["assets-raw"]
+outputs = ["public/img"]
+rules = { max_edge = 1080, quality = 82, square_avatars = true }
 ```
 
-Replace `PORT_NUMBER` with the planned port. Keep `process.env.PORT` — the dashboard passes the port from `sites.json`, and a mismatch here is the most common cause of "started but port never listening".
-
-**Three additions every site eventually needs** (Relay, Folio and Nearly all converged on the same ones — add them when the site has images or passes ~100 KB, not before):
-
-```js
-const zlib = require('zlib');
-
-// 1. Serve text gzipped — a 300 KB page becomes 66 KB.
-// 2. Send no-cache + ETag so an edited asset is never served stale, while an
-//    unchanged one still answers 304 instead of re-downloading.
-// 3. Return a real 404. Never fall back to index.html for a missing asset: a
-//    silent 200 for a broken image path hides the bug until someone looks.
-const TEXT = /\.(html|css|js|json|svg)$/;
-// ... inside the handler, after you have the file:
-const body = fs.readFileSync(fp);
-const etag = '"' + require('crypto').createHash('sha1').update(body).digest('hex').slice(0, 20) + '"';
-if (req.headers['if-none-match'] === etag) { res.writeHead(304); res.end(); return; }
-const headers = { 'Content-Type': MIME[path.extname(fp)] || 'text/plain', ETag: etag, 'Cache-Control': 'no-cache' };
-if (TEXT.test(fp)) { headers['Content-Encoding'] = 'gzip'; res.writeHead(200, headers); res.end(zlib.gzipSync(body)); }
-else { res.writeHead(200, headers); fs.createReadStream(fp).pipe(res); }
-```
-
-Why `no-cache` rather than `max-age`: it does **not** mean "don't cache", it means "revalidate before
-using". On localhost that is what you want — an edit shows immediately, an unchanged file still gets
-a 304. Relay's worst debugging session was a fixed image that kept rendering cropped for an hour
-because the browser had a `max-age=3600` copy.
+`sitebox schema` prints the full JSON Schema. A site that genuinely needs a
+request API (writes, uploads) declares `serve = "node"` and keeps its own
+`server.js`; everything else stays static. Serving rules live in
+`sitebox-engine`.
 
 ### 7. Build the site
 
@@ -271,7 +245,7 @@ SiteBox is local and zero-dependency; almost every failure is one of a handful. 
 | Symptom | First thing to check |
 |---------|---------------------|
 | `start` → `ok:false, process exited (EADDRINUSE)` | Port taken. `GET /api/ports/check?port=N`, then update the site with a free port and start again |
-| `start` → `ok:false, server.js not found` | Folder moved/deleted or `path` wrong. `GET /api/sites` shows `_stale: true`; fix path or delete the entry |
+| `start` → `ok:false, site folder or manifest missing` | Folder moved/deleted or `path` wrong. `GET /api/sites` shows `_stale: true`; fix path or delete the entry |
 | `start` → `ok:true` but health offline | `PORT` env mismatch — site listens on a hardcoded different port, or `process.env.PORT` ignored |
 | Blank page after 200 | JS error or content in the wrong file; open `/` and read the response body, check `<script>` paths |
 | CSS/asset 404 | Path case sensitivity and missing files; every referenced asset must exist in `public/` |
@@ -294,7 +268,7 @@ Read `GET /api/sites/:id/logs?lines=200` before guessing. The last `[err]` line 
 
 ## Rules
 
-- Each site = its own directory: `sites/<id>/server.js` + `sites/<id>/public/`.
+- Each site = its own directory: `sites/<id>/sitebox.toml` + `sites/<id>/public/`.
 - Self-contained: no shared deps, no build step, vanilla HTML/CSS/JS — and no external runtime dependencies (no CDN scripts, no icon webfonts, no hotlinked images). Vendor everything into `public/`.
 - Every `<style>` block is syntactically valid (balanced braces) before you verify.
 - `process.env.PORT` with fallback, `0.0.0.0` binding.

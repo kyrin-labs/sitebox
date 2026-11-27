@@ -1,0 +1,3 @@
+# GitHub's language bar is part of the project's front door: the engine is the
+# product, so keep the Rust sources explicitly detectable and never vendored.
+engine/**/*.rs linguist-detectable=true linguist-vendored=false linguist-generated=false

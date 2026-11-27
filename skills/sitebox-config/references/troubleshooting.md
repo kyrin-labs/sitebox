@@ -6,15 +6,15 @@ Systematic debugging for SiteBox. Rule: read before guessing — the API returns
 
 ```
 Site won't start?
-├─ "server.js not found"        → stale path (folder moved/deleted)
-├─ "port already in use"        → orphan process or another app
-├─ "exited ... EADDRINUSE"      → same, discovered at spawn
-├─ "never listened within 6s"   → server ignores process.env.PORT
-└─ spawn error (node missing)   → environment problem
+├─ "site folder or manifest missing" → stale path (folder moved/deleted)
+├─ "port already in use"             → orphan process or another app
+├─ "exited ... EADDRINUSE"           → serve="node": its server.js lost the race
+├─ "listener never came up"          → wrong port, or public/ missing
+└─ "spawn node" error                → serve="node" but node/server.js is missing
 
 Started but health offline?
-├─ _running true, health false  → wrong port in config vs server.js, or server crashed after listen
-└─ _running false               → process died; read logs (kept after exit)
+├─ _running true, health false  → manifest port vs actual listener, or a node site crashed after listen
+└─ _running false               → process died; read logs (kept after exit and in logs/<id>.jsonl)
 
 Page loads (200) but broken?
 ├─ blank                      → JS error, wrong file, or content never written
@@ -37,9 +37,9 @@ Dashboard itself unreachable?
 
 ## Start failures
 
-### `server.js not found at sites/<id>/server.js`
+### `site folder or manifest missing`
 
-The config points at a path without a server file. Confirm:
+The entry points at a path without a site folder or `sitebox.toml`. Confirm:
 
 ```bash
 curl -s http://localhost:4445/api/sites   # look for "_stale": true
@@ -59,23 +59,24 @@ Something owns the port — often a site process started by a previous dashboard
    `POST /api/sites` with the same `id` and a new `port`, then `POST /api/sites/<id>/start`.
 4. Restarting the dashboard is safe but does not kill orphan site processes — the dashboard only tracks what it spawned this run.
 
-Do not "fix" this by hardcoding another port in `server.js`; the dashboard passes `PORT` and the config must match.
+Do not "fix" this by hardcoding another port: the manifest declares the port, and for `serve = "node"` the engine passes `PORT` to the child process.
 
-### Process alive but port never listened
+### Listener never came up
 
-The site is running but bound somewhere else. Common causes:
+A static site binds a listener in-process, so this is almost always a port
+conflict or a missing `public/` folder. For `serve = "node"` sites:
 
-- `server.js` hardcodes a port instead of `process.env.PORT || fallback`.
+- `server.js` hardcodes a port instead of reading `process.env.PORT`.
 - The site listens on a different interface or a Unix socket.
 - Startup code threw after listen (check logs).
 
-Fix `server.js` (see the canonical template in `sitebox-create`), then `restart`.
+Fix the manifest or the node server, then `restart`.
 
 ### `process exited before it started listening`
 
 Read the `logs` array in the start response, or `GET /api/sites/<id>/logs?lines=200`:
 
-- `Cannot find module './x'` → missing file in the site folder.
+- `Cannot find module './x'` → missing file in the site folder (`serve = "node"`).
 - `SyntaxError` → broken JS; run `node --check sites/<id>/server.js` locally.
 - Any stack trace → fix the top frame first; the exit code in the log line tells you success (0) vs error (non-zero).
 
@@ -83,7 +84,7 @@ Read the `logs` array in the start response, or `GET /api/sites/<id>/logs?lines=
 
 ### Health offline while `_running: true`
 
-The process exists but HTTP fails: wrong `url`/`port` in config, server crashed between polls (log will show `process exited`), or the server rejects the host header. Compare `port` in `sites.json` with the port in the startup log line ("Running at http://localhost:...").
+The process exists but HTTP fails: wrong `url`/`port` in config, server crashed between polls (log will show `process exited`), or the server rejects the host header. Compare `port` in `sitebox.toml` with the port in the startup log line ("Running at http://localhost:...").
 
 ### Blank page after HTTP 200
 
@@ -95,7 +96,7 @@ The process exists but HTTP fails: wrong `url`/`port` in config, server crashed 
 ### Styles or assets missing
 
 - Verify the file exists at the exact casing used in HTML.
-- Confirm `server.js` MIME map includes the extension; unknown types are served as `text/plain`, which browsers refuse for CSS/JS.
+- The engine maps MIME types with `mime_guess`; an unusual extension falls back to `application/octet-stream`, which browsers refuse for CSS/JS. Add it in `engine/src/serve.rs` if a real asset type is missing.
 - Hard-refresh: browsers cache aggressively on localhost too.
 
 ### Partially unstyled page (some rules work, everything after a point does not)
@@ -131,22 +132,22 @@ Google Fonts needs network. On an offline machine the site falls back. Fix by se
 
 ## Stale entries and delete surprises
 
-- `_stale: true` → path has no `server.js`. Fix path or delete.
+- `_stale: true` → the folder or its `public/` is missing. Fix the path or delete the entry.
 - `DELETE /api/sites/<id>` removes the entry **and** the folder, and it is what the trash button calls. If a site came back with a new port after you deleted it, the delete went through `?keep=1` (or predates the real-delete change) — the folder was still on disk for auto-detect to find.
 - Deleted a site but the port stays occupied → the process was stopped first, but an untracked orphan may still hold the port (see EADDRINUSE above). Delete the folder first, then `GET /api/ports/check?port=N`.
 
 ## Logs
 
 - Only processes started via the API have captured logs.
-- The buffer keeps the last 500 lines and survives process exit — that's where you see why it died.
+- The buffer keeps the last 500 lines and is also written to `logs/<id>.jsonl`, so it survives a dashboard restart — that's where you see why it died.
 - `DELETE /api/sites/<id>/logs` clears before a clean test run so old errors don't confuse the diagnosis.
 - Log lines are timestamped ISO strings with a stream tag (`out`, `err`, `sys`).
 
 ## Dashboard problems
 
-- **4445 unreachable**: is `node dashboard/server.js` running (or the container up)? Check for another process on 4445. In Docker, `network_mode: host` means ports are shared with the host.
+- **4445 unreachable**: is `siteboxd --root ~/sitebox` running (or the container up)? Check for another process on 4445. In Docker, `network_mode: host` means ports are shared with the host.
 - **Everything stopped at once — dashboard *and* every site**: the dashboard was almost certainly running as a bare `node` process and exited, taking its detached children with it. This is not a per-site failure; do not debug a site. See [Keeping it alive](../SKILL.md#keeping-it-alive--a-bare-node-process-will-die-silently).
-- **Unexpected auto-detected entries**: any folder in `sites/` with `server.js` gets picked up. If it shouldn't be a site, move it out of `sites/` or remove its `server.js`.
+- **Unexpected auto-detected entries**: any folder in `sites/` with a `sitebox.toml` (or a legacy `server.js`) gets picked up. If it shouldn't be a site, move it out of `sites/` or remove its `server.js`.
 - **Unsaved config edits**: edit through the API or dashboard; the server rewrites the JSON (atomic write via `.tmp` + rename), so hand edits made while the server runs can be overwritten.
 
 ## Docker

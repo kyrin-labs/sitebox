@@ -2,72 +2,110 @@
 
 ## Adding a New Site
 
-1. Create `sites/your-site-name/` with `server.js` + `public/` (see `sites/example-notes/` or the `sitebox-create` skill).
-2. Register it through the API — not by hand-editing the committed JSON:
+1. Scaffold it with the engine — it writes the manifest and registers the site:
 
    ```bash
-   curl -X POST http://localhost:4445/api/sites \
-     -H 'Content-Type: application/json' \
-     -d '{"id":"your-site-name","name":"Your Site","port":4500,"path":"sites/your-site-name"}'
+   sitebox --root ~/sitebox new your-site-name \
+     --name "Your Site" --port 4500 --description "One real line"
    ```
 
-3. Start and verify: `POST /api/sites/your-site-name/start` — it returns `ok:true` only when the port is confirmed listening. Follow with `GET /api/sites/your-site-name/health`.
-4. If it fails, read `GET /api/sites/your-site-name/logs` before guessing. Full playbook: `skills/sitebox-config/references/troubleshooting.md`.
-5. Quality gate before calling it done: `skills/sitebox-design/references/audit.md`, the checks in `skills/sitebox-create/references/performance.md`, and the copy passes in `skills/sitebox-design/references/writing.md`.
-6. **Prove it, don't eyeball it.** `skills/sitebox-verify/SKILL.md` — a render harness that compares every displayed value against the source, a negative control for every guard, a real-browser layout check, and a checksum-verified deploy.
-7. **If the content is real**, build the pipeline first: `skills/sitebox-data/SKILL.md`.
+   That creates `sites/your-site-name/sitebox.toml` and `public/index.html`.
+   You do **not** write a server: the engine serves every static site from one
+   process (traversal guard, ETag/304, gzip, Range, real 404). A site that owns
+   an HTTP API declares `serve = "node"` and keeps its own `server.js`.
+
+2. Build and check:
+
+   ```bash
+   sitebox --root ~/sitebox check your-site-name
+   sitebox --root ~/sitebox verify your-site-name      # starts it, runs HTTP checks, stops it
+   ```
+
+3. Start it for real through the dashboard API (`POST /api/sites/<id>/start`)
+   or the UI; `ok:true` means the port was confirmed listening.
+
+4. If it fails, `sitebox logs <id> -n 100` (persisted in `logs/<id>.jsonl`) and
+   `skills/sitebox-config/references/troubleshooting.md`.
+
+5. Quality gate: `skills/sitebox-design/references/audit.md`, the checks in
+   `skills/sitebox-create/references/performance.md`, and the copy passes in
+   `skills/sitebox-design/references/writing.md`.
+
+6. **Prove it, don't eyeball it.** `skills/sitebox-engine/SKILL.md` lists the
+   check catalog (`SB0xx` static, `SB1xx` HTTP). A site is done when `check`
+   and `verify` are green, not when it renders once.
+
+7. **If the content is real**, build the pipeline first:
+   `skills/sitebox-data/SKILL.md`.
 
 ## Conventions
 
-- Directory names: `kebab-case` (validated by the API).
-- Each site is fully self-contained; no shared dependencies between sites.
+- Directory names: `kebab-case` (validated by the engine).
+- Each site is self-contained; no shared dependencies between sites.
 - Prefer vanilla HTML/CSS/JS — no build step.
-- Use `process.env.PORT` with a fallback; the dashboard passes the port from `sites.json`.
+- The port lives in `sitebox.toml`; the engine passes `PORT` to `serve="node"`
+  children. Never hardcode a second port.
 - Ports must be unique and inside the range table in `README.md`.
 
-## Never commit `dashboard/data/sites.json`
+## Personal sites never enter git
 
-This file is runtime state. The dashboard rewrites it on add/edit/delete and
-auto-detect adds entries. The committed copy must contain **only**
-`example-notes` and `example-clock`.
+The repository ships exactly two example sites. Everything else under `sites/`
+is personal and is excluded by `.gitignore`, and the pre-commit hook blocks it
+even if someone forces an add. Do not commit a site's content, its
+`sitebox.toml`, its data, or its manifests.
 
-- Disable the change with: `git restore --staged dashboard/data/sites.json`
-- Restore the tracked baseline with: `git checkout -- dashboard/data/sites.json`
-- The `.githooks/pre-commit` hook blocks it. Enable once per clone:
+`dashboard/data/sites.json` is runtime state and is blocked separately: the
+committed copy only ever describes the two examples.
 
-  ```bash
-  git config core.hooksPath .githooks
-  chmod +x .githooks/pre-commit   # macOS / Linux
-  ```
+Enable the hooks once per clone:
 
-Details: `dashboard/data/README.md`.
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit
+```
 
-## Dashboard Changes
+## Engine changes
 
-The dashboard is at `dashboard/` — vanilla HTML/CSS/JS served by `dashboard/server.js`.
+The Rust engine lives in `engine/`:
 
-- `dashboard/public/` — frontend files
-- `dashboard/data/sites.json` — runtime site config (see the policy above)
-- `dashboard/server.js` — backend (API + static serving + process management)
+- `engine/src/serve.rs` — the shared static server
+- `engine/src/supervisor.rs` — listeners, node children, persisted logs
+- `engine/src/checks.rs` — the check catalog and negative controls
+- `engine/src/manifest.rs` — `sitebox.toml` and its JSON Schema
+- `engine/src/dashboard.rs` — the API the UI talks to
+- `engine/src/bin/` — `sitebox`, `siteboxd`, `sitebox-mcp`
 
-After changing API endpoints, icons, or ports, update the mirrored docs and run:
+```bash
+cd engine
+cargo test          # unit tests + negative controls, no network/model needed
+cargo build --release
+```
+
+`sitebox self-test` must stay green: every check needs a fixture it fails on.
+
+After changing API endpoints, icons or ports, update the mirrored docs and run:
 
 ```bash
 node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
 ```
 
+## Dashboard UI changes
+
+`dashboard/public/` is unchanged vanilla HTML/CSS/JS; it talks to the engine's
+API on port 4445. `dashboard/server.js` no longer exists — the backend is
+`siteboxd`.
+
 ## Skills
 
-Skills live in `skills/` and are project-global (they are not agent-specific config).
-Conventions and maintenance workflow: `skills/sitebox-skill-maintainer/SKILL.md`.
-
-When two recorded lessons conflict, the earlier experience wins: **Relay + Folio** first,
-then Nearly. The resolutions already made this way are listed in
-`sitebox-data` and `sitebox-design` — do not re-litigate them without changing both sides.
+Skills live in `skills/` and are project-global. Conventions and maintenance:
+`skills/sitebox-skill-maintainer/SKILL.md`.
 
 ## Running Locally
 
 ```bash
-node dashboard/server.js
+cd engine && cargo run --release --bin siteboxd -- \
+  --root .. --port 4445 --ui ../dashboard/public
 # http://localhost:4445
 ```
+
+Or with Docker: `docker compose up -d --build`.

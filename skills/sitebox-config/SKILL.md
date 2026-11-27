@@ -3,13 +3,13 @@ name: sitebox-config
 description: Manage the SiteBox lifecycle — add, update, start, stop, restart, verify, debug, and remove sites via the dashboard API. Use when registering or deleting a site, choosing or validating a port, starting a site and checking it actually listens, reading a site's logs, investigating a site that won't start or shows a blank or half-styled page, handling stale entries after moving folders, keeping the dashboard and sites alive across a reboot, or when someone asks about editing dashboard/data/sites.json (never commit it). Not for building or designing a site — that is sitebox-create, sitebox-design, sitebox-data and sitebox-verify.
 metadata:
   author: sitebox
-  version: "3.1.0"
-  updated: "2026-09-22"
+  version: "4.0.0"
+  updated: "2026-11-23"
 ---
 
 # SiteBox Config & Lifecycle
 
-One API, port 4445, zero dependencies. This skill owns everything that happens to a site after the files exist. Building the site itself is `sitebox-create`'s job (load it for quality rules and the server template); proving it works is `sitebox-verify`'s; getting the content right is `sitebox-data`'s.
+One API, port 4445. The Rust engine (`siteboxd`) owns serving and supervision; this skill owns the lifecycle contract. This skill owns everything that happens to a site after the files exist. Building the site itself is `sitebox-create`'s job (load it for quality rules and the server template); proving it works is `sitebox-verify`'s; getting the content right is `sitebox-data`'s.
 
 Base URL: `http://localhost:4445` (replace host if remote).
 
@@ -25,7 +25,7 @@ not which site broke.
 
 | Way it is running | Survives a reboot? | Verdict |
 |---|---|---|
-| `node dashboard/server.js` from a terminal, or `nohup … &` | **No** — and it dies quietly, taking every site with it | Do not use |
+| `siteboxd --root ~/sitebox` from a terminal, or `nohup … &` | **No** — and it dies quietly, taking every site with it | Do not use |
 | `docker compose up -d` | Yes — `restart: unless-stopped` is already in `docker-compose.yml` | **Preferred** |
 | A systemd unit | Yes | Fine |
 
@@ -119,10 +119,10 @@ The response is a contract, not a fire-and-forget:
 
 `ok:true` means the port was confirmed listening (checked by a real bind test, then a short settle). Failure modes, all with `hint` and recent `logs`:
 
-- **server.js not found** — folder missing/moved or `path` wrong (`_stale` on GET /api/sites).
+- **site folder or manifest missing** — folder moved/deleted or `path` wrong (`_stale` on GET /api/sites).
 - **port already in use before starting** — an orphan process from a previous dashboard run, or another app.
 - **process exited (EADDRINUSE)** — same, but discovered during startup.
-- **alive but port never listened within 6s** — usually `PORT` env ignored (hardcoded port in server.js).
+- **alive but port never listened within 6s** — the process ignored `PORT` or bound a different port than the manifest declares.
 
 Always follow a start with:
 
@@ -172,7 +172,7 @@ curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"
 ```
 
 - One `DELETE` is the real delete, and it is what the dashboard's trash button calls. A config-only
-  delete is never the default: auto-detect scans `sites/` for folders with a `server.js`, so the site
+  delete is never the default: auto-detect scans `sites/` for manifests (and legacy `server.js` folders), so the site
   would return on the next request under a fresh port and the delete would look broken.
 - The folder is removed only when the resolved path is inside `sites/`; anything else is refused with
   `400` and the entry stays. The process is stopped before the folder goes.
@@ -183,7 +183,7 @@ curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"
 `GET /api/sites` marks each entry:
 
 - `_running` — a live process tracked by the dashboard.
-- `_stale: true` — `server.js` doesn't exist at `path`. The site can't start.
+- `_stale: true` — the folder or its `public/` is missing at `path`. The site can't start.
 - `_logLines` — captured log lines available.
 
 Stale usually means a folder was moved/renamed outside the dashboard. Fix the `path` (POST), or delete the entry — an ordinary `DELETE` also removes the folder, which is the cleanup you want when the files are truly gone. The dashboard shows a "stale" badge and disables Start/Open.
@@ -253,7 +253,7 @@ accepted by `POST /api/sites`.
 
 ## Notes
 
-- New folders in `sites/` with a `server.js` are auto-detected on the next API request and get a port from 4800 upward.
+- New folders in `sites/` with a `sitebox.toml` are auto-detected on the next API request and keep the port declared in the manifest. Legacy folders with only a `server.js` are also detected and get a port from 4800 upward.
 - The `url` field stores `localhost`; the dashboard replaces the host for "Open" links.
 - Sites do **not** auto-start after a machine or Docker restart. After reboot, start them via `POST :id/start` (or the dashboard UI). The dashboard itself restarts with `restart: unless-stopped` in `docker-compose.yml` — see [Keeping it alive](#keeping-it-alive--a-bare-node-process-will-die-silently).
 - A site can be `online: true` and still be wrong. Health proves a file was served, not that it is the right file — a partial deploy serves 200 for the page and 404 for every image on it.

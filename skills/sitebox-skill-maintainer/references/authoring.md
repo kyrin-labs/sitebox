@@ -83,7 +83,7 @@ Overfitting is the common failure: a rule that only fixes the test prompt while 
 - [ ] Description includes "Use when…" triggers in English and Thai where natural.
 - [ ] SKILL.md < 500 lines; details pushed to `references/`.
 - [ ] All links/pointers resolve; cross-skill references use the skill name.
-- [ ] Every command and endpoint has been checked against `dashboard/server.js`.
+- [ ] Every command and endpoint has been checked against `engine/src/dashboard.rs`.
 - [ ] No duplicate tables; no invented behavior.
 - [ ] `node skills/sitebox-skill-maintainer/scripts/check-skills.mjs` → no errors.
 - [ ] README.md tree still accurate.
