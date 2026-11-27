@@ -517,9 +517,11 @@ body.sols-ready #btn-add:hover { background: var(--surface); }
 .st-patch__stat { font-size: 0.72rem; color: var(--text-3); }
 .st-patch__stat b { color: var(--accent2); } .st-patch__stat i { color: var(--red); font-style: normal; }
 .st-patch__reason { font-size: 0.78rem; color: var(--text-2); }
-.st-patch__chips { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.st-patch__chips { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; }
 .st-chip {
-  font-size: 0.68rem; padding: 0.12rem 0.4rem; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  max-width: 100%; font-size: 0.68rem; line-height: 1.35;
+  padding: 0.14rem 0.45rem; border-radius: 999px; white-space: normal;
   background: var(--surface2); color: var(--text-2); border: 1px solid var(--border-l);
 }
 .st-chip.is-ok { color: var(--accent2); border-color: var(--accent2); }
@@ -541,13 +543,24 @@ body.sols-ready #btn-add:hover { background: var(--surface); }
 }
 .st-compose textarea:disabled { opacity: .6; }
 .st-compose__row { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
-.st-attach { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.4rem; }
-.st-chip { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: var(--bg); }
-.st-chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.st-chip__x {
-  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%;
-  border: none; background: rgba(0,0,0,.65); color: #fff; font-size: 10px; line-height: 1; cursor: pointer;
+.st-attach { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 0.45rem; }
+.st-attach-chip {
+  position: relative; width: 56px; height: 56px; border-radius: 9px; overflow: hidden;
+  border: 1px solid var(--border); background: var(--surface2);
+  box-shadow: 0 1px 2px rgba(0,0,0,.06);
 }
+.st-attach-chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.st-attach-chip__x {
+  position: absolute; top: 4px; right: 4px; width: 17px; height: 17px; padding: 0;
+  display: flex; align-items: center; justify-content: center; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.28); background: rgba(15,17,21,.72); color: #fff;
+  cursor: pointer; opacity: 0; transition: opacity .12s ease;
+}
+.st-attach-chip:hover .st-attach-chip__x,
+.st-attach-chip__x:focus-visible { opacity: 1; }
+@media (hover: none) { .st-attach-chip__x { opacity: 1; } }
+.st-icon { display: inline-flex; align-items: center; justify-content: center; }
+.st-icon svg { display: block; }
 .st-msg__img { display: block; max-width: 100%; max-height: 220px; margin-top: 0.45rem; border-radius: 8px; border: 1px solid var(--border); }
 .st-attach-btn { font-size: 1rem; flex: 0 0 auto; }
 .st-hint { font-size: 0.7rem; color: var(--text-3); margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

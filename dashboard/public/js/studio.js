@@ -878,11 +878,11 @@
     row.hidden = state.attachments.length === 0;
     row.innerHTML = '';
     state.attachments.forEach((a, i) => {
-      const chip = el('div', 'st-chip');
+      const chip = el('div', 'st-attach-chip');
       const img = el('img');
       img.src = a.data;
       img.alt = a.name;
-      const x = el('button', 'st-chip__x');
+      const x = el('button', 'st-attach-chip__x');
       x.innerHTML = icon('x', 11);
       x.type = 'button';
       x.title = 'เอาภาพออก';
