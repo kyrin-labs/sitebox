@@ -24,7 +24,7 @@ cd engine && cargo run --release --bin siteboxd -- \
   --root .. --port 4445 --ui ../dashboard/public
 ```
 
-เว็บตัวอย่างสองตัวจะถูกเจอจาก manifest เองตอนเรียก API ครั้งแรก เปิดจากแดชบอร์ด หรือสั่งตรง ๆ ก็ได้:
+ตอนเรียก API ครั้งแรก ตัวตรวจ manifest จะเจอเว็บตัวอย่างสองตัวให้เอง เปิดจากแดชบอร์ด หรือสั่งตรง ๆ ก็ได้:
 
 ```bash
 curl -X POST http://localhost:4445/api/sites/example-notes/start
@@ -55,7 +55,7 @@ dashboard/public/     ← UI
 dashboard/data/       ← registry ตอนรัน (ไม่ commit)
 ```
 
-เว็บสแตติกเสิร์ฟในโปรเซสเดียวกัน หนึ่ง listener ต่อหนึ่งเว็บ ไม่มี Node ลูก เว็บที่ต้องการ API ประกาศ `serve = "node"` แล้ว supervisor จะ spawn ให้ ตรวจว่าพอร์ตเปิด และเก็บ log ไว้ ส่วน `serve = "proxy"` เสิร์ฟไฟล์แล้วส่ง `/api/*` ต่อไป upstream
+เว็บสแตติกเสิร์ฟจากโปรเซสเดียวกัน เว็บละ listener ไม่ต้องมี Node ลูก ส่วนเว็บที่อยากได้ API ของตัวเองให้ประกาศ `serve = "node"` supervisor จะ spawn ให้ ตรวจพอร์ตและเก็บ log ไว้ให้ ส่วน `serve = "proxy"` เสิร์ฟไฟล์แล้วส่ง `/api/*` ต่อไป upstream
 
 ## สิ่งที่ได้
 
@@ -97,29 +97,30 @@ export SOLS_WIDGET=0                          # ซ่อนปุ่มใน�
 | `sitebox_probe` | เรนเดอร์สูงสุด 6 route ที่ 500/760/1440 แล้วบอกว่ามีอะไรล้นจอ ข้อความถูกตัด หรือตัวอักษรเล็กเกิน |
 | `sitebox_shot` `sitebox_check` `sitebox_verify` | screenshot, checks แบบ static, checks แบบ HTTP |
 | `sols_create_site` `sols_rename_site` | สร้างเว็บจากบทสนทนา และเปลี่ยนชื่อทั้ง manifest กับการ์ดในแดชบอร์ด |
-| `sols_bee` | ผึ้งงานอ่านอย่างเดียว 1 ถึง 4 ตัว มี brief ของตัวเอง และ board ใช้ร่วมกัน |
+| `sols_bee` | ผึ้งงาน (bee) 1 ถึง 4 ตัว อ่านอย่างเดียว มี brief ของตัวเอง และใช้ board ร่วมกัน |
 | `sols_search` `sols_fetch` `sols_youtube` `sols_steam` `sols_asset` | ค้นเว็บ ดึงหน้าเว็บ อ่านช่อง YouTube ข้อมูลร้าน Steam และโหลดรูป |
 | `sols_skill` `sols_skills` | อ่านคู่มือของ SiteBox ตามต้องการ |
 
 ### ความปลอดภัย
 
-โมเดลเขียนไฟล์เองไม่ได้ รันคำสั่งไม่ได้ และอ่าน filesystem ตรง ๆ ไม่ได้ ทุก path ถูก resolve อยู่ในโฟลเดอร์ของเว็บเดียว
+โมเดลไม่มีสิทธิ์เขียนไฟล์ รันคำสั่ง หรืออ่าน filesystem ตรง ๆ ทางเดียวที่มันแตะไฟล์ได้คือ patch และทุก path ถูกแปลงให้อยู่ใต้โฟลเดอร์ของเว็บเดียว
 
-patch ทุกอันถูกทดลองในสำเนาแบบ hard link และรัน checks ที่นั่น เฉพาะ check ที่ patch นี้ทำให้ล้มใหม่เท่านั้นที่นับ เว็บที่แดงอยู่ก่อนแล้วจึงไม่บล็อกการแก้
+patch ทุกอันถูกทดลองในสำเนาแบบ hard link และรัน checks ที่นั่น นับเฉพาะ check ที่ patch นี้ทำให้พังเพิ่ม เว็บที่แดงอยู่ก่อนแล้วจึงไม่บล็อกการแก้
 
 ก่อน apply จะ snapshot ไว้ (เก็บ 20 ชุด) ถ้า check ใหม่ล้มก็ rollback ให้ ส่วน undo จะคืนไฟล์จาก snapshot ล่าสุด
 
 การเรียก HTTP เป็น search/fetch แบบอ่านอย่างเดียวและผ่าน SSRF guard ถ้าอยากให้เข้าถึง host ใน LAN ต้องระบุใน `SOLS_FETCH_ALLOW` ไม่มี tool ที่รัน shell
 
-bee เห็นแค่ tool ชุดอ่าน (read, grep, outline, check, http, probe, shot) และ patch, build หรือ spawn อะไรไม่ได้
+ผึ้งงานเห็นแค่ tool ชุดอ่าน (read, grep, outline, check, http, probe, shot) patch, build หรือ spawn อะไรไม่ได้
 
 ### ข้อจำกัด
 
+- หนึ่งเทิร์นคือคำขอหนึ่งครั้งจากคุณ หนึ่งรอบคือรอบของ agent loop ภายในเทิร์นนั้น
 - เทิร์นแก้ไขจะเสนอ patch ให้กด apply เอง ส่วนเทิร์นที่สร้างเว็บจะ apply ให้เมื่อผ่าน checks
 - หนึ่งเทิร์นต่อหนึ่งเว็บ คนละเว็บรันพร้อมกันได้ แต่สองบทสนทนาบนเว็บเดียวกันจะรันทีละอัน เพราะเขียนไฟล์ชุดเดียวกัน
-- 16 รอบต่อการแก้ (`max_rounds` ใน settings), 26 รอบตอนสร้างเว็บ, เพดาน 32
+- 16 รอบต่อเทิร์นการแก้ (`max_rounds` ใน settings), 26 รอบต่อเทิร์นสร้างเว็บ, เพดาน 32
 - patch ใหญ่สุด 200 KB, ไฟล์ใหญ่สุด 2 MB, 12 patch ต่อครั้ง
-- ปิดเบราว์เซอร์แล้วเทิร์นยังทำต่อ จะหยุดเมื่อกด Stop, โมเดล error หรือ engine รีสตาร์ท เปิด panel กลับมาจะเห็น transcript และปุ่ม Stop ถ้ายังรันอยู่
+- ปิดเบราว์เซอร์แล้วเทิร์นยังทำต่อ จะหยุดเมื่อกด Stop, โมเดล error หรือเอนจินรีสตาร์ท เปิด panel กลับมาจะเห็น transcript และปุ่ม Stop ถ้ายังรันอยู่
 
 ### Studio API
 
@@ -232,12 +233,14 @@ node skills/sitebox-skill-maintainer/scripts/check-skills.mjs
 
 ## ข้อมูลเว็บกับ git
 
-มีสองอย่างที่ไม่เข้า repository
+สองอย่างนี้ไม่ถูก commit ลง repository
 
 1. `dashboard/data/sites.json` ถูกเขียนใหม่ตอนรัน ไฟล์ที่ commit เก็บแค่เว็บตัวอย่าง
 2. เว็บส่วนตัวทุกอันใต้ `sites/` ยกเว้น `example-notes` กับ `example-clock`
 
-`.gitignore` กันไว้ทั้งสองอย่าง และ `.githooks/pre-commit` กันซ้ำแม้สั่ง force เปิด hook ครั้งเดียวต่อ clone:
+`.gitignore` กันไว้ทั้งสองอย่าง และ `.githooks/pre-commit` กันอีกชั้นแม้จะสั่ง force
+
+เปิด hook ครั้งเดียวต่อ clone:
 
 ```bash
 git config core.hooksPath .githooks
@@ -257,7 +260,7 @@ chmod +x .githooks/pre-commit
 
 ## ไอคอน
 
-แดชบอร์ดจะใช้ favicon ที่เว็บมีจริงก่อน (`<link rel="icon">` แล้วค่อย `favicon.svg|png|ico`) อ่านเฉพาะไฟล์ในเครื่อง ไอคอนที่ hotlink หรือเป็น `data:` จะถูกข้าม ถ้าไม่มีก็ใช้ไอคอน Lucide: `globe`, `book`, `clock`, `code`, `camera`, `gamepad`, `music`, `settings`, `notebook`, `notebook-pen`, `database`, `star` โดยมี `globe` เป็นค่าตั้งต้น
+แดชบอร์ดจะใช้ favicon ที่เว็บมีจริงก่อน (`<link rel="icon">` แล้วค่อย `favicon.svg|png|ico`) อ่านเฉพาะไฟล์ในเครื่อง ไอคอนที่ hotlink หรือเป็น `data:` จะถูกข้าม ถ้าไม่มีก็ใช้ไอคอน Lucide: `globe`, `book`, `clock`, `code`, `camera`, `gamepad`, `music`, `settings`, `notebook`, `notebook-pen`, `database`, `star` ถ้าไม่ระบุจะใช้ `globe`
 
 ## เทสต์
 
@@ -267,6 +270,25 @@ cargo test                 # 40 unit tests ไม่ต้องใช้เน�
 python3 ../scripts/studio-e2e.py   # 90 checks กับโมเดลจำลองที่พอร์ต 4811
 sitebox self-test          # negative control: ทุก check ต้องล้มบน fixture ที่พัง
 ```
+
+## รูปแบบความปลอดภัย
+
+แดชบอร์ดไม่มีระบบล็อกอินและไม่มีสิทธิ์แยกต่ออุปกรณ์ ใครโหลดหน้าแดชบอร์ดได้ก็สร้าง ลบ หรือออกคีย์ได้หมด นี่เป็น выборโดยตั้งใจ: ด่านจริงคือขอบเขตเครือข่าย ไม่ใช่หน้าล็อกอิน
+
+| ชั้น | ทำอะไร |
+|------|--------|
+| ขอบเขตเครือข่าย | `SITEBOX_BIND=127.0.0.1` ทำให้แดชบอร์ดอยู่แค่เครื่องนี้ ถ้าจะใช้จากข้างนอกให้เข้าผ่าน tailscale หรือ SSH tunnel |
+| Bearer token | ใช้กับ MCP และสคริปต์ ไม่ได้กันเบราว์เซอร์ คีย์ write อ่านได้ด้วยเพราะ write รวม read ส่วนคีย์ read ดูได้อย่างเดียว |
+| ตรวจ origin | ปฏิเสธ write ที่มาจาก origin อื่นเมื่อยืนยันตัวด้วย cookie (กัน CSRF) |
+| Audit log | `dashboard/data/audit.log` เขียนบรรทัด JSONL ต่อการเขียนหนึ่งครั้ง: เวลา ผู้กระทำ method path และ address ไม่เก็บค่าคีย์หรือ cookie หมุนที่ 1MB ห้าชุด |
+| Delete brake | ตอนลบต้องพิมพ์ id ของเว็บ กันกดพลาด ไม่ได้กันการลบจริง |
+
+เรื่องที่ควรรู้:
+
+- คีย์ write ลบเว็บได้ และออกคีย์จากมือถือได้ ถ้ามีใครอยู่ใน LAN เดียวกัน เขาก็ทำได้เท่าที่คุณทำได้ วางเครือข่ายให้เหมาะ
+- process ของเว็บผูก `127.0.0.1` เป็นค่าตั้งต้น เว้นแต่ manifest จะระบุ `host = "0.0.0.0"`
+- ถ้าเขียน audit log ไม่ได้ การลบจะถูกปฏิเสธ (503) ส่วน write อื่นยังผ่านแต่ไม่ถูกบันทึก
+- request body จำกัด 64KB เกินกว่านั้นได้ 413 เพราะทุกเว็บใช้โปรเซสเดียวกับแดชบอร์ด ถ้าไม่มีเพดาน POST ก้อนเดียวก็น็อกแดชบอร์ดและทุกเว็บได้
 
 ## สัญญาอนุญาต
 
