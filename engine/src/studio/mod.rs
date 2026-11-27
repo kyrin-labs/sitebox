@@ -10,7 +10,9 @@
 //!    tool that accepts a root-relative or absolute path.
 
 pub mod agent;
+pub mod b64;
 pub mod turn;
+pub mod vision;
 pub mod apply;
 pub mod bee;
 pub mod config;
@@ -265,7 +267,7 @@ pub fn site_path(site_dir: &Path, rel: &str) -> Result<PathBuf> {
 // ── turn ─────────────────────────────────────────────────────────────────────
 
 /// Run one assistant turn: model → tools → model, until it stops calling tools.
-pub async fn run_turn(st: StudioState, thread_id: String, user_msg: String) {
+pub async fn run_turn(st: StudioState, thread_id: String, user_msg: String, images: Vec<String>) {
     let thread = match store::get(&st, &thread_id) {
         Ok(t) => t,
         Err(e) => {
@@ -282,7 +284,7 @@ pub async fn run_turn(st: StudioState, thread_id: String, user_msg: String) {
     // before the cleanup below: the busy key and the turn handle stayed set, so
     // the panel showed a running turn with a Stop button that could never
     // finish. Catch it, say so, and clean up anyway.
-    let outcome = std::panic::AssertUnwindSafe(run_turn_inner(&st, &thread_id, &user_msg))
+    let outcome = std::panic::AssertUnwindSafe(run_turn_inner(&st, &thread_id, &user_msg, images.clone()))
         .catch_unwind()
         .await;
     match outcome {
@@ -426,6 +428,7 @@ impl agent::Host for SolsHost<'_> {
                 tool_call_id: Some(call_id.to_string()),
                 name: Some(name.to_string()),
                 ts: util::now_iso(),
+                images: None,
             },
         )?;
         Ok(value)
@@ -446,6 +449,7 @@ impl agent::Host for SolsHost<'_> {
                 tool_call_id: None,
                 name: None,
                 ts: util::now_iso(),
+                images: None,
             },
         )
     }
@@ -487,7 +491,12 @@ impl agent::Host for SolsHost<'_> {
     }
 }
 
-async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Result<()> {
+async fn run_turn_inner(
+    st: &StudioState,
+    thread_id: &str,
+    user_msg: &str,
+    images: Vec<String>,
+) -> Result<()> {
     // A turn that starts with no site is the one that creates it; its patches
     // are applied as they pass the checks. Later turns go through review. The
     // flag is per turn, so a request that arrives mid-cleanup cannot inherit it.
@@ -500,7 +509,11 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
         r.retain(|k, _| !k.starts_with(&prefix));
     }
     st.board.lock().await.remove(thread_id);
-    store::append_msg(st, thread_id, &store::Message::new("user", user_msg))?;
+    let mut user = store::Message::new("user", user_msg);
+    if !images.is_empty() {
+        user.images = Some(images.clone());
+    }
+    store::append_msg(st, thread_id, &user)?;
     if store::get(st, thread_id)?.title.is_empty() {
         store::set_title(st, thread_id, user_msg)?;
     }
@@ -652,6 +665,24 @@ fn build_messages(st: &StudioState, thread_id: &str, site: Option<&SiteRef>) -> 
     let start = hist.len().saturating_sub(24);
     for m in &hist[start..] {
         let mut obj = json!({"role": m.role, "content": clip(&m.content, 4000)});
+        if m.role == "user" {
+            let imgs = m.images.clone().unwrap_or_default();
+            let mut parts: Vec<Value> = Vec::new();
+            for rel in imgs.iter().take(4) {
+                let p = st.data.join(rel);
+                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if std::fs::metadata(&p).map(|m| m.len() <= 4 * 1024 * 1024).unwrap_or(false) {
+                    if let Some(url) = vision::data_url_of(&p, ext) {
+                        parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                    }
+                }
+            }
+            if !parts.is_empty() {
+                let mut all = vec![json!({"type": "text", "text": clip(&m.content, 4000)})];
+                all.extend(parts);
+                obj["content"] = json!(all);
+            }
+        }
         if let Some(calls) = &m.tool_calls {
             obj["tool_calls"] = json!(calls);
             if obj["content"].as_str().unwrap_or("").is_empty() {

@@ -20,6 +20,7 @@
     running: new Set(),
     creating: false,
     sending: false,
+    attachments: [],
     es: null,
     watch: null,
     prepTimer: null,
@@ -28,6 +29,21 @@
   };
 
   const $ = (sel, root) => (root || document).querySelector(sel);
+
+  const ICONS = {
+    'maximize-2': '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>',
+    'minimize-2': '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>',
+    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    'rotate-ccw': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+    settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    paperclip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  };
+
+  function icon(name, size) {
+    const body = ICONS[name] || '';
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size || 16}" height="${size || 16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  }
 
   function el(tag, cls, text) {
     const n = document.createElement(tag);
@@ -157,11 +173,11 @@
           <span class="st-status" id="st-status">…</span>
         </div>
         <div class="st-head__actions">
-          <button class="st-icon" id="st-expand" title="Expand">⤢</button>
-          <button class="st-icon" id="st-new" title="New conversation">＋</button>
-          <button class="st-icon" id="st-undo" title="Restore the last snapshot">↶</button>
-          <button class="st-icon" id="st-settings" title="Settings">⚙</button>
-          <button class="st-icon" id="st-close" title="Close">✕</button>
+          <button class="st-icon" id="st-expand" title="Expand">${icon('maximize-2')}</button>
+          <button class="st-icon" id="st-new" title="New conversation">${icon('plus')}</button>
+          <button class="st-icon" id="st-undo" title="Restore the last snapshot">${icon('rotate-ccw')}</button>
+          <button class="st-icon" id="st-settings" title="Settings">${icon('settings')}</button>
+          <button class="st-icon" id="st-close" title="Close">${icon('x')}</button>
         </div>
       </header>
       <div class="st-bar">
@@ -175,8 +191,11 @@
       <div class="st-plan" id="st-plan" hidden></div>
       <div class="st-log" id="st-log"></div>
       <form class="st-compose" id="st-form">
-        <textarea id="st-input" rows="2" placeholder="บอกว่าจะแก้ตรงไหน…"></textarea>
+        <div class="st-attach" id="st-attach-row" hidden></div>
+        <textarea id="st-input" rows="2" placeholder="บอกว่าจะแก้ตรงไหน… แนบภาพ หรือวางภาพจาก clipboard ได้"></textarea>
         <div class="st-compose__row">
+          <button type="button" class="st-icon st-attach-btn" id="st-pick" title="แนบภาพ">${icon('paperclip')}</button>
+          <input type="file" id="st-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
           <span class="st-hint" id="st-hint"></span>
           <button type="button" class="st-btn st-btn--ghost" id="st-abort" hidden>Stop</button>
           <button type="submit" class="st-btn st-btn--primary" id="st-send">Send</button>
@@ -210,11 +229,23 @@
     });
     $('#st-thread').addEventListener('change', (e) => selectThread(e.target.value));
     $('#st-new').addEventListener('click', () => newThread());
+    $('#st-pick').addEventListener('click', () => $('#st-file').click());
+    $('#st-file').addEventListener('change', (e) => {
+      [...(e.target.files || [])].forEach(addAttachment);
+      e.target.value = '';
+    });
+    $('#st-input').addEventListener('paste', (e) => {
+      const items = [...((e.clipboardData && e.clipboardData.items) || [])];
+      const imgs = items.filter((it) => it.kind === 'file' && it.type.startsWith('image/'));
+      if (!imgs.length) return;
+      e.preventDefault();
+      imgs.forEach((it) => { const f = it.getAsFile(); if (f) addAttachment(f); });
+    });
     $('#st-expand').addEventListener('click', () => {
       const p = $('#studio-panel');
       const wide = p.classList.toggle('is-wide');
       $('#st-expand').setAttribute('aria-pressed', wide ? 'true' : 'false');
-      $('#st-expand').textContent = wide ? '⤡' : '⤢';
+      $('#st-expand').innerHTML = icon(wide ? 'minimize-2' : 'maximize-2');
       $('#st-expand').title = wide ? 'Collapse' : 'Expand';
       // In embed mode the iframe is only as wide as the drawer. The host page
       // has to grow it; the class above then lays out the two columns.
@@ -507,14 +538,23 @@
   /* ── rendering ─────────────────────────────────────────────────────────── */
 
   function renderStored(m) {
-    if (m.role === 'user') addMsg('user', m.content);
+    if (m.role === 'user') {
+      const imgs = (m.images || []).map((rel) => '/api/studio/uploads/' + String(rel).replace(/^uploads\//, ''));
+      addMsg('user', m.content, imgs);
+    }
     else if (m.role === 'assistant' && m.content) addMsg('assistant', m.content);
     else if (m.role === 'tool') addToolLine(m.name || 'tool', m.content, true);
   }
 
-  function addMsg(role, text) {
+  function addMsg(role, text, images) {
     const n = el('div', `st-msg st-msg--${role}`);
     n.innerHTML = md(text);
+    (images || []).forEach((src) => {
+      const img = el('img', 'st-msg__img');
+      img.src = src;
+      img.alt = 'attachment';
+      n.appendChild(img);
+    });
     $('#st-log').appendChild(n);
     scroll();
     return n;
@@ -820,9 +860,46 @@
     });
   }
 
+  function addAttachment(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    if (state.attachments.length >= 4) { toast('แนบได้สูงสุด 4 ภาพ'); return; }
+    if (file.size > 8 * 1024 * 1024) { toast('ภาพใหญ่เกิน 8 MB'); return; }
+    const r = new FileReader();
+    r.onload = () => {
+      state.attachments.push({ data: String(r.result), name: file.name || 'paste.png' });
+      paintAttachments();
+    };
+    r.readAsDataURL(file);
+  }
+
+  function paintAttachments() {
+    const row = $('#st-attach-row');
+    if (!row) return;
+    row.hidden = state.attachments.length === 0;
+    row.innerHTML = '';
+    state.attachments.forEach((a, i) => {
+      const chip = el('div', 'st-chip');
+      const img = el('img');
+      img.src = a.data;
+      img.alt = a.name;
+      const x = el('button', 'st-chip__x');
+      x.innerHTML = icon('x', 11);
+      x.type = 'button';
+      x.title = 'เอาภาพออก';
+      x.addEventListener('click', () => {
+        state.attachments.splice(i, 1);
+        paintAttachments();
+      });
+      chip.appendChild(img);
+      chip.appendChild(x);
+      row.appendChild(chip);
+    });
+  }
+
   async function send() {
     const input = $('#st-input');
-    const message = input.value.trim();
+    let message = input.value.trim();
+    if (!message && state.attachments.length) message = 'ดูภาพที่แนบมาแล้วทำตามบริบทของภาพ';
     if (!message || state.running.has(state.thread)) return;
     // Lock before the first await: two entry points (Enter, submit) must not
     // both get past the guard while a new thread is being created.
@@ -837,13 +914,15 @@
         tid = state.thread;
         if (!tid) throw new Error('could not create a conversation');
       }
-      addMsg('user', message);
+      const atts = state.attachments.map((a) => a.data);
+      addMsg('user', message, atts);
       markRunning(tid, true);
       await api('/api/studio/chat', {
         method: 'POST',
         body: JSON.stringify({
           thread_id: tid,
           message,
+          images: atts,
           // A nonce makes a double submit a no-op on the server instead of a
           // second turn. Cheap insurance against a browser that fires both
           // Enter and submit for one keystroke.
@@ -853,6 +932,8 @@
           page: state.page || undefined,
         }),
       });
+      state.attachments = [];
+      paintAttachments();
     } catch (e) {
       const busy = /already running/i.test(e.message || '');
       addMsg('error', busy

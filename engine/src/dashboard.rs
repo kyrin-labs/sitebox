@@ -65,6 +65,10 @@ pub fn router(state: DashState) -> Router {
             "/api/studio/threads/{id}/timings",
             get(studio_thread_timings),
         )
+        .route(
+            "/api/studio/uploads/{thread}/{file}",
+            get(studio_upload),
+        )
         .route("/api/studio/events", get(studio_events))
         .route("/api/studio/chat", post(studio_chat))
         .route("/api/studio/abort", post(studio_abort))
@@ -885,6 +889,33 @@ async fn studio_events(
         .into_response()
 }
 
+async fn studio_upload(
+    State(st): State<DashState>,
+    Path((thread, file)): Path<(String, String)>,
+) -> Response {
+    let clean = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 120
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !clean(&thread) || !clean(&file) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "bad path"}))).into_response();
+    }
+    let p = st.studio.data.join("uploads").join(&thread).join(&file);
+    let Ok(bytes) = tokio::fs::read(&p).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "no such upload"}))).into_response();
+    };
+    let mime = match file.rsplit('.').next().unwrap_or("") {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream",
+    };
+    ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response()
+}
+
 async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Response {
     let thread_id = body.get("thread_id").and_then(|v| v.as_str()).unwrap_or("");
     let message = body
@@ -906,6 +937,107 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
         )
             .into_response();
     }
+    // Images first: refuse an attachment the model cannot read before any
+    // thread state, lock or nonce is touched.
+    let mut saved: Vec<String> = Vec::new();
+    let raw_images = body
+        .get("images")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if !raw_images.is_empty() {
+        if raw_images.len() > 4 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "at most 4 images per message"})),
+            )
+                .into_response();
+        }
+        let settings = studio::config::Settings::load(&st.root);
+        if !settings.configured() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "the agent is not configured"})),
+            )
+                .into_response();
+        }
+        match studio::vision::supported(&st.studio, &settings).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!(
+                            "โมเดล `{}` อ่านภาพไม่ได้ — ลบภาพแล้วส่งเป็นข้อความ หรือเปลี่ยนไปใช้โมเดลที่รองรับ vision",
+                            settings.model
+                        ),
+                        "code": "vision_unsupported",
+                        "model": settings.model,
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": format!("ตรวจสอบว่าโมเดลอ่านภาพได้หรือไม่ ไม่สำเร็จ: {e:#}"),
+                        "code": "vision_unknown",
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        for (i, v) in raw_images.iter().enumerate() {
+            let Some(raw) = v.as_str() else { continue };
+            let Some((bytes, ext)) = studio::vision::data_url(raw) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "image must be a png, jpeg, webp or gif data URL"})),
+                )
+                    .into_response();
+            };
+            if bytes.len() > 8 * 1024 * 1024 {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "each image must be at most 8 MB"})),
+                )
+                    .into_response();
+            }
+            let ok_magic = match ext {
+                "png" => bytes.starts_with(b"\x89PNG"),
+                "jpg" => bytes.starts_with(b"\xff\xd8"),
+                "webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+                "gif" => bytes.starts_with(b"GIF8"),
+                _ => false,
+            };
+            if !ok_magic {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "the file does not look like an image"})),
+                )
+                    .into_response();
+            }
+            let dir = st.studio.data.join("uploads").join(thread_id);
+            if tokio::fs::create_dir_all(&dir).await.is_err() {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "could not store the image"})),
+                )
+                    .into_response();
+            }
+            let name = format!("{}-{i}.{ext}", studio::new_id("img"));
+            if tokio::fs::write(dir.join(&name), &bytes).await.is_err() {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "could not store the image"})),
+                )
+                    .into_response();
+            }
+            saved.push(format!("uploads/{thread_id}/{name}"));
+        }
+    }
+
     let thread = match studio::store::get(&st.studio, thread_id) {
         Ok(t) => t,
         Err(_) => {
@@ -986,8 +1118,9 @@ async fn studio_chat(State(st): State<DashState>, Json(body): Json<Value>) -> Re
     let stc = st.studio.clone();
     let tid = thread_id.to_string();
     let msg = message.to_string();
+    let imgs = saved.clone();
     let handle = tokio::spawn(async move {
-        studio::run_turn(stc, tid, msg).await;
+        studio::run_turn(stc, tid, msg, imgs).await;
     });
     st.studio
         .turns

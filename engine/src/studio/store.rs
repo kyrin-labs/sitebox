@@ -63,6 +63,9 @@ pub struct Message {
     pub name: Option<String>,
     #[serde(default)]
     pub ts: String,
+    /// Paths under the studio data dir, e.g. `uploads/th-.../x.png`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 impl Message {
@@ -74,6 +77,7 @@ impl Message {
             tool_call_id: None,
             name: None,
             ts: util::now_iso(),
+            images: None,
         }
     }
 }
@@ -207,6 +211,7 @@ pub fn set_plan(st: &StudioState, id: &str, steps: Vec<PlanStep>) -> Result<()> 
 pub fn purge_site(st: &StudioState, site: &str) -> Result<()> {
     for t in list(st, Some(site)) {
         let _ = std::fs::remove_dir_all(st.data.join("threads").join(&t.id));
+        let _ = std::fs::remove_dir_all(st.data.join("uploads").join(&t.id));
     }
     if let Ok(rd) = std::fs::read_dir(st.data.join("patches")) {
         for e in rd.flatten() {
