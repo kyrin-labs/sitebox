@@ -524,7 +524,7 @@ async fn run_turn_inner(st: &StudioState, thread_id: &str, user_msg: &str) -> Re
         .count() as u64;
 
     let site = current_site(st, thread_id)?;
-    let mut messages = build_messages(st, thread_id, site.as_ref())?;
+    let messages = build_messages(st, thread_id, site.as_ref())?;
     let mut host = SolsHost {
         st,
         thread_id,

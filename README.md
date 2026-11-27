@@ -41,6 +41,8 @@ engine/               ← one process owns serving, supervision and checks
 ├── src/pipeline.rs   ← ordered steps, fingerprints, scaffold
 ├── src/deploy.rs     ← mirror + sha256 verification
 ├── src/dashboard.rs  ← the API the UI talks to
+├── src/studio/       ← Sols: agent loop, tools, patches, snapshot, bees, skills
+├── assets/sols-widget.js ← launcher injected into every served page
 └── src/bin/          ← sitebox (CLI), siteboxd (dashboard), sitebox-mcp (MCP)
 
 dashboard/public/     ← the unchanged dashboard UI
@@ -70,9 +72,91 @@ upstream.
 - **Deploy as a mirror** — copy, delete extraneous files, then compare sha256
 - **MCP server** — 15 typed tools for agents (`sitebox_list`, `check`, `verify`,
   `build`, `up`, …)
+- **Sols, the editing agent** — a docked panel in the dashboard and in every
+  site page that proposes anchored patches, stages them in a copy, runs the
+  checks, applies with a snapshot and undoes. Bundled SiteBox skills, read-only
+  Bee workers, web search/fetch, screenshots and site creation from a
+  conversation.
 - **Auto-detect** — drop a folder with a `sitebox.toml` (or legacy `server.js`)
   into `sites/`
 - Light/dark theme, custom icon colours, auto-detected favicons, search/filter
+
+## Sols — the editing agent
+
+Sols turns the dashboard into an editor for the sites it serves. Open the panel
+from a site card (dashboard) or from the **Sols** launcher on any site page.
+Ask in plain language; the agent reads the site's skills, plans visibly, edits
+through patches and proves the result with checks and screenshots.
+
+### Enabling it
+
+```bash
+export STUDIO_TOKEN=$(openssl rand -hex 16)   # the panel asks once per browser
+export CHROME=/path/to/chrome                # optional: screenshots and probes
+export SEARXNG_URL=http://127.0.0.1:8888     # optional: web search
+export SOLS_FETCH_ALLOW=127.0.0.1:4610       # optional: fetch a LAN host
+export SOLS_WIDGET=0                          # optional: hide the site launcher
+```
+
+The model endpoint, model name and API key live in **Studio settings** in the
+panel. The key is write-only from the browser: the API reports `has_key`, never
+the value, and the file is written `0600`.
+
+### What it can do
+
+| Tool | Purpose |
+|------|---------|
+| `sitebox_propose_patch` | Exact-substring edit (or `create`) with `count`; staged, checked, queued or applied |
+| `sitebox_new_page` | New page from the site's shell + sections |
+| `sitebox_probe` | Render up to 6 routes at 500/760/1440 and report overflow/clipped/small text |
+| `sitebox_shot` · `sitebox_check` · `sitebox_verify` | Screenshot, static checks, HTTP checks |
+| `sols_create_site` · `sols_rename_site` | Create a site from the conversation; rename manifest + dashboard card |
+| `sols_bee` | 1–4 read-only workers with their own briefs and a shared board |
+| `sols_search` · `sols_fetch` · `sols_youtube` · `sols_steam` · `sols_asset` | Real data and images |
+| `sols_skill` · `sols_skills` · `sols_playbook` | Bundled SiteBox doctrine, read on demand |
+
+### Safety invariants
+
+- The model cannot write files, run commands or read the filesystem directly.
+  A patch is an anchored `old`/`new` pair (or a create) with an expected
+  occurrence count; every path resolves inside one site folder.
+- Every patch is staged in a hard-linked copy and the static checks run there.
+  Only checks that *the patch introduced* count, so a site that was already red
+  does not block edits.
+- Apply snapshots first (content-addressed, 20 kept) and rolls back when a new
+  check fails. Undo restores the last snapshot.
+- HTTP is read-only search/fetch behind an SSRF guard; `SOLS_FETCH_ALLOW` opens
+  named hosts. There is no shell tool.
+- A bee sees a leaf toolbox (read/grep/outline/check/http/probe/shot) and cannot
+  patch, build or spawn.
+
+### Turn model and limits
+
+- Editing turns **propose** patches for the operator to apply. A turn that
+  creates a site applies its own patches as they pass.
+- One turn per **site**; different sites run in parallel. Conversations on the
+  same site serialize because they write the same files.
+- 16 rounds per edit (`max_rounds` in settings), 26 while creating, capped at 32.
+- Patch payload 200 KB, file ceiling 2 MB, 12 patches per call.
+- A turn keeps working when the browser closes; it stops only on Stop, a model
+  error or an engine restart. Reopening the panel shows the transcript (and the
+  Stop button if the turn is still running).
+
+### Studio API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/studio/status` | Public probe: model, sites, search, browser |
+| `GET`/`PUT` | `/api/studio/config` | Settings (`has_key`, never the key) |
+| `GET`/`POST` | `/api/studio/threads` | List / create conversations (`?site=`) |
+| `GET` | `/api/studio/threads/:id/messages` | Transcript + `running` |
+| `POST` | `/api/studio/chat` | Start a turn (202; one per site) |
+| `POST` | `/api/studio/abort` | Stop the turn |
+| `GET` | `/api/studio/events?thread=` | SSE: text deltas, tool start/end, plans, bees |
+| `POST` | `/api/studio/patches/:id/apply` · `/api/studio/sites/:id/undo` | Apply / restore |
+
+Runtime state lives in `dashboard/data/studio/`: `threads/`, `patches/`,
+`snapshots/`, `shots/`, `stage/`, `skills/` and `settings.json`.
 
 ## Adding a site
 
@@ -126,7 +210,9 @@ curl -X DELETE http://localhost:4445/api/sites/my-site
 curl -X DELETE "http://localhost:4445/api/sites/my-site?keep=1"   # entry only
 ```
 
-The folder is only removed when the resolved path is inside `sites/`.
+The folder is only removed when the resolved path is inside `sites/`. A purge
+also removes that site's Sols conversations, queued patches, snapshots and
+screenshots; `?keep=1` keeps the folder and its conversations.
 
 ## Dashboard API
 
@@ -171,6 +257,7 @@ operational failure, `2` checks failed.
 | `sitebox-data` | Real, traceable, refreshable content: provenance, coverage, fixtures |
 | `sitebox-verify` | Browser layout proof, negative controls, deploy mirror |
 | `sitebox-config` | Lifecycle API, ports, logs, troubleshooting, git policy |
+| `sitebox-playbook` | Operator taste and the defects that keep coming back (read first on a new site) |
 | `sitebox-skill-maintainer` | Meta: conventions and the drift checker |
 
 ```bash
@@ -218,7 +305,8 @@ ignored. Otherwise it renders a Lucide icon — `globe`, `book`, `clock`, `code`
 
 ```bash
 cd engine
-cargo test                 # 13 tests, no network or model required
+cargo test                 # 40 unit tests, no network or model required
+python3 ../scripts/studio-e2e.py   # 90 checks against a mock model (port 4811)
 sitebox self-test          # negative controls: every check fails on a broken fixture
 ```
 

@@ -8,23 +8,6 @@
 use anyhow::{bail, Context, Result};
 
 /// One complete line from a raw byte buffer, decoded only at a line boundary.
-#[cfg(test)]
-mod tests {
-    use super::take_line;
-
-    #[test]
-    fn a_character_split_across_chunks_survives() {
-        // "ก" is E0 B8 81; the transport can end a chunk between any two bytes.
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"data: {\"text\":\"\xe0");
-        assert_eq!(take_line(&mut buf), None);
-        buf.extend_from_slice(b"\xb8\x81\"}\n");
-        let line = take_line(&mut buf).unwrap();
-        assert!(line.contains('ก'), "line was {line:?}");
-        assert!(!line.contains('\u{FFFD}'));
-    }
-}
-
 fn take_line(buf: &mut Vec<u8>) -> Option<String> {
     let nl = buf.iter().position(|b| *b == b'\n')?;
     let line = String::from_utf8_lossy(&buf[..nl])
@@ -121,11 +104,10 @@ pub async fn stream_chat(
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read model stream")?;
         buf.extend_from_slice(&bytes);
-        loop {
-            // Only decode a complete line. A newline is one byte and never
-            // appears inside a multi-byte character, so a line boundary is
-            // always a character boundary.
-            let Some(line) = take_line(&mut buf) else { break };
+        // Only decode a complete line. A newline is one byte and never
+        // appears inside a multi-byte character, so a line boundary is
+        // always a character boundary.
+        while let Some(line) = take_line(&mut buf) {
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -277,4 +259,21 @@ pub async fn stream_chat(
 
 fn messages_len(messages: &[Value]) -> u64 {
     messages.iter().map(|m| m.to_string().len() as u64).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_line;
+
+    #[test]
+    fn a_character_split_across_chunks_survives() {
+        // "ก" is E0 B8 81; the transport can end a chunk between any two bytes.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"data: {\"text\":\"\xe0");
+        assert_eq!(take_line(&mut buf), None);
+        buf.extend_from_slice(b"\xb8\x81\"}\n");
+        let line = take_line(&mut buf).unwrap();
+        assert!(line.contains('ก'), "line was {line:?}");
+        assert!(!line.contains('\u{FFFD}'));
+    }
 }

@@ -44,6 +44,7 @@ pub struct StartResult {
 
 enum Kind {
     Task(JoinHandle<()>),
+    #[allow(dead_code)] // kept for legacy sites spawned as a bare child
     Child(tokio::process::Child),
     /// A node site: the process on a private port, the proxy on the public one.
     Node(tokio::process::Child, JoinHandle<()>),
@@ -73,8 +74,8 @@ impl Supervisor {
         }
     }
 
-    pub fn is_running<'a>(&'a self, id: &'a str) -> impl std::future::Future<Output = bool> + 'a {
-        async move {
+    pub async fn is_running(&self, id: &str) -> bool {
+        {
             let map = self.inner.lock().await;
             map.get(id)
                 .map(|r| match &r.kind {

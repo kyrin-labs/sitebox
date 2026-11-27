@@ -36,16 +36,15 @@ fn one() -> usize {
 fn check_replacement_chars(spec: &PatchSpec) -> Result<()> {
     // `old` may legitimately quote existing damage so it can be removed; only
     // the replacement text must be clean.
-    for (field, text) in [("new", &spec.new)] {
-        if let Some(i) = text.find('\u{FFFD}') {
-            let from = i.saturating_sub(30);
-            let to = (i + 30).min(text.len());
-            let around = &text[from..to];
-            bail!(
-                "`{field}` contains U+FFFD (encoding damage) near: {around:?}. \
-                 Re-send that sentence with valid UTF-8; nothing was written."
-            );
-        }
+    let text = &spec.new;
+    if let Some(i) = text.find('\u{FFFD}') {
+        let from = i.saturating_sub(30);
+        let to = (i + 30).min(text.len());
+        let around = &text[from..to];
+        bail!(
+            "`new` contains U+FFFD (encoding damage) near: {around:?}. \
+             Re-send that sentence with valid UTF-8; nothing was written."
+        );
     }
     Ok(())
 }
@@ -227,7 +226,7 @@ pub fn nearest_lines(haystack: &str, needle: &str, n: usize) -> Vec<String> {
     scored
         .into_iter()
         .take(n)
-        .map(|(hits, i, line)| format!("{}: {}", i + 1, line.trim()))
+        .map(|(_, i, line)| format!("{}: {}", i + 1, line.trim()))
         .collect()
 }
 

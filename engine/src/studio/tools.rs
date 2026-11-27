@@ -679,8 +679,6 @@ fn tool_plan(st: &StudioState, thread_id: &str, args: &Value) -> Result<Value> {
     Ok(json!({"ok": true, "steps": steps}))
 }
 
-/// Tools that work before a site exists.
-
 /// Capability that does not need a site folder: doctrine, design memory,
 /// search, real-data readers, the board and bees. Both the unbound turn and the
 /// site-bound turn cross this seam, so a tool can no longer exist in one
@@ -772,131 +770,9 @@ pub async fn execute_unbound(
     )
 }
 
-/// Web search through the operator's SearXNG. Configured with `SEARXNG_URL`
-/// (environment first, then `.env` at the data root).
 
-/// Bring one photo into the site while it is being created. A clone without
-/// photography is a wireframe, and the check catalog forbids hotlinking, so the
-/// agent needs a way to own the bytes it references.
 
-/// Extract the JSON object that follows `marker` in a page, matching braces.
-fn json_after(text: &str, marker: &str) -> Option<Value> {
-    let i = text.find(marker)?;
-    let rest = &text[i + marker.len()..];
-    let start = rest.find('{')?;
-    let s = &rest[start..];
-    let bytes = s.as_bytes();
-    let mut depth = 0i32;
-    let mut in_str = false;
-    let mut esc = false;
-    for (i, b) in bytes.iter().enumerate() {
-        let c = *b as char;
-        if in_str {
-            if esc {
-                esc = false;
-            } else if c == '\\' {
-                esc = true;
-            } else if c == '"' {
-                in_str = false;
-            }
-            continue;
-        }
-        if c == '"' {
-            in_str = true;
-        } else if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            depth -= 1;
-            if depth == 0 {
-                return serde_json::from_str(&s[..=i]).ok();
-            }
-        }
-    }
-    None
-}
 
-fn yt_text(v: &Value) -> String {
-    if let Some(s) = v.as_str() {
-        return s.to_string();
-    }
-    if let Some(runs) = v.get("runs").and_then(|r| r.as_array()) {
-        return runs
-            .iter()
-            .filter_map(|r| r.get("text").and_then(|t| t.as_str()))
-            .collect::<Vec<_>>()
-            .join("");
-    }
-    if let Some(s) = v.get("simpleText").and_then(|t| t.as_str()) {
-        return s.to_string();
-    }
-    String::new()
-}
-
-fn collect_videos(v: &Value, out: &mut Vec<Value>, limit: usize) {
-    if out.len() >= limit {
-        return;
-    }
-    match v {
-        Value::Object(m) => {
-            if let Some(vr) = m.get("videoRenderer") {
-                let id = vr.get("videoId").and_then(|x| x.as_str()).unwrap_or("");
-                if !id.is_empty() {
-                    let title = vr.get("title").map(yt_text).unwrap_or_default();
-                    let thumb = vr
-                        .get("thumbnail")
-                        .and_then(|t| t.get("thumbnails"))
-                        .and_then(|t| t.as_array())
-                        .and_then(|a| a.last())
-                        .and_then(|t| t.get("url"))
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let views = vr
-                        .get("viewCountText")
-                        .map(yt_text)
-                        .unwrap_or_default();
-                    let published = vr
-                        .get("publishedTimeText")
-                        .map(yt_text)
-                        .unwrap_or_default();
-                    out.push(json!({
-                        "id": id, "title": title, "thumbnail": thumb,
-                        "views": views, "published": published,
-                        "url": format!("https://www.youtube.com/watch?v={id}")
-                    }));
-                }
-            }
-            for x in m.values() {
-                collect_videos(x, out, limit);
-                if out.len() >= limit {
-                    return;
-                }
-            }
-        }
-        Value::Array(a) => {
-            for x in a {
-                collect_videos(x, out, limit);
-                if out.len() >= limit {
-                    return;
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
-    match v {
-        Value::Object(m) => {
-            if let Some(x) = m.get(key) {
-                return Some(x);
-            }
-            m.values().find_map(|x| find_key(x, key))
-        }
-        Value::Array(a) => a.iter().find_map(|x| find_key(x, key)),
-        _ => None,
-    }
-}
 
 /// A real channel sheet: identity from the rendered page, uploads from the
 /// channel's RSS feed (the page itself is a JS shell that no longer ships a

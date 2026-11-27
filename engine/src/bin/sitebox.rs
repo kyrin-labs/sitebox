@@ -343,12 +343,8 @@ fn load(root: &Path, id: &str) -> Result<Manifest> {
     supervisor::load_manifest(root, id)
 }
 
-fn print_value(v: &Value, json_out: bool) {
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
-    } else {
-        println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
-    }
+fn print_value(v: &Value, _json_out: bool) {
+    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
 }
 
 fn print_report(rep: &checks::CheckReport, json_out: bool) -> Result<()> {

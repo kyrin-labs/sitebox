@@ -362,6 +362,7 @@ async fn reorder(
     Json(json!({"ok": true})).into_response()
 }
 
+#[allow(clippy::result_large_err)] // axum needs the full Response on the error path
 fn load(st: &DashState, id: &str) -> Result<Manifest, Response> {
     crate::supervisor::load_manifest(&st.root, id).map_err(|e| {
         (

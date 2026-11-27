@@ -1,3 +1,4 @@
+#![allow(async_fn_in_trait)] // generic over Host; no trait objects are used
 //! One agent loop, two callers.
 //!
 //! Sols and Bee each grew their own copy of the same mechanics — call the

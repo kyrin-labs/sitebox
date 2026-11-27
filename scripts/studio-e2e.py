@@ -68,7 +68,21 @@ GEN_INDEX = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Gen</title></head>
 <body><main><h1>Gen</h1><p>generated</p></main></body></html>"""
 
-TOML = """schema = 1
+def _free_port(start=4700):
+    import socket as _s
+    for p in range(start, start + 80):
+        with _s.socket() as sk:
+            try:
+                sk.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    raise SystemExit("studio-e2e: no free port in 4700-4779")
+
+
+port = _free_port()
+
+TOML = f"""schema = 1
 pipeline = []
 checks = []
 
@@ -76,7 +90,7 @@ checks = []
 id = "demo"
 name = "Demo"
 description = "studio e2e fixture"
-port = 4601
+port = {port}
 category = "tools"
 path = "sites/demo"
 public_dir = "public"
@@ -451,7 +465,7 @@ def main():
     (SCRATCH / "dashboard/data/sites.json").write_text(json.dumps({
         "dashboard": {"name": "Test", "port": DASH},
         "sites": [
-            {"id": "demo", "name": "Demo", "port": 4601, "path": "sites/demo", "category": "tools", "url": "http://127.0.0.1:4601"},
+            {"id": "demo", "name": "Demo", "port": port, "path": "sites/demo", "category": "tools", "url": f"http://127.0.0.1:{port}"},
             {"id": "gen", "name": "Generated", "port": 4602, "path": "sites/gen", "category": "tools", "url": "http://127.0.0.1:4602"},
             {"id": "legacy", "name": "Legacy", "port": 4603, "path": "sites/legacy", "category": "tools", "url": "http://127.0.0.1:4603"},
         ],
@@ -738,7 +752,7 @@ def main():
                 return sk.connect_ex(("127.0.0.1", port)) == 0
             finally:
                 sk.close()
-        check("demo is stopped before the turn", not port_open(4601))
+        check("demo is stopped before the turn", not port_open(port))
         s, th8, _ = req(base + "/api/studio/threads", "POST", {"site_id": "demo"}, token=TOKEN)
         req(base + "/api/studio/chat", "POST", {"thread_id": th8["id"], "message": "lifecycle please"}, token=TOKEN)
         for _ in range(60):
@@ -751,7 +765,7 @@ def main():
         print("INFO lifecycle tools:", [t[:80] for t in tool_text])
         check("start tool reported running", any('"verified":true' in t and '"running":true' in t for t in tool_text), tool_text[:1])
         check("stop tool reported stopped", any('"running":false' in t for t in tool_text), tool_text[-1:])
-        check("site is off after the stop", not port_open(4601))
+        check("site is off after the stop", not port_open(port))
 
         print("── P4: abort a slow turn, then keep working")
         req(base + "/api/studio/config", "PUT", {"base_url": f"http://127.0.0.1:{MOCK}/v1", "model": "mock-slow"}, token=TOKEN)
@@ -818,12 +832,12 @@ def main():
         print("── P4: the Sols launcher is injected into served pages")
         req(base + "/api/sites/demo/start", "POST", {}, token=TOKEN)
         time.sleep(0.8)
-        with urllib.request.urlopen("http://127.0.0.1:4601/", timeout=10) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as r:
             page = r.read().decode()
             etag = r.headers.get("ETag", "")
         check("launcher injected into HTML", "__SOLS" in page and "/__sols/widget.js" in page, len(page))
         check("injected response has its own ETag", etag.endswith('-sols1"'), etag)
-        with urllib.request.urlopen("http://127.0.0.1:4601/__sols/widget.js", timeout=10) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/__sols/widget.js", timeout=10) as r:
             widget = r.read().decode()
             wtype = r.headers.get("Content-Type", "")
         check("widget served", "Sols" in widget and "javascript" in wtype, wtype)

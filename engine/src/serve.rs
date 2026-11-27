@@ -31,13 +31,7 @@ pub fn set_dashboard_port(port: u16) {
 }
 
 fn sols_enabled() -> bool {
-    if std::env::var("SOLS_WIDGET")
-        .map(|v| v == "0")
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    true
+    !matches!(std::env::var("SOLS_WIDGET").as_deref(), Ok("0"))
 }
 
 #[derive(Clone, Debug)]
@@ -483,7 +477,7 @@ fn slice_stream(
             Err(e) => { yield Err(e); return; }
         };
         if start > 0 && f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
-            yield Err(std::io::Error::new(std::io::ErrorKind::Other, "seek failed"));
+            yield Err(std::io::Error::other("seek failed"));
             return;
         }
         let mut remaining = len;
@@ -593,20 +587,6 @@ async fn proxy(st: Arc<ServeState>, req: Request, upstream: String) -> Response 
     (status, out, Body::from(body)).into_response()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn range_parsing() {
-        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
-        assert_eq!(parse_range("bytes=900-", 1000), Some((900, 999)));
-        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
-        assert_eq!(parse_range("bytes=0-5000", 1000), Some((0, 999)));
-        assert_eq!(parse_range("bytes=1000-", 1000), None);
-        assert_eq!(parse_range("bytes=10-5", 1000), None);
-    }
-}
 
 /// Reverse proxy for `serve = "node"` sites.
 ///
@@ -750,4 +730,19 @@ async fn proxy_handler(State(st): State<Arc<ProxyState>>, req: Request) -> Respo
     }
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(body.len()));
     (status, h, Body::from(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_parsing() {
+        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
+        assert_eq!(parse_range("bytes=900-", 1000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=0-5000", 1000), Some((0, 999)));
+        assert_eq!(parse_range("bytes=1000-", 1000), None);
+        assert_eq!(parse_range("bytes=10-5", 1000), None);
+    }
 }

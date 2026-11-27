@@ -102,6 +102,41 @@ compatible with old `sites.json` deployments.
 JSON-RPC over stdio, 15 tools mapping to the same engine functions the CLI
 calls. Structured results, stable error text, no shell parsing.
 
+
+## Studio (Sols)
+
+`src/studio/` is the editing agent. It is a sibling of the dashboard, not a
+separate service: the dashboard owns HTTP and the supervisor, the studio owns
+one conversation at a time.
+
+```
+studio/
+├── mod.rs      ← turn lifecycle: lock, transcript, budget, persistence, timing
+├── agent.rs    ← one loop for Sols and bees (Host trait: tools + dispatch)
+├── turn.rs     ← pure policy: when to nudge, which deliverable is missing
+├── llm.rs      ← OpenAI-compatible streaming + tool-call reassembly
+├── tools.rs    ← tool schemas and dispatch; shared seam + read-only seam
+├── patch.rs    ← anchored patch model, validation, diff, char-boundary guards
+├── stage.rs    ← hard-linked staging copy + baseline-vs-staged check comparison
+├── snapshot.rs ← content-addressed snapshots (sha256 blobs, 20 kept)
+├── bee.rs      ← read-only workers: briefs, shared board, two-wave reports
+├── store.rs    ← threads/messages/patches as plain files
+├── design.rs   ← per-site design memory (five axes, no repeats)
+├── skills.rs   ← bundled SiteBox skills, embedded at build time
+└── config.rs   ← endpoint/model/key (key never leaves the server)
+```
+
+The write path is deliberately narrow: the model emits an anchored
+`old`/`new` pair, the patch is applied to a staging copy, static checks compare
+the *set* of failures before and after, and only introduced failures block it.
+The operator's Apply snapshots the live files first; a failed check rolls back.
+
+Each turn is a `tokio` task spawned by `POST /api/studio/chat`. The lock key is
+the site id, so different sites run in parallel and two conversations on one
+site serialize. Events stream over SSE; the transcript is the source of truth
+after a reload, and `running` is derived from the live task, not from the
+browser.
+
 ## Invariants
 
 1. A missing asset is a 404; a partial deploy is a failure.
