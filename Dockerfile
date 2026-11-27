@@ -16,7 +16,11 @@ RUN cargo build --release
 # server.js owns an HTTP API). Every other site is served in-process.
 FROM node:22-alpine
 
-RUN apk add --no-cache ca-certificates wget
+# Chromium lets Sols look at what it built: screenshots and the multi-route
+# probe (overflow, clipped text, small type). Without it the panel degrades to
+# "checks only" — correct, but blind to layout.
+RUN apk add --no-cache ca-certificates wget chromium
+ENV CHROME=/usr/bin/chromium-browser
 WORKDIR /app
 
 COPY --from=build /src/engine/target/release/sitebox /usr/local/bin/sitebox
