@@ -1,5 +1,7 @@
 # SiteBox
 
+[อ่านภาษาไทย](README.th.md) · English below
+
 A self-hosted dashboard and engine for fast, verifiable static sites.
 
 **One Rust binary. One manifest per site. One shared server. No per-site
