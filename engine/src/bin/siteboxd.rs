@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sitebox_rs::dashboard::{self, DashState};
+use sitebox_rs::studio::StudioState;
 use sitebox_rs::supervisor::Supervisor;
 
 #[derive(Parser, Debug)]
@@ -34,12 +35,16 @@ async fn main() -> Result<()> {
             ui.display()
         );
     }
+    let sup = Arc::new(Supervisor::new(root.clone()));
+    let client = reqwest::Client::new();
+    let studio = StudioState::new(root.clone(), sup.clone(), client.clone());
     let state = DashState {
         root: root.clone(),
         ui,
-        sup: Arc::new(Supervisor::new(root)),
-        client: reqwest::Client::new(),
+        sup,
+        client,
         registry_error: Default::default(),
+        studio,
     };
     dashboard::serve(args.port, state).await
 }

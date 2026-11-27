@@ -24,3 +24,7 @@ engine/target/
 logs/
 .sitebox/
 sites/*/.sitebox/
+
+# Studio runtime state: settings (contains the API key), threads, patches,
+# snapshots and screenshots. Never source.
+dashboard/data/studio/

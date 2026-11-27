@@ -237,6 +237,9 @@ async fn run(cli: Cli, root: PathBuf) -> Result<i32> {
                 site_id: m.site.id.clone(),
                 api_upstream: m.site.api_upstream.clone(),
                 client: reqwest::Client::new(),
+                // `sitebox serve` is a standalone site process with no
+                // dashboard to call home, so no launcher is injected.
+                sols: None,
             };
             let port = port.unwrap_or(m.site.port);
             serve::serve(port, state).await?;
@@ -319,12 +322,16 @@ async fn run(cli: Cli, root: PathBuf) -> Result<i32> {
         Cmd::Dashboard { port, ui } => {
             let port = port.unwrap_or(4445);
             let ui = ui.unwrap_or_else(|| root.join("dashboard/public"));
+            let sup = Arc::new(Supervisor::new(root.clone()));
+            let client = reqwest::Client::new();
+            let studio = sitebox_rs::studio::StudioState::new(root.clone(), sup.clone(), client.clone());
             let state = DashState {
                 root: root.clone(),
                 ui,
-                sup: Arc::new(Supervisor::new(root.clone())),
-                client: reqwest::Client::new(),
+                sup,
+                client,
                 registry_error: Default::default(),
+                studio,
             };
             dashboard::serve(port, state).await?;
             Ok(0)
@@ -336,12 +343,8 @@ fn load(root: &Path, id: &str) -> Result<Manifest> {
     supervisor::load_manifest(root, id)
 }
 
-fn print_value(v: &Value, json_out: bool) {
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
-    } else {
-        println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
-    }
+fn print_value(v: &Value, _json_out: bool) {
+    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
 }
 
 fn print_report(rep: &checks::CheckReport, json_out: bool) -> Result<()> {

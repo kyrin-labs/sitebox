@@ -117,7 +117,7 @@ fn tool(name: &str, desc: &str, props: Value) -> Value {
     })
 }
 
-async fn call(root: &PathBuf, sup: &Arc<Supervisor>, name: &str, args: Value) -> Result<Value> {
+async fn call(root: &std::path::Path, sup: &Arc<Supervisor>, name: &str, args: Value) -> Result<Value> {
     let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let need_manifest = |id: &str| -> Result<Manifest> {
         if id.is_empty() {
@@ -245,7 +245,7 @@ fn sup_http_client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
-pub async fn doctor(root: &PathBuf, sup: &Supervisor) -> Value {
+pub async fn doctor(root: &std::path::Path, sup: &Supervisor) -> Value {
     let mut problems = Vec::new();
     let cfg = crate::registry::SiteConfig::read(root);
     let cfg = match cfg {

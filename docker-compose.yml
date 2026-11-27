@@ -7,6 +7,16 @@ services:
     network_mode: host
     # Reap the site processes the supervisor spawns (serve = "node" sites).
     init: true
+    environment:
+      # Web search for Sols. Compose reads these from .env next to this file.
+      # Host networking means a local SearXNG is reachable at 127.0.0.1.
+      - SEARXNG_URL=${SEARXNG_URL:-http://127.0.0.1:8899}
+      - SOLS_FETCH_ALLOW=${SOLS_FETCH_ALLOW:-}
+      - SEARXNG_ENGINES=${SEARXNG_ENGINES:-}
+      # AI gateway for Sols. These override settings.json from the data volume.
+      - AI_BASE_URL=${AI_BASE_URL:-}
+      - AI_MODEL=${AI_MODEL:-}
+      - AI_API_KEY=${AI_API_KEY:-}
     volumes:
       # Runtime config, site folders and logs are mounted from the host, so the
       # image stays code-only and `docker compose up -d --build` picks up edits.

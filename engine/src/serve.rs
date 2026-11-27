@@ -18,8 +18,37 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+
+/// Port the dashboard listens on, published by `dashboard::serve`. The Sols
+/// widget injected into every page needs it to call home.
+pub static DASHBOARD_PORT: AtomicU16 = AtomicU16::new(0);
+
+pub fn set_dashboard_port(port: u16) {
+    DASHBOARD_PORT.store(port, Ordering::Relaxed);
+}
+
+fn sols_enabled() -> bool {
+    !matches!(std::env::var("SOLS_WIDGET").as_deref(), Ok("0"))
+}
+
+#[derive(Clone, Debug)]
+pub struct SolsCfg {
+    pub dashboard_port: u16,
+}
+
+pub fn sols_config() -> Option<SolsCfg> {
+    let port = DASHBOARD_PORT.load(Ordering::Relaxed);
+    if !sols_enabled() || port == 0 {
+        None
+    } else {
+        Some(SolsCfg {
+            dashboard_port: port,
+        })
+    }
+}
 
 #[derive(Clone)]
 pub struct ServeState {
@@ -27,7 +56,11 @@ pub struct ServeState {
     pub site_id: String,
     pub api_upstream: Option<String>,
     pub client: reqwest::Client,
+    /// When set, HTML documents get the Sols launcher injected on the way out.
+    pub sols: Option<SolsCfg>,
 }
+
+const SOLS_WIDGET: &str = include_str!("../assets/sols-widget.js");
 
 const COMPRESSIBLE: &[&str] = &[
     "text/html",
@@ -62,13 +95,35 @@ pub async fn serve(port: u16, state: ServeState) -> Result<()> {
 
 async fn handle(State(st): State<Arc<ServeState>>, req: Request) -> Response {
     let path = req.uri().path().to_string();
+    if path == "/__sols/widget.js" {
+        return (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/javascript; charset=utf-8"),
+                ),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+                (
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                ),
+            ],
+            SOLS_WIDGET,
+        )
+            .into_response();
+    }
     if path.starts_with("/api/") {
         if let Some(up) = &st.api_upstream {
             return proxy(st.clone(), req, up.clone()).await;
         }
         return not_found(&path);
     }
-    serve_static(&st, &path, req.method(), req.headers()).await
+    let probe = req
+        .uri()
+        .query()
+        .map(|q| q.split('&').any(|p| p == "sols_probe=1"))
+        .unwrap_or(false);
+    serve_static(&st, &path, req.method(), req.headers(), probe).await
 }
 
 async fn serve_static(
@@ -76,6 +131,7 @@ async fn serve_static(
     path: &str,
     method: &Method,
     headers: &HeaderMap,
+    probe: bool,
 ) -> Response {
     let head_only = method == Method::HEAD;
     if method != Method::GET && !head_only {
@@ -103,29 +159,32 @@ async fn serve_static(
             let idx = st.root.join("index.html");
             if let Ok(m) = tokio::fs::metadata(&idx).await {
                 if m.is_file() {
-                    return file_response(st, &idx, &m, headers, head_only).await;
+                    return file_response(st, &idx, &m, headers, head_only, probe).await;
                 }
             }
         }
         return not_found(path);
     };
 
-    file_response(st, &fp, &md, headers, head_only).await
+    file_response(st, &fp, &md, headers, head_only, probe).await
 }
 
 async fn file_response(
-    _st: &ServeState,
+    st: &ServeState,
     fp: &Path,
     md: &std::fs::Metadata,
     headers: &HeaderMap,
     head_only: bool,
+    probe: bool,
 ) -> Response {
     let size = md.len();
     let mtime = md
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        // Nanoseconds, not seconds: two edits in one second with the same byte
+        // size produced the same ETag, and the browser kept the old page.
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     let etag = format!("\"{size:x}-{mtime:x}\"");
     let mime_raw = mime_guess::from_path(fp)
@@ -141,6 +200,16 @@ async fn file_response(
         mime_raw.clone()
     };
     let is_compressible = COMPRESSIBLE.iter().any(|c| mime_raw.starts_with(c));
+
+    // Documents carry the Sols launcher. The injected bytes change the body,
+    // so the ETag gets a suffix and Range is not offered for this response.
+    if mime_raw.eq_ignore_ascii_case("text/html") {
+        if let Some(cfg) = &st.sols {
+            if let Ok(raw) = tokio::fs::read(fp).await {
+                return sols_html(st, &raw, md, headers, head_only, cfg, probe);
+            }
+        }
+    }
 
     let mut base = HeaderMap::new();
     base.insert(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap());
@@ -238,6 +307,164 @@ async fn file_response(
     (StatusCode::OK, h, body).into_response()
 }
 
+/// Serve an HTML document with the Sols launcher appended.
+///
+/// Inline script + a tiny external file keeps the site's own markup untouched:
+/// the file on disk stays byte-identical, and only this response is different.
+/// Measures the served page in the browser that fetched it. The agent cannot
+/// see a screenshot, so it gets numbers instead: overflow, clipped scroll
+/// containers and text below the readable floor.
+const PROBE_JS: &str = r#"
+(function(){
+  function path(el){
+    var s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    var c = (el.className || '').toString().trim().split(/\s+/).filter(Boolean).slice(0,2);
+    if (c.length) s += '.' + c.join('.');
+    return s;
+  }
+  var vw = window.innerWidth;
+  var out = {viewport: vw, height: window.innerHeight,
+             doc_width: document.documentElement.scrollWidth,
+             overflow: [], clipped: [], small_text: []};
+  var all = document.querySelectorAll('body *');
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i], r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (r.width === 0 || r.height === 0 || cs.visibility === 'hidden' || cs.display === 'none') continue;
+    // Screen-reader-only helpers are clipped on purpose; reporting them as
+    // bugs teaches the agent to break accessibility.
+    var cls = (el.className || '').toString();
+    if (/(^|\s)(sr-only|visually-hidden|screen-reader-text)(\s|$)/.test(cls)) continue;
+    // A skip link parked at left:-9999px is clipped on purpose; only the
+    // focused state is meant to be visible. Right of the viewport is a bug,
+    // left of it is a technique.
+    if (r.right <= 1) continue;
+    if ((r.right > vw + 1 || r.left < -1) && out.overflow.length < 12) {
+      out.overflow.push({el: path(el), left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width)});
+    }
+    if (el.clientWidth > 8 && el.scrollWidth > el.clientWidth + 1 && (cs.overflowX === 'hidden' || cs.overflowX === 'clip') && out.clipped.length < 8) {
+      out.clipped.push({el: path(el), scroll: el.scrollWidth, client: el.clientWidth});
+    }
+    var fs = parseFloat(cs.fontSize);
+    if (fs && fs < 12 && (el.textContent || '').trim().length && out.small_text.length < 8) {
+      out.small_text.push({el: path(el), px: Math.round(fs * 10) / 10});
+    }
+  }
+  var pre = document.createElement('pre');
+  pre.id = '__sols_probe';
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+})();
+"#;
+
+/// The launcher every SiteBox-served document carries.
+fn sols_snippet(site_id: &str, cfg: &SolsCfg, probe: bool) -> String {
+    let site = serde_json::to_string(site_id).unwrap_or_else(|_| "\"\"".to_string());
+    let mut snippet = format!(
+        "<script>window.__SOLS={{\"site\":{site},\"port\":{},\"v\":1}};</script>\
+         <script src=\"/__sols/widget.js\" defer></script>",
+        cfg.dashboard_port
+    );
+    if probe {
+        snippet.push_str("<script>");
+        snippet.push_str(PROBE_JS);
+        snippet.push_str("</script>");
+    }
+    snippet
+}
+
+fn inject_html(html: &str, snippet: &str) -> Vec<u8> {
+    let out = match html.to_ascii_lowercase().rfind("</body>") {
+        Some(i) => format!("{}{}{}", &html[..i], snippet, &html[i..]),
+        None => format!("{html}{snippet}"),
+    };
+    out.into_bytes()
+}
+
+fn sols_html(
+    st: &ServeState,
+    raw: &[u8],
+    md: &std::fs::Metadata,
+    headers: &HeaderMap,
+    head_only: bool,
+    cfg: &SolsCfg,
+    probe: bool,
+) -> Response {
+    let html = String::from_utf8_lossy(raw);
+    let snippet = sols_snippet(&st.site_id, cfg, probe);
+    // `to_ascii_lowercase` preserves byte offsets for ASCII, so the index is
+    // valid in the original UTF-8 string.
+    let bytes = inject_html(&html, &snippet);
+
+    let size = md.len();
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        // Nanoseconds: a same-size edit inside one second must not answer 304.
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let etag = format!(
+        "\"{size:x}-{mtime:x}-sols1{}\"",
+        if probe { "p" } else { "" }
+    );
+
+    let mut h = HeaderMap::new();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    h.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    h.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|t| t.trim() == etag))
+        .unwrap_or(false)
+    {
+        return (StatusCode::NOT_MODIFIED, h).into_response();
+    }
+
+    let wants_gzip = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("gzip"))
+        .unwrap_or(false);
+    if wants_gzip {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::new(6));
+        if enc.write_all(&bytes).is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "gzip failed").into_response();
+        }
+        let gz = enc.finish().unwrap_or_default();
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        h.insert(header::CONTENT_LENGTH, HeaderValue::from(gz.len()));
+        let body = if head_only {
+            Body::empty()
+        } else {
+            Body::from(gz)
+        };
+        return (StatusCode::OK, h, body).into_response();
+    }
+
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(bytes.len()));
+    let body = if head_only {
+        Body::empty()
+    } else {
+        Body::from(bytes)
+    };
+    (StatusCode::OK, h, body).into_response()
+}
+
 fn slice_stream(
     path: PathBuf,
     start: u64,
@@ -250,7 +477,7 @@ fn slice_stream(
             Err(e) => { yield Err(e); return; }
         };
         if start > 0 && f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
-            yield Err(std::io::Error::new(std::io::ErrorKind::Other, "seek failed"));
+            yield Err(std::io::Error::other("seek failed"));
             return;
         }
         let mut remaining = len;
@@ -358,6 +585,151 @@ async fn proxy(st: Arc<ServeState>, req: Request, upstream: String) -> Response 
     }
     let body = resp.bytes().await.unwrap_or_default();
     (status, out, Body::from(body)).into_response()
+}
+
+
+/// Reverse proxy for `serve = "node"` sites.
+///
+/// A node server writes its own HTML, so the launcher and the probe would never
+/// reach the page — the operator loses Sols the moment a site grows an API.
+/// The supervisor binds the public port, the node process listens on a private
+/// one, and this handler rewrites text/html on the way out.
+pub async fn serve_proxy(
+    port: u16,
+    upstream: String,
+    site_id: String,
+    sols: Option<SolsCfg>,
+) -> Result<()> {
+    let state = Arc::new(ProxyState {
+        upstream: upstream.trim_end_matches('/').to_string(),
+        site_id: site_id.clone(),
+        sols,
+        client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()?,
+    });
+    let app = Router::new().fallback(proxy_handler).with_state(state);
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("bind {addr}"))?;
+    eprintln!("proxy for {site_id} on {addr}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+struct ProxyState {
+    upstream: String,
+    site_id: String,
+    sols: Option<SolsCfg>,
+    client: reqwest::Client,
+}
+
+async fn proxy_handler(State(st): State<Arc<ProxyState>>, req: Request) -> Response {
+    // The launcher script is ours, not the node server's: serve it here or the
+    // injected <script> 404s and the operator sees no button.
+    if req.uri().path() == "/__sols/widget.js" {
+        return (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/javascript; charset=utf-8"),
+            )],
+            SOLS_WIDGET,
+        )
+            .into_response();
+    }
+    let method = req.method().clone();
+    let uri = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "/".into());
+    let headers = req.headers().clone();
+    let body = axum::body::to_bytes(req.into_body(), 20 * 1024 * 1024)
+        .await
+        .unwrap_or_default();
+
+    let url = format!("{}{}", st.upstream, uri);
+    let mut out_req = st.client.request(method, &url).body(body);
+    for (k, v) in headers.iter() {
+        if k == header::HOST
+            || k == header::ACCEPT_ENCODING
+            || k == header::CONNECTION
+            || k == header::CONTENT_LENGTH
+        {
+            continue;
+        }
+        out_req = out_req.header(k, v);
+    }
+    let resp = match out_req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("upstream unreachable: {e}"),
+            )
+                .into_response()
+        }
+    };
+    let status = resp.status();
+    let mut h = HeaderMap::new();
+    for (k, v) in resp.headers().iter() {
+        if k == header::CONTENT_LENGTH
+            || k == header::TRANSFER_ENCODING
+            || k == header::CONTENT_ENCODING
+        {
+            continue;
+        }
+        h.insert(k, v.clone());
+    }
+    let ctype = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let is_html = ctype.starts_with("text/html");
+    let probe = uri.contains("sols_probe=1");
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("upstream body: {e}")).into_response(),
+    };
+
+    let body = if is_html {
+        match &st.sols {
+            Some(cfg) => inject_html(
+                &String::from_utf8_lossy(&bytes),
+                &sols_snippet(&st.site_id, cfg, probe),
+            ),
+            None => bytes.to_vec(),
+        }
+    } else {
+        bytes.to_vec()
+    };
+
+    let wants_gzip = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("gzip"))
+        .unwrap_or(false);
+    let compressible = is_html
+        || ctype.starts_with("text/")
+        || ctype.contains("json")
+        || ctype.contains("javascript");
+
+    if compressible && wants_gzip {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::new(6));
+        if enc.write_all(&body).is_ok() {
+            if let Ok(gz) = enc.finish() {
+                h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                h.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+                h.insert(header::CONTENT_LENGTH, HeaderValue::from(gz.len()));
+                return (status, h, Body::from(gz)).into_response();
+            }
+        }
+    }
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(body.len()));
+    (status, h, Body::from(body)).into_response()
 }
 
 #[cfg(test)]

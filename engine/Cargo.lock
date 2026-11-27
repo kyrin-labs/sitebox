@@ -1507,6 +1507,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures-core",
+ "futures-util",
  "hex",
  "image",
  "libc",

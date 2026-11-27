@@ -332,3 +332,362 @@ a:hover { text-decoration: underline; }
 
 /* ── Focus ── */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── Studio panel ─────────────────────────────────────────────────────────── */
+
+.studio-launcher {
+  position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 900;
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.6rem 0.95rem; border-radius: 999px;
+  background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0,0,0,.18);
+}
+.studio-launcher:hover { filter: brightness(1.08); }
+
+/* Dashboard header button: Sols takes the primary slot, Add Site steps back
+   to an icon so the header keeps one clear action. */
+.st-launch {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.5rem 0.85rem; border-radius: 8px; font: inherit; font-size: 0.82rem;
+  font-weight: 600; cursor: pointer; color: #eaf7ff;
+  background: linear-gradient(180deg, #101a2c, #0a1220);
+  border: 1px solid rgba(89, 194, 255, .5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+.st-launch:hover { filter: brightness(1.12); }
+.st-launch svg { display: block; }
+body.sols-ready #btn-add {
+  width: 34px; height: 34px; padding: 0; font-size: 0; gap: 0;
+  justify-content: center; background: transparent; color: var(--text-2);
+  border: 1px solid var(--border);
+}
+body.sols-ready #btn-add:hover { background: var(--surface); }
+@media (max-width: 640px) {
+  .st-launch span { display: none; }
+  .st-launch { padding: 0.5rem; }
+}
+
+.studio-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 950;
+  width: min(460px, 100vw);
+  display: none; flex-direction: column;
+  background: var(--bg); border-left: 1px solid var(--border);
+  box-shadow: -12px 0 40px rgba(0,0,0,.18);
+}
+.studio-panel.is-open { display: flex; }
+
+/* Closed wins over the wide grid: the panel keeps its size for next time. */
+.studio-panel:not(.is-open) { display: none !important; }
+
+.st-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.st-head__title { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.st-head__title strong { font-size: 0.95rem; letter-spacing: -0.01em; }
+.st-head__actions { display: flex; gap: 0.2rem; }
+.st-status { font-size: 0.72rem; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-status.is-bad { color: var(--orange); }
+.st-icon {
+  background: transparent; border: none; color: var(--text-2);
+  width: 30px; height: 30px; border-radius: 6px; cursor: pointer; font-size: 0.95rem;
+}
+.st-icon:hover { background: var(--surface2); color: var(--text); }
+
+.st-bar {
+  display: flex; gap: 0.4rem; align-items: center;
+  padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border-l);
+}
+.st-select {
+  flex: 1; min-width: 0; padding: 0.38rem 0.5rem; font: inherit; font-size: 0.8rem;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.st-select--thread { flex: 1.2; }
+.st-btn {
+  padding: 0.42rem 0.8rem; font: inherit; font-size: 0.8rem; font-weight: 600;
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.st-btn:disabled { opacity: .55; cursor: default; }
+.st-btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.st-btn--primary:hover:not(:disabled) { filter: brightness(1.08); }
+.st-btn--ghost { background: transparent; color: var(--text-2); border-color: transparent; }
+.st-btn--ghost:hover { background: var(--surface2); color: var(--text); }
+
+.st-log {
+  flex: 1; overflow-y: auto; padding: 0.9rem;
+  display: flex; flex-direction: column; gap: 0.55rem;
+  scroll-behavior: smooth;
+}
+.st-msg {
+  max-width: 92%; padding: 0.55rem 0.7rem; border-radius: 10px;
+  font-size: 0.85rem; line-height: 1.55; overflow-wrap: anywhere;
+}
+.st-msg--user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
+.st-msg--assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border-l); border-bottom-left-radius: 3px; }
+.st-msg--system { align-self: center; background: transparent; color: var(--text-3); font-size: 0.76rem; }
+.st-msg--error { align-self: stretch; background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid var(--red); color: var(--red); font-size: 0.8rem; }
+.st-msg code { font-family: 'JetBrains Mono', monospace; font-size: 0.78em; background: var(--surface2); padding: 0 .2em; border-radius: 3px; }
+.st-msg--user code { background: rgba(255,255,255,.2); }
+.st-code { display: block; margin: 0.35rem 0 0; padding: 0.45rem; overflow-x: auto; background: var(--surface2); border-radius: 6px; font-size: 0.75rem; }
+.st-msg--user .st-code { background: rgba(0,0,0,.18); }
+
+.st-tool { font-size: 0.75rem; color: var(--text-2); }
+.st-tool summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.12rem 0; color: var(--text-3);
+}
+.st-tool summary::-webkit-details-marker { display: none; }
+.st-tool__dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); flex-shrink: 0; }
+.st-tool.is-running .st-tool__dot { background: var(--accent); animation: st-pulse 1s infinite; }
+.st-tool.is-bad .st-tool__dot { background: var(--red); }
+.st-tool__state { margin-left: auto; font-size: 0.68rem; color: var(--text-3); }
+.st-tool__body {
+  margin: 0.25rem 0 0.35rem 0.85rem; padding: 0.45rem;
+  background: var(--surface); border: 1px solid var(--border-l); border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.68rem;
+  max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.st-shot { display: block; margin: 0.4rem 0 0.4rem 0.85rem; max-width: calc(100% - 1rem); border: 1px solid var(--border); border-radius: 6px; }
+@keyframes st-pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+
+.st-patch {
+  align-self: stretch; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); padding: 0.6rem 0.7rem; display: flex; flex-direction: column; gap: 0.4rem;
+}
+.st-patch.is-applied { border-color: var(--accent2); }
+.st-patch.is-rolledback { border-color: var(--red); }
+.st-patch__head { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; }
+.st-patch__head code { font-family: 'JetBrains Mono', monospace; font-size: 0.76rem; color: var(--text); }
+.st-patch__stat { font-size: 0.72rem; color: var(--text-3); }
+.st-patch__stat b { color: var(--accent2); } .st-patch__stat i { color: var(--red); font-style: normal; }
+.st-patch__reason { font-size: 0.78rem; color: var(--text-2); }
+.st-patch__chips { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.st-chip {
+  font-size: 0.68rem; padding: 0.12rem 0.4rem; border-radius: 999px;
+  background: var(--surface2); color: var(--text-2); border: 1px solid var(--border-l);
+}
+.st-chip.is-ok { color: var(--accent2); border-color: var(--accent2); }
+.st-chip.is-bad { color: var(--red); border-color: var(--red); }
+.st-diff {
+  margin: 0; padding: 0.5rem; max-height: 260px; overflow: auto;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; line-height: 1.45;
+  background: var(--bg); border: 1px solid var(--border-l); border-radius: 6px;
+  white-space: pre;
+}
+.st-patch__actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.st-patch__result { margin-left: auto; font-size: 0.72rem; color: var(--text-2); }
+.st-fail { font-size: 0.72rem; color: var(--red); }
+
+.st-compose { border-top: 1px solid var(--border); padding: 0.6rem 0.75rem; background: var(--surface); }
+.st-compose textarea {
+  width: 100%; resize: none; padding: 0.5rem 0.6rem; font: inherit; font-size: 0.84rem;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.st-compose textarea:disabled { opacity: .6; }
+.st-compose__row { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
+.st-hint { font-size: 0.7rem; color: var(--text-3); margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.st-settings { border-top: 1px solid var(--border); padding: 0.7rem; background: var(--surface); display: flex; flex-direction: column; gap: 0.5rem; }
+.st-settings label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.72rem; color: var(--text-2); }
+.st-settings input {
+  padding: 0.4rem 0.5rem; font: inherit; font-size: 0.8rem; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+}
+.st-settings__row { display: flex; align-items: center; gap: 0.5rem; }
+
+.st-toast {
+  position: fixed; right: 1.25rem; bottom: 4.6rem; z-index: 1000;
+  padding: 0.55rem 0.8rem; border-radius: 8px; font-size: 0.8rem;
+  background: var(--red); color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.2);
+}
+
+@media (max-width: 640px) {
+  .studio-panel { width: 100vw; }
+  .studio-launcher span { display: none; }
+  .studio-launcher { padding: 0.7rem; }
+}
+
+/* `hidden` must beat the flex rules above: a class selector otherwise wins. */
+.st-settings[hidden], .st-btn[hidden] { display: none !important; }
+
+/* A toast is feedback, not an overlay: keep it off the composer. */
+.st-toast { right: auto; left: 1.25rem; bottom: 1.25rem; max-width: 320px; }
+.st-msg--system { color: var(--text-2); font-size: 0.78rem; }
+
+/* Markdown blocks inside a chat bubble */
+.st-msg p { margin: 0 0 .45rem; }
+.st-msg p:last-child { margin-bottom: 0; }
+.st-msg ul, .st-msg ol { margin: .3rem 0 .5rem 1.15rem; padding: 0; }
+.st-msg li { margin: .12rem 0; }
+.st-msg .st-h { font-weight: 700; margin: .6rem 0 .3rem; line-height: 1.35; }
+.st-msg .st-h1 { font-size: 1.02rem; }
+.st-msg .st-h2 { font-size: .96rem; }
+.st-msg .st-h3, .st-msg .st-h4 { font-size: .9rem; }
+.st-msg blockquote {
+  margin: .3rem 0; padding: .2rem .6rem; color: var(--text-2);
+  border-left: 3px solid var(--border);
+}
+.st-msg hr { border: 0; border-top: 1px solid var(--border-l); margin: .6rem 0; }
+.st-msg a { color: var(--accent); text-decoration: underline; }
+.st-msg--user a { color: #fff; }
+.st-msg li::marker { color: var(--text-3); }
+.st-msg pre.st-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Reading comfort: the chat is prose, not a console. */
+.st-msg { font-size: 0.875rem; line-height: 1.65; max-width: 94%; padding: 0.6rem 0.75rem; }
+.st-msg p { margin: 0 0 0.55rem; }
+.st-msg p:last-child { margin-bottom: 0; }
+.st-msg li { margin: 0.2rem 0; }
+.st-msg code { font-size: 0.82em; overflow-wrap: anywhere; }
+
+/* Sols branding */
+.studio-launcher {
+  background: linear-gradient(180deg, #101a2c, #0a1220);
+  border-color: rgba(89,194,255,.55);
+  color: #eaf7ff;
+  box-shadow: 0 8px 28px rgba(20,90,180,.35), inset 0 1px 0 rgba(255,255,255,.08);
+}
+.studio-launcher:hover { filter: none; transform: translateY(-1px); }
+.studio-launcher svg { flex-shrink: 0; display: block; }
+.st-brand { display: flex; align-items: center; gap: .45rem; }
+.st-brand svg { display: block; }
+
+/* Embedded panel: the dashboard chrome makes no sense inside a site. */
+body.sols-embed .header,
+body.sols-embed .toolbar,
+body.sols-embed .main,
+body.sols-embed .studio-launcher { display: none !important; }
+body.sols-embed { overflow: hidden; }
+body.sols-embed .studio-panel {
+  width: 100%;
+  border-left: 0;
+  box-shadow: none;
+}
+body.sols-embed .st-log,
+body.sols-embed .st-compose { width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; }
+
+/* Visible plan: orchestration the operator can watch. */
+.st-plan {
+  display: flex; flex-direction: column; gap: .18rem;
+  padding: .5rem .9rem; border-bottom: 1px solid var(--border-l);
+  background: var(--surface); font-size: .76rem;
+}
+.st-plan__row { display: flex; gap: .45rem; align-items: flex-start; color: var(--text-2); }
+.st-plan__row.is-done { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--border); }
+.st-plan__row.is-doing { color: var(--text); font-weight: 600; }
+.st-plan__dot { color: var(--accent); flex-shrink: 0; }
+.st-plan__row.is-done .st-plan__dot { color: var(--accent2); }
+
+/* ── Sols as a docked inspector (A) ─────────────────────────────────────────
+   On the dashboard the panel is a card in the layout, not an overlay: the app
+   makes room, the panel shares the card language (border, radius, no shadow),
+   and the toolbar reads as context pills instead of a row of raw selects. */
+@media (min-width: 1101px) {
+  body.sols-open .app { padding-right: 444px; }
+
+  .studio-panel {
+    top: 12px; right: 12px; bottom: 12px;
+    width: 420px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: none;
+    overflow: hidden;
+  }
+  body.sols-open .studio-launcher { opacity: 0; pointer-events: none; }
+}
+
+.studio-panel .st-head {
+  height: 54px; padding: 0 .75rem; gap: .5rem;
+  background: var(--bg);
+}
+.studio-panel .st-head__actions { gap: .1rem; }
+.studio-panel .st-icon {
+  width: 28px; height: 28px; border-radius: 6px; font-size: .82rem;
+  color: var(--text-3);
+}
+.studio-panel .st-icon:hover { background: var(--surface2); color: var(--text); }
+.studio-panel .st-status { font-size: .68rem; }
+
+.studio-panel .st-bar {
+  gap: .35rem; padding: .5rem .75rem;
+  background: var(--bg);
+}
+.studio-panel .st-select {
+  border-radius: 999px;
+  padding: .3rem .6rem;
+  font-size: .76rem;
+  background: var(--surface);
+  border-color: var(--border);
+}
+.studio-panel .st-select--mode { flex: 0 0 auto; font-weight: 600; }
+
+/* Wide mode (B): a workspace with the plan and the checks beside the thread. */
+@media (min-width: 900px) {
+  .studio-panel.is-wide {
+    top: 5vh; bottom: 5vh; left: 50%; right: auto;
+    transform: translateX(-50%);
+    width: min(1040px, 94vw);
+    border-radius: 14px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, .28);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 312px;
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas:
+      "head head"
+      "bar  bar"
+      "log  plan"
+      "form plan";
+  }
+  .studio-panel.is-wide .st-head { grid-area: head; border-bottom: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-bar {
+    grid-area: bar; border-bottom: 1px solid var(--border-l);
+    padding: .55rem 1rem;
+  }
+  .studio-panel.is-wide .st-select:first-child { flex: 0 0 176px; }
+  .studio-panel.is-wide .st-select--thread { flex: 0 1 320px; }
+  .studio-panel.is-wide .st-select--mode { flex: 0 0 92px; margin-left: auto; }
+  .studio-panel.is-wide .st-log { padding: 1.1rem 1rem .5rem; }
+  .studio-panel.is-wide .st-compose { padding: .7rem 1rem .85rem; }
+  .studio-panel.is-wide .st-log { grid-area: log; border-right: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-plan {
+    grid-area: plan;
+    display: flex; flex-direction: column;
+    border-bottom: 0;
+    overflow: auto;
+    padding: .9rem 1rem;
+    background: var(--surface);
+  }
+  .studio-panel.is-wide .st-plan[hidden] { display: flex; }
+  .studio-panel.is-wide .st-plan::before {
+    content: "แผนงาน";
+    display: block;
+    font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-3); margin-bottom: .5rem;
+  }
+  .studio-panel.is-wide .st-compose { grid-area: form; border-top: 1px solid var(--border-l); }
+  .studio-panel.is-wide .st-settings { grid-area: 1 / 1 / -1 / -1; z-index: 5; background: var(--bg); }
+}
+
+/* Wide mode keeps the plan column meaningful even before a plan exists. */
+.studio-panel.is-wide .st-plan[hidden] { display: flex; }
+.st-plan__empty {
+  display: flex; flex-direction: column; align-items: center; gap: .3rem;
+  padding: 1rem .5rem; margin: auto 0; text-align: center; color: var(--text-3);
+}
+.st-plan__empty svg { opacity: .45; margin-bottom: .2rem; }
+.st-plan__empty p { margin: 0; font-size: .8rem; font-weight: 600; color: var(--text-2); }
+.st-plan__empty span { font-size: .72rem; line-height: 1.5; max-width: 24ch; }
+
+/* Nothing said yet: fill the pane instead of leaving a void above the composer. */
+.st-empty {
+  height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: .45rem; text-align: center; color: var(--text-3);
+}
+.st-empty svg { opacity: .55; margin-bottom: .3rem; }
+.st-empty p { margin: 0; font-size: .95rem; font-weight: 600; color: var(--text-2); }
+.st-empty span { font-size: .78rem; line-height: 1.55; max-width: 36ch; }
+
+body.sols-open .studio-launcher { display: none; }

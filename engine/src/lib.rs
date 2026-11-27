@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! sitebox-rs — agent-native engine for SiteBox.
 //!
 //! The engine owns four things the Node dashboard never did:
@@ -17,6 +18,7 @@ pub mod mcp;
 pub mod pipeline;
 pub mod registry;
 pub mod serve;
+pub mod studio;
 pub mod supervisor;
 pub mod util;
 
